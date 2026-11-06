@@ -1,5 +1,6 @@
 # Large/binary artifacts (GitHub 100MB file limit / regenerable)
 tools/
+fuzz_harness/
 research/ipas/
 research/ipas/instagram_extracted/
 research/android/
