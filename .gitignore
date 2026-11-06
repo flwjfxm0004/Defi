@@ -1,11 +1,20 @@
 # Large/binary artifacts (GitHub 100MB file limit / regenerable)
 tools/
+research/ipas/
 research/ipas/instagram_extracted/
+research/android/
 research/ghidra_project/
+*.ipa
+*.apk
+*.xapk
 *.zip
 *.tar.gz
 *.tar
 *.gpr
+
+# Generated large text artifacts
+research/strings_instagram.txt
+research/symbols.txt
 
 # Python bytecode
 __pycache__/
@@ -14,4 +23,3 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
-research/strings_instagram.txt
