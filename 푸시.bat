@@ -30,6 +30,9 @@ set "PATH=%GITDIR%;%PATH%"
 rem Ensure git-lfs hooks are installed
 git lfs install >nul 2>&1
 
+rem Fetch LFS objects (e.g. IPA) if missing (fresh clone)
+git lfs pull >nul 2>&1
+
 echo [1/3] Staging all changes...
 git add -A
 
