@@ -29,4 +29,6 @@ Write-Host "Verifying..."
 git --version
 python --version
 pip --version
+# Initialize git-lfs (bundled with Git for Windows)
+try { git lfs install 2>&1 | Out-Null; Write-Host "git-lfs initialized" } catch { Write-Host "git-lfs init skipped: $_" }
 Write-Host "Bootstrap complete. Restart terminal for PATH to persist."
