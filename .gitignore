@@ -3,7 +3,7 @@ tools/
 research/ipas/
 research/ipas/instagram_extracted/
 research/android/
-research/ghidra_project/
+research/ghidra_project*/
 *.ipa
 *.apk
 *.xapk
