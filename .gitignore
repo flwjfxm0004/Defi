@@ -1,12 +1,11 @@
-# Large/binary artifacts (GitHub 100MB file limit)
+# Large/binary artifacts (GitHub 100MB file limit / regenerable)
 tools/
-research/ipas/
+research/ipas/instagram_extracted/
 research/ghidra_project/
-*.ipa
 *.zip
 *.tar.gz
 *.tar
-research/strings_instagram.txt
+*.gpr
 
 # Python bytecode
 __pycache__/
