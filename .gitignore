@@ -1,0 +1,24 @@
+# Large/binary artifacts (GitHub 100MB file limit)
+tools/
+research/ipas/
+research/ghidra_project/
+*.ipa
+*.zip
+*.tar.gz
+*.tar
+*.gpr
+
+# Generated large text artifacts
+research/strings_instagram.txt
+
+# Ghidra lock files
+*.lock
+*.lock~
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
