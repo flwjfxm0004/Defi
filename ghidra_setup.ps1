@@ -1,28 +1,28 @@
-# Ghidra + Temurin JDK 21 setup on Windows (run as Administrator)
+# Ghidra + Temurin JDK 25 setup on Windows (run as Administrator)
 $ErrorActionPreference = 'Stop'
 $tmp = "C:\Defi\tools\ghidra_setup"
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
-# 1. JDK 21 (Temurin) - latest GA
-if (-not (Test-Path "C:\Program Files\Eclipse Adoptium\jdk-21*")) {
-    Write-Host "Fetching JDK 21 download link..."
-    $r = Invoke-RestMethod -Uri "https://api.adoptium.net/v3/assets/feature_releases/21/ga?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
+# 1. JDK 25 (Temurin) - Ghidra 12.2 requires JDK 25+
+if (-not (Test-Path "C:\Program Files\Eclipse Adoptium\jdk-25*")) {
+    Write-Host "Fetching JDK 25 download link..."
+    $r = Invoke-RestMethod -Uri "https://api.adoptium.net/v3/assets/feature_releases/25/ga?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
     $link = $r[0].binaries[0].package.link
-    $zip = Join-Path $tmp "jdk21.zip"
-    Write-Host "Downloading JDK 21 (~205MB)..."
+    $zip = Join-Path $tmp "jdk25.zip"
+    Write-Host "Downloading JDK 25 (~205MB)..."
     Invoke-WebRequest -Uri $link -OutFile $zip -UseBasicParsing
     Write-Host "Extracting JDK..."
     Expand-Archive -LiteralPath $zip -DestinationPath "C:\Program Files\Eclipse Adoptium" -Force
     Remove-Item $zip
     Write-Host "JDK done."
 } else {
-    Write-Host "JDK already installed."
+    Write-Host "JDK 25 already installed."
 }
 
-# find java
-$java = Get-ChildItem "C:\Program Files\Eclipse Adoptium" -Recurse -Filter "java.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-if (-not $java) { throw "java.exe not found" }
-$env:JAVA_HOME = Split-Path (Split-Path $java)
+$javaHome = (Get-ChildItem "C:\Program Files\Eclipse Adoptium" -Directory | Where-Object Name -like "jdk-25*" | Select-Object -First 1).FullName
+if (-not $javaHome) { throw "JDK 25 not found" }
+$env:JAVA_HOME = $javaHome
+$java = Join-Path $javaHome "bin\java.exe"
 Write-Host "JAVA_HOME=$env:JAVA_HOME"
 
 # 2. Ghidra (latest release)
