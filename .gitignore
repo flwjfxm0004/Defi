@@ -6,14 +6,7 @@ research/ghidra_project/
 *.zip
 *.tar.gz
 *.tar
-*.gpr
-
-# Generated large text artifacts
 research/strings_instagram.txt
-
-# Ghidra lock files
-*.lock
-*.lock~
 
 # Python bytecode
 __pycache__/
