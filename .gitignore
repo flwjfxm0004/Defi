@@ -17,9 +17,9 @@ research/ghidra_project*/
 research/strings_instagram.txt
 research/symbols.txt
 
-# Python bytecode
-__pycache__/
-*.pyc
+# Scan artifacts
+scan_progress_*.json
+scan_results.json
 
 # OS
 Thumbs.db
