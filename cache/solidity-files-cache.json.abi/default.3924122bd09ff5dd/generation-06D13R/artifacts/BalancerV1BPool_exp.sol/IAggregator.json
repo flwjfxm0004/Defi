@@ -1,1 +1,0 @@
-{"abi":[{"type":"function","name":"latestAnswer","inputs":[],"outputs":[{"name":"","type":"int256","internalType":"int256"}],"stateMutability":"view"}],"id":20}

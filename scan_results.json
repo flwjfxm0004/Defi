@@ -1,11 +1,1 @@
-[
-  {
-    "chain": "bsc",
-    "block": 132253006,
-    "address": "0x0c6931d1b7a9218eac1785f8a0196add22eacb04",
-    "tx": "0xfe3090d5d3f9ab13597740c435a0f2267bbc3a7be2f4888f849f11c9fa53657f",
-    "selectors": [
-      "0x4bb278f3"
-    ]
-  }
-]
+[]

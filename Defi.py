@@ -60,33 +60,37 @@ CHAINS = {
     "oasis": {"rpc": "https://oasis.api.pocket.network", "usdc": "0x0000000000000000000000000000000000000000", "token": "usd-coin"},
 }
 
-# Known hack selectors for matching
-HACK_SELECTORS = {
-    "0x8e27c105": "TranchePool.draw",
-    "0xbbafc98c": "NEM.flushLpSellRecycle",
-    "0xbc25cf77": "NEM.skim",
-    "0xfff6cae9": "NEM.sync",
-    "0x7c5e9ea4": "Balancer.joinswapPoolAmountOut",
-    "0x46ab38f1": "Balancer.exitswapPoolAmountIn",
-    "0xb02f0b73": "Balancer.exitPool",
-    "0xf8b2cb4f": "Balancer.getBalance",
-    "0x9d2edfac": "Slice.release",
-    "0x4bb278f3": "Balancer.finalize",
-    "0x6612e66f": "Balancer.bind",
-    "0x41997733": "Balancer.swapExactAmountIn",
-    "0x945bcec9": "Balancer.swapExactAmountOut",
-}
 
+
+
+# Generic ERC20 selectors to filter out (not hack-related)
+GENERIC_ERC20 = {"0xa9059cbb", "0x095ea7b3", "0x23b872dd", "0x70a08231", "0x18160ddd", "0x06fdde03", "0x95d89b41", "0x313ce567"}
+
+# Bytecode patterns: sets of selectors that must ALL be present (AND logic)
+# More specific than single selector matching
+# Bytecode patterns: required (must have) + optional (boosts similarity score)
+BYTECODE_PATTERNS = {
+    "NEM": ({"0xbbafc98c"}, set()),
+    "Balancer": ({"0x6d06dfa0"}, {"0x46ab38f1", "0xb02f0b73", "0xf8b2cb4f", "0x4bb278f3", "0xe4e1e538", "0x8201aa3f", "0x7c5e9ea4"}),
+    "TranchePool": ({"0x8e27c105"}, set()),
+    "Slice": ({"0x9d2edfac"}, set()),
+    "TENDRIL": ({"0x9c74daf0"}, {"0xedae876f", "0xb734e98b"}),
+    "InsurancePool": ({"0x01681a62"}, {"0x09c5eabe", "0x13a1a562"}),
+    "Moonwell": ({"0x18bf5077"}, {"0x4bf5d7e9", "0x6fcfff45"}),
+    "Hifi": ({"0x0f32f1c9"}, {"0x7adbf973", "0xc5ed81f7"}),
+    "Premia": ({"0x531aa03e"}, {"0x6cee3448", "0xd41dcbea"}),
+    "X100": ({"0xa4376352"}, {"0x3724fc1c", "0x4e71d92d"}),
+    "zkLink": ({"0x68871c9c"}, {"0xbf22d9c3"}),
+    "Yapeswap": ({"0xa2e74af6"}, set()),
+}
 
 # Core hack selectors (required for exploit, not just auxiliary functions)
 CORE_HACK_SELECTORS = {
-    "0xbbafc98c",  # NEM.flushLpSellRecycle (NEM-specific)
-    "0x7c5e9ea4",  # Balancer.joinswapPoolAmountOut (Balancer-specific, rounding bug)
-    "0x8e27c105",  # TranchePool.draw (TranchePool-specific, rollover bug)
-    "0x9d2edfac",  # Slice.release (Slice-specific, unverified return)
+    "0xbbafc98c",  # NEM.flushLpSellRecycle
+    "0x6d06dfa0",  # Balancer.joinswapPoolAmountOut
+    "0x8e27c105",  # TranchePool.draw
+    "0x9d2edfac",  # Slice.release
 }
-# Generic ERC20 selectors to filter out (not hack-related)
-GENERIC_ERC20 = {"0xa9059cbb", "0x095ea7b3", "0x23b872dd", "0x70a08231", "0x18160ddd", "0x06fdde03", "0x95d89b41", "0x313ce567"}
 
 SCAN_RPCS = {
     "bsc": ["https://bsc.api.pocket.network", "https://bsc-mainnet.nodereal.io/v1/e7ec74ea77134e99b3aca76de8e602c5", "https://rpc.ankr.com/bsc/f098d8113a6ebea616cd06908b2421bdf72916efd6342ba6981db600d1e3c26f", "https://bsc-mainnet.gateway.tatum.io/bm_live_ca8f52c5b744adaab43de4a4fd7e7fbe027afbbb039265c28b481b3abcf1fc0c"],
@@ -150,25 +154,23 @@ def rpc_call_sync(chain, method, params, retries=3):
 def extract_selectors(code_hex):
     sels = set()
     i = 0
+    # Solidity-style: PUSH4 sel EQ JUMPI (0x63 XXXXXXXX 0x14)
     while i < len(code_hex) - 12:
         if code_hex[i:i+2] == "63" and code_hex[i+10:i+12] == "14":
             sels.add("0x" + code_hex[i+2:i+10])
         i += 2
+    # Vyper-style: PUSH4 sel (0x63 XXXXXXXX) followed by EQ within 6 bytes
+    i = 0
+    while i < len(code_hex) - 10:
+        if code_hex[i:i+2] == "63":
+            sel = "0x" + code_hex[i+2:i+10]
+            window = code_hex[i+10:i+22]
+            if "14" in window:
+                sels.add(sel)
+        i += 2
     return sels
 
 
-def cmd_info(args):
-    code = rpc_call_sync(args.chain, "eth_getCode", [args.contract, "latest"])
-    if not code or code == "0x":
-        print(json.dumps({"chain": args.chain, "contract": args.contract, "error": "EOA or no bytecode"}, indent=2))
-        return
-    hexcode = code[2:]
-    sels = extract_selectors(hexcode)
-    hack_matches = {sel: HACK_SELECTORS[sel] for sel in sels if sel in HACK_SELECTORS}
-    result = {"chain": args.chain, "contract": args.contract, "bytecode_len": len(code), "selectors": sorted(sels)}
-    if hack_matches:
-        result["hack_matches"] = hack_matches
-    print(json.dumps(result, indent=2))
 
 
 def cmd_replay(args):
@@ -312,18 +314,13 @@ async def scan_chain(chain, targets, num_blocks, resume_from=None):
                         if not code or code == "0x" or len(code) < 10:
                             continue
                         sels = extract_selectors(code[2:])
-                        hits = [s for s in targets if s in sels]
-                        core_hits = [s for s in hits if s in CORE_HACK_SELECTORS]
-                        hack_hits = [s for s in hits if s in HACK_SELECTORS]
-                        generic_only = all(s in GENERIC_ERC20 for s in hits) and not hack_hits
-                        if hits and not generic_only and core_hits:
-                            m = {"chain": chain, "block": blk_num, "address": addr, "tx": r.get("transactionHash", ""), "selectors": hits}
+                        pattern_matches = [pname for pname, psels in BYTECODE_PATTERNS.items() if (psels[0] if isinstance(psels, tuple) else psels).issubset(sels)]
+                        generic_only = bool(sels) and all(s in GENERIC_ERC20 for s in sels)
+                        if pattern_matches and not generic_only:
+                            m = {"chain": chain, "block": blk_num, "address": addr, "tx": r.get("transactionHash", ""), "selectors": sorted(sels), "patterns": pattern_matches}
                             async with match_lock:
                                 matches.append(m)
-                            if hack_hits:
-                                print(f"  [{chain}] HACK MATCH: block {blk_num} addr {addr} -> {[HACK_SELECTORS[s] for s in hack_hits]}")
-                            else:
-                                print(f"  [{chain}] MATCH: block {blk_num} addr {addr} selectors {hits}")
+                            print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pattern_matches}")
                     return
                 block = await fetch_single("eth_getBlockByNumber", [hex(blk_num), True])
                 if not block or not block.get("transactions"):
@@ -339,18 +336,19 @@ async def scan_chain(chain, targets, num_blocks, resume_from=None):
                     if not code or code == "0x" or len(code) < 10:
                         continue
                     sels = extract_selectors(code[2:])
-                    hits = [s for s in targets if s in sels]
-                    core_hits = [s for s in hits if s in CORE_HACK_SELECTORS]
-                    hack_hits = [s for s in hits if s in HACK_SELECTORS]
-                    generic_only = bool(hits) and all(s in GENERIC_ERC20 for s in hits) and not hack_hits
-                    if hits and not generic_only and core_hits:
-                        m = {"chain": chain, "block": blk_num, "address": addr, "tx": tx["hash"], "selectors": hits}
+                    pattern_matches = []
+                    for pname, (req, opt) in BYTECODE_PATTERNS.items():
+                        if req.issubset(sels):
+                            opt_present = len(opt & sels)
+                            score = (len(req) + opt_present) / (len(req) + len(opt)) if (len(req) + len(opt)) > 0 else 1.0
+                            pattern_matches.append((pname, round(score, 2)))
+                    generic_only = bool(sels) and all(s in GENERIC_ERC20 for s in sels)
+                    if pattern_matches and not generic_only:
+                        m = {"chain": chain, "block": blk_num, "address": addr, "tx": tx["hash"], "selectors": sorted(sels), "patterns": [p[0] for p in pattern_matches], "scores": {p[0]: p[1] for p in pattern_matches}}
                         async with match_lock:
                             matches.append(m)
-                        if hack_hits:
-                            print(f"  [{chain}] HACK MATCH: block {blk_num} addr {addr} -> {[HACK_SELECTORS[s] for s in hack_hits]}")
-                        else:
-                            print(f"  [{chain}] MATCH: block {blk_num} addr {addr} selectors {hits}")
+                        for pname, score in pattern_matches:
+                            print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pname} (score={score})")
 
         # Batch processing: process 200 blocks at a time
         batch_size = 200
@@ -367,8 +365,8 @@ async def scan_chain(chain, targets, num_blocks, resume_from=None):
         return matches
 
 def cmd_scan(args):
-    targets = list(HACK_SELECTORS.keys())
-    print(f"Scanning for {len(targets)} known hack selectors...")
+    targets = list(set().union(*[p[0] | p[1] for p in BYTECODE_PATTERNS.values()]))
+    print(f"Scanning for {len(BYTECODE_PATTERNS)} bytecode patterns ({len(targets)} selectors)...")
     chains = list(SCAN_RPCS.keys()) if args.chains == "all" else [c.strip() for c in args.chains.split(",")]
 
     async def run():
@@ -396,14 +394,17 @@ def cmd_scan(args):
         with open(RESULTS_FILE, "w") as f:
             json.dump(all_matches, f, indent=2)
         print(f"\nTotal matches across all chains: {len(all_matches)}")
-        hack_count = sum(1 for m in all_matches if any(s in HACK_SELECTORS for s in m["selectors"]))
-        if hack_count:
-            print(f"Hack-related contracts: {hack_count}")
-        # KRW conversion for hack-related matches
-        for m in all_matches:
-            for sel in m["selectors"]:
-                if sel in HACK_SELECTORS:
-                    print(f"  [{m['chain']}] {m['address']} -> {HACK_SELECTORS[sel]} (profit requires forge reproduction)")
+        if all_matches:
+            print("KRW profit estimation requires forge reproduction of each matched contract.")
+        pattern_count = sum(1 for m in all_matches if m.get("patterns"))
+        if pattern_count:
+            print(f"Pattern matches: {pattern_count}")
+        pattern_count = sum(1 for m in all_matches if m.get("patterns"))
+        if pattern_count:
+            print(f"Pattern matches: {pattern_count}")
+            for m in all_matches:
+                if m.get("patterns"):
+                    print(f"  [{m['chain']}] {m['address']} -> {', '.join(m['patterns'])} (profit requires forge reproduction)")
         # Deduplicate by address
         seen = set()
         unique_matches = []
@@ -414,10 +415,7 @@ def cmd_scan(args):
                 unique_matches.append(m)
         print(f"Unique contracts: {len(unique_matches)}")
         for m in unique_matches:
-            print(f"  [{m['chain']}] {m['address']} (block {m['block']}) selectors: {m['selectors']}")
-            for sel in m["selectors"]:
-                if sel in HACK_SELECTORS:
-                    print(f"    *** HACK MATCH: {HACK_SELECTORS[sel]} ***")
+            print(f"  [{m['chain']}] {m['address']} (block {m['block']}) patterns: {m.get('patterns', [])}")
 
     asyncio.run(run())
 
@@ -432,14 +430,10 @@ def main():
     r.add_argument("--token", default="USDC")
     r.set_defaults(func=cmd_replay)
 
-    i = sub.add_parser("info", help="Extract function selectors from a contract")
-    i.add_argument("--chain", required=True, choices=list(CHAINS))
-    i.add_argument("--contract", required=True)
-    i.set_defaults(func=cmd_info)
 
-    s = sub.add_parser("scan", help="Scan recent blocks across chains for hack-related contracts")
+    s = sub.add_parser("scan", help="Scan blocks across chains for hack-related contracts")
     s.add_argument("--chains", default="all", help="Comma-separated chains or 'all'")
-    s.add_argument("--blocks", type=int, default=5000)
+    s.add_argument("--blocks", type=int, default=5000, help="Number of blocks to scan")
     s.set_defaults(func=cmd_scan)
 
     args = p.parse_args()

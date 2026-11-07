@@ -1,1 +1,0 @@
-{"abi":[{"type":"function","name":"initialize","inputs":[{"name":"sqrtPriceX96","type":"uint160","internalType":"uint160"}],"outputs":[],"stateMutability":"nonpayable"}],"id":20}
