@@ -1,0 +1,1 @@
+{"abi":[{"type":"function","name":"MAXTIME","inputs":[],"outputs":[{"name":"","type":"uint256","internalType":"uint256"}],"stateMutability":"view"},{"type":"function","name":"createLockUntil","inputs":[{"name":"amount","type":"uint256","internalType":"uint256"},{"name":"lockEnd","type":"uint256","internalType":"uint256"}],"outputs":[],"stateMutability":"nonpayable"}],"id":19}
