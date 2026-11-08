@@ -29,9 +29,9 @@ rem --- repo-local hygiene (avoid LF<->CRLF churn) ---------------------------
 
 rem --- ensure identity (only if missing) ------------------------------------
 "%GITEXE%" config --get user.name >nul 2>&1
-if errorlevel 1 "%GITEXE%" config --global user.name "flwjfxm0004" >nul 2>&1
+if errorlevel 1 "%GITEXE%" config --local user.name "flwjfxm0004" >nul 2>&1
 "%GITEXE%" config --get user.email >nul 2>&1
-if errorlevel 1 "%GITEXE%" config --global user.email "flwjfxm0004@users.noreply.github.com" >nul 2>&1
+if errorlevel 1 "%GITEXE%" config --local user.email "flwjfxm0004@users.noreply.github.com" >nul 2>&1
 
 rem --- lfs (only if git-lfs present AND lfs files tracked) ------------------
 where git-lfs >nul 2>&1
