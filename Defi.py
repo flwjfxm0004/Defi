@@ -75,6 +75,10 @@ def _atomic_write_json(path, data, indent=None):
             json.dump(data, f, indent=indent)
             f.flush()
             os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         os.replace(tmp, path)
         try:
             dfd = os.open(d, os.O_RDONLY)
@@ -182,27 +186,26 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                         wait_seen.add(a)
             updates = {}
             invalid = set()
-            failures = set()
             try:
                 if missing:
                     fetched = []
-                    for i in range(0, len(missing), 50):
+                    for i in range(0, len(missing), 100):
                         chunk = missing[i:i + 100]
                         fetched.extend(await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in chunk], return_exceptions=True))
                 else:
                     fetched = []
                 for a, code in zip(missing, fetched):
                     if isinstance(code, str):
-                        is_zero = False
-                        if code.startswith("0x"):
-                            hexpart = code[2:]
-                            is_zero = (len(hexpart) == 0) or (not hexpart.strip("0"))
-                        if code in ("", "0x") or is_zero:
+                        code = code.lower()
+                        if code in ("", "0x"):
                             invalid.add(a)
                         else:
-                            updates[a] = code
-                    else:
-                        failures.add(a)
+                            hexpart = code[2:] if code.startswith("0x") else code
+                            if not hexpart.strip("0"):
+                                invalid.add(a)
+                            else:
+                                updates[a] = code
+                    # transient failures are not cached (allow retry)
             finally:
                 async with code_cache_lock:
                     for a, code in updates.items():
@@ -333,17 +336,24 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             # Coalesce concurrent implementation fetches
             _cached_hit = None
             wait = False
+            ev = None
             async with code_cache_lock:
                 cached = code_cache.get(impl_addr.lower())
-                if isinstance(cached, str) and cached and cached != "0x" and cached[2:].strip("0") != "":
-                    _cached_hit = cached
-                elif impl_addr.lower() in pending_events:
-                    ev = pending_events[impl_addr.lower()]
-                    wait = True
-                else:
-                    ev = asyncio.Event()
-                    pending_events[impl_addr.lower()] = ev
-                    wait = False
+                if isinstance(cached, str):
+                    if cached and cached != "0x" and cached[2:].strip("0") != "":
+                        _cached_hit = cached
+                    else:
+                        # Negative cache: previously resolved to no code
+                        if cached is not None:
+                            return None
+                if _cached_hit is None:
+                    if impl_addr.lower() in pending_events:
+                        ev = pending_events[impl_addr.lower()]
+                        wait = True
+                    else:
+                        ev = asyncio.Event()
+                        pending_events[impl_addr.lower()] = ev
+                        wait = False
             if _cached_hit is not None:
                 return _cached_hit
             if wait:
@@ -355,10 +365,15 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 return None
             try:
                 impl_code = await fetch_single("eth_getCode", [impl_addr, hex(blk_num)])
+                if isinstance(impl_code, str):
+                    impl_code = impl_code.lower()
                 if isinstance(impl_code, str) and impl_code and impl_code != "0x" and len(impl_code) >= 10 and impl_code[2:].strip("0") != "":
                     async with code_cache_lock:
                         code_cache[impl_addr.lower()] = impl_code
                     return impl_code
+                if isinstance(impl_code, str) and (impl_code in ("", "0x") or impl_code[2:].strip("0") == ""):
+                    async with code_cache_lock:
+                        code_cache[impl_addr.lower()] = ""
                 return None
             finally:
                 async with code_cache_lock:
@@ -430,8 +445,6 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
 
         # Batch processing: process blocks in batches
         batch_size = 50
-        last_pm = -1
-        last_pf = -1
         for start in range(start_block, start_block + scan_range, batch_size):
             end = min(start + batch_size, start_block + scan_range)
             tasks = [process_block(blk) for blk in range(start, end)]
@@ -449,8 +462,6 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             await asyncio.get_running_loop().run_in_executor(
                 None, _atomic_write_json, prog_path,
                  {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None)
-            last_pm = _mc
-            last_pf = rpc_failures
 
         print(f"[{chain}] Scan complete: {len(matches)} matches, {rpc_failures} rpc failures")
         return matches
@@ -475,6 +486,9 @@ def cmd_scan(args):
             continue
         chains.append(c)
 
+    if not chains:
+        print("No valid chains to scan")
+        return
     async def run():
         tasks = []
         resume_map = {}
