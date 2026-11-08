@@ -1,5 +1,0 @@
-고 손실은 플랫폼 전체에 사회화
-- **피해 컨트랙트 주소**: Rocket Bridge 및 휴면 무기한 선물 시장 컨트랙트 (Arbitrum, 구체적 주소 미공개)
-
-**217. 2026-10-12 — Tempo FeeAMM (Ethereum)**
-- **해킹 원리**: CEI(Checks-Effects-Interactions) 위반 재진입. `FeeAM
