@@ -6,12 +6,15 @@ import json
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 import aiohttp
 
+MAX_CODE_CACHE = 10000
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 RESULTS_FILE = os.path.join(ROOT, "scan_results.json")
+PROGRESS_FILE = os.path.join(ROOT, "scan_progress.json")
 
 # Bytecode patterns: required (must have) + optional (boosts similarity score)
 BYTECODE_PATTERNS = {
@@ -101,6 +104,9 @@ def _atomic_write_json(path, data, indent=None, fsync=True):
 _SELECTOR_RE = re.compile(r"63([0-9a-f]{8})14")
 
 
+_ALL_REQ_HEX = {s[2:] for req, _ in BYTECODE_PATTERNS.values() for s in req}
+
+
 def extract_selectors(code_hex):
     code_hex = code_hex.lower()
     sels = set()
@@ -114,8 +120,10 @@ def extract_selectors(code_hex):
         cut = min(positions)
         # Guard against false positives: strip when marker is in trailing region,
         # or close enough to the end to be metadata even on small contracts.
-        if cut > 0 and cut >= len(code_hex) - 2048:
-            code_hex = code_hex[:cut]
+    if cut > 0 and cut >= len(code_hex) - 2048:
+        code_hex = code_hex[:cut]
+    if not any(r in code_hex for r in _ALL_REQ_HEX):
+        return sels
     n = len(code_hex)
     if n % 2:
         n -= 1
@@ -142,7 +150,9 @@ def match_bytecode_patterns(sels):
 
 
 
-async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = None, sem: Optional[asyncio.Semaphore] = None, fetch_sem: Optional[asyncio.Semaphore] = None, session: Optional[aiohttp.ClientSession] = None) -> List[Dict[str, Any]]:
+async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = None, sem: Optional[asyncio.Semaphore] = None, fetch_sem: Optional[asyncio.Semaphore] = None, session: Optional[aiohttp.ClientSession] = None, resume_prog: Optional[Dict[str, Any]] = None, progress_lock: Optional[asyncio.Lock] = None) -> List[Dict[str, Any]]:
+    if progress_lock is None:
+        progress_lock = asyncio.Lock()
     urls = SCAN_RPCS.get(chain, [])
     if not urls:
         print(f"[{chain}] No RPC endpoints configured")
@@ -160,7 +170,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             sem = asyncio.Semaphore(100)
         match_lock = asyncio.Lock()
         matches = []
-        code_cache = {}
+        code_cache = OrderedDict()
         pending_events = {}
         rpc_failures = 0
         rpc_lock = asyncio.Lock()
@@ -214,10 +224,13 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     for a, code in updates.items():
                         if a not in code_cache:
                             code_cache[a] = code
+                        code_cache.move_to_end(a)
                     for a in invalid:
                         if a not in code_cache:
                             code_cache[a] = ""
-                    # Do not permanently cache failures: allow retry on transient RPC errors
+                        code_cache.move_to_end(a)
+                    while len(code_cache) > MAX_CODE_CACHE:
+                        code_cache.popitem(last=False)
                     for a in missing:
                         ev = pending_events.pop(a, None)
                         if ev is not None:
@@ -288,13 +301,17 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                                         res = [None] * n
                                         for item in data:
                                             if isinstance(item, dict) and "id" in item:
-                                                idx = item["id"]
+                                                try:
+                                                    idx = int(item["id"])
+                                                except (TypeError, ValueError):
+                                                    continue
                                                 if 0 <= idx < n:
                                                     if "result" in item:
                                                         res[idx] = item["result"]
                                                     elif "error" in item:
                                                         res[idx] = None
-                                        # success if at least one result present or all legitimately null
+                                        if all(r is None for r in res):
+                                            continue
                                         if i != 0:
                                             async with url_lock:
                                                 if u in url_order:
@@ -325,15 +342,24 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             return []
 
         receipts_supported = False
-        probe = await fetch_single("eth_getBlockReceipts", [hex(latest)])
-        if isinstance(probe, list):
-            receipts_supported = True
+        for _ in range(3):
+            probe = await fetch_single("eth_getBlockReceipts", [hex(latest)])
+            if isinstance(probe, list):
+                receipts_supported = True
+                break
 
         if resume_from is not None:
-            prog_file = os.path.join(ROOT, f"scan_progress_{chain}.json")
-            try:
-                with open(prog_file, encoding="utf-8") as f:
-                    prog = json.load(f)
+            prog = resume_prog
+            if prog is None:
+                try:
+                    with open(PROGRESS_FILE, encoding="utf-8") as f:
+                        allp = json.load(f)
+                    if isinstance(allp, dict):
+                        prog = allp.get(chain)
+                except Exception as e:
+                    print(f"[{chain}] progress read error: {e}")
+                    prog = None
+            if prog:
                 seen2 = set()
                 uniq = []
                 for m in prog.get("matches", []) or []:
@@ -345,8 +371,6 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 matches[:] = uniq
                 if "rpc_failures" in prog:
                     rpc_failures = prog["rpc_failures"]
-            except Exception as e:
-                print(f"[{chain}] progress read error: {e}")
 
         if resume_from is not None and resume_from >= latest:
             print(f"[{chain}] Already scanned to latest block")
@@ -355,6 +379,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         if resume_from is not None and 0 <= resume_from < latest:
             start_block = resume_from + 1
             scan_range = min(num_blocks, latest - start_block + 1)
+            scan_range = min(scan_range, 100000)
             if scan_range <= 0:
                 print(f"[{chain}] Already scanned to latest block")
                 return matches
@@ -362,6 +387,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         else:
             start_block = max(0, latest - num_blocks + 1)
             scan_range = min(num_blocks, latest - start_block + 1)
+            scan_range = min(scan_range, 100000)
             if scan_range <= 0:
                 print(f"[{chain}] Nothing to scan")
                 return matches
@@ -411,10 +437,16 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 if isinstance(impl_code, str) and impl_code and impl_code != "0x" and len(impl_code) >= 10 and impl_code[2:].strip("0") != "":
                     async with code_cache_lock:
                         code_cache[impl_addr.lower()] = impl_code
+                        code_cache.move_to_end(impl_addr.lower())
+                        while len(code_cache) > MAX_CODE_CACHE:
+                            code_cache.popitem(last=False)
                     return impl_code
                 if isinstance(impl_code, str) and (impl_code in ("", "0x") or impl_code[2:].strip("0") == ""):
                     async with code_cache_lock:
                         code_cache[impl_addr.lower()] = ""
+                        code_cache.move_to_end(impl_addr.lower())
+                        while len(code_cache) > MAX_CODE_CACHE:
+                            code_cache.popitem(last=False)
                 return None
             finally:
                 async with code_cache_lock:
@@ -499,10 +531,18 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             async with rpc_lock:
                 _rf = rpc_failures
             print(f"  [{chain}] scanned to block {end - 1}, {_mc} matches, {_rf} rpc failures")
-            prog_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
-            await asyncio.get_running_loop().run_in_executor(
-                None, _atomic_write_json, prog_path,
-                 {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None, False)
+            async with progress_lock:
+                try:
+                    if os.path.exists(PROGRESS_FILE):
+                        with open(PROGRESS_FILE, encoding="utf-8") as f:
+                            all_prog = json.load(f)
+                    else:
+                        all_prog = {}
+                except Exception:
+                    all_prog = {}
+                all_prog[chain] = {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}
+                await asyncio.get_running_loop().run_in_executor(
+                    None, _atomic_write_json, PROGRESS_FILE, all_prog, None, False)
 
         print(f"[{chain}] Scan complete: {len(matches)} matches, {rpc_failures} rpc failures")
         return matches
@@ -533,26 +573,28 @@ def cmd_scan(args):
     async def run():
         tasks = []
         resume_map = {}
+        resume_progs = {}
         global_sem = asyncio.Semaphore(200)
         global_fetch_sem = asyncio.Semaphore(200)
+        progress_lock = asyncio.Lock()
+        all_prog = {}
+        if os.path.exists(PROGRESS_FILE):
+            try:
+                with open(PROGRESS_FILE, encoding="utf-8") as f:
+                    all_prog = json.load(f)
+            except Exception as e:
+                print(f"progress read error: {e}")
+                all_prog = {}
         for c in chains:
-            prog_file = os.path.join(ROOT, f"scan_progress_{c}.json")
-            rf = None
-            if os.path.exists(prog_file):
-                try:
-                    with open(prog_file, encoding="utf-8") as f:
-                        progress = json.load(f)
-                    rf = progress.get("last_block")
-                    if rf is not None:
-                        print(f"[{c}] Resuming from block {rf}")
-                except Exception as e:
-                    print(f"[{c}] progress read error: {e}")
+            prog = all_prog.get(c) if isinstance(all_prog, dict) else None
+            rf = prog.get("last_block") if isinstance(prog, dict) else None
+            if rf is not None:
+                print(f"[{c}] Resuming from block {rf}")
             resume_map[c] = rf
-        connector = aiohttp.TCPConnector(limit=200, ttl_dns_cache=300)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            for c in chains:
-                tasks.append(scan_chain(c, args.blocks, resume_map.get(c), global_sem, global_fetch_sem, session))
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            resume_progs[c] = prog
+        for c in chains:
+            tasks.append(scan_chain(c, args.blocks, resume_map.get(c), global_sem, global_fetch_sem, None, resume_progs.get(c), progress_lock))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         all_matches = []
         for r in results:
             if isinstance(r, Exception):
