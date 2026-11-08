@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import tempfile
 from typing import Any, Dict, List, Optional
 import aiohttp
 
@@ -71,13 +72,22 @@ SCAN_RPCS = {
 }
 
 def _atomic_write_json(path, data, indent=None):
-    tmp = path + ".tmp"
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        try:
+            dfd = os.open(d, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
     finally:
         if os.path.exists(tmp):
             try:
@@ -90,17 +100,19 @@ def extract_selectors(code_hex):
     code_hex = code_hex.lower()
     sels = set()
     # Strip Solidity metadata tail (ipfs/cbor) to avoid scanning data region
-    positions = [code_hex.find(mk) for mk in ("a26469706673", "64736f6c63", "64736f6c")]
-    positions = [p for p in positions if p != -1]
+    positions = []
+    for mk in ("a26469706673", "64736f6c63", "64736f6c"):
+        p = code_hex.rfind(mk)
+        if p != -1:
+            positions.append(p)
     if positions:
         code_hex = code_hex[:min(positions)]
     n = len(code_hex)
     i = 0
-    while i < n - 9:
+    while i < n - 17:
         if code_hex[i:i+2] == "63":
             sel = "0x" + code_hex[i+2:i+10]
-            window = code_hex[i+10:i+18]
-            if code_hex[i+10:i+12] == "14" or any(window[j:j+2] == "14" for j in range(0, len(window), 2)):
+            if code_hex[i+10:i+12] == "14":
                 sels.add(sel)
         i += 2
     return sels
@@ -109,12 +121,16 @@ def extract_selectors(code_hex):
 def match_bytecode_patterns(sels):
     out = []
     for pname, (req, opt) in BYTECODE_PATTERNS.items():
-        if req.issubset(sels):
-            if opt:
-                score = len(opt & sels) / len(opt)
-            else:
-                score = 1.0
-            out.append((pname, round(score, 2)))
+        if not req.issubset(sels):
+            continue
+        if opt:
+            matched_opt = opt & sels
+            if not matched_opt:
+                continue
+            score = len(matched_opt) / len(opt)
+        else:
+            score = 1.0
+        out.append((pname, round(score, 2)))
     return out
 
 
@@ -125,7 +141,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
     if not urls:
         print(f"[{chain}] No RPC endpoints configured")
         return []
-    connector = aiohttp.TCPConnector(limit=200, ttl_dns_cache=300)
+    connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=connector) as session:
         if sem is None:
             sem = asyncio.Semaphore(100)
@@ -148,15 +164,18 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 async with url_lock:
                     snapshot = list(url_order)
                 for i, u in enumerate(snapshot):
+                    got_429 = False
                     try:
                         async with fetch_sem:
                             async with session.post(u, json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1}, timeout=request_timeout) as resp:
                                 if resp.status == 429:
-                                    await asyncio.sleep(1.0)
+                                    got_429 = True
                                     continue
                                 if resp.status != 200:
                                     continue
-                                data = await resp.json()
+                                data = await resp.json(content_type=None)
+                                if not isinstance(data, dict):
+                                    continue
                                 if "result" in data:
                                     if i != 0:
                                         async with url_lock:
@@ -166,6 +185,9 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                                     return data["result"]
                     except Exception:
                         continue
+                    if got_429:
+                        await asyncio.sleep(1.0)
+                        continue
                 if attempt < 1:
                     await asyncio.sleep(0.5 * (2 ** attempt))
             async with rpc_lock:
@@ -174,14 +196,12 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
 
         # Get latest block
         latest = None
-        for _ in range(2):
-            res = await fetch_single("eth_blockNumber", [])
-            if res is not None:
-                try:
-                    latest = int(res, 16)
-                    break
-                except (TypeError, ValueError):
-                    continue
+        res = await fetch_single("eth_blockNumber", [])
+        if res is not None:
+            try:
+                latest = int(res, 16)
+            except (TypeError, ValueError):
+                pass
         if latest is None:
             print(f"[{chain}] Failed to get latest block on all endpoints")
             return []
@@ -198,7 +218,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             scan_range = min(num_blocks, latest - start_block + 1)
             print(f"[{chain}] Latest block: {latest}, scanning {scan_range} blocks...")
 
-        if resume_from:
+        if resume_from is not None and 0 <= resume_from < latest:
             prog_file = os.path.join(ROOT, f"scan_progress_{chain}.json")
             try:
                 with open(prog_file) as f:
@@ -217,34 +237,68 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             except Exception:
                 pass
 
+        async def resolve_proxy_impl(addr, code, blk_num):
+            ch = code[2:].lower() if isinstance(code, str) and code.startswith("0x") else (code.lower() if isinstance(code, str) else "")
+            impl_addr = None
+            if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 88:
+                impl_addr = "0x" + ch[44:84]
+            elif 200 <= len(ch) // 2 <= 3000:
+                slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+                val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
+                if isinstance(val, str) and len(val) >= 42:
+                    impl_addr = "0x" + val[-40:]
+                    if impl_addr == "0x" + "0" * 40:
+                        impl_addr = None
+            if not impl_addr or impl_addr == "0x" + "0" * 40:
+                return None
+            impl_code = await fetch_single("eth_getCode", [impl_addr, hex(blk_num)])
+            if isinstance(impl_code, str) and impl_code and impl_code != "0x" and len(impl_code) >= 10:
+                return impl_code
+            return None
+
         async def process_block(blk_num):
             nonlocal matches, rpc_failures
             async with sem:
                 receipts = await fetch_single("eth_getBlockReceipts", [hex(blk_num)])
                 if isinstance(receipts, list):
                     jobs = [r for r in receipts if r and r.get("contractAddress")]
-                    to_fetch = [i for i, r in enumerate(jobs) if r["contractAddress"] not in code_cache]
-                    fetched = await asyncio.gather(*[fetch_single("eth_getCode", [jobs[i]["contractAddress"], hex(blk_num)]) for i in to_fetch], return_exceptions=True)
-                    fetch_iter = iter(fetched)
+                    missing = []
+                    async with code_cache_lock:
+                        for r in jobs:
+                            addr = r["contractAddress"]
+                            if addr not in code_cache:
+                                missing.append(addr)
+                    missing = list(dict.fromkeys(missing))
+                    fetched = await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in missing], return_exceptions=True)
+                    fetched_map = {}
+                    for a, code in zip(missing, fetched):
+                        if not isinstance(code, Exception) and code and code != "0x" and len(code) >= 10:
+                            async with code_cache_lock:
+                                if a not in code_cache:
+                                    code_cache[a] = code
+                                    if len(code_cache) > 5000:
+                                        try:
+                                            code_cache.pop(next(iter(code_cache)))
+                                        except (StopIteration, KeyError):
+                                            pass
+                        fetched_map[a] = code
                     codes = []
                     for r in jobs:
                         addr = r["contractAddress"]
                         async with code_cache_lock:
                             cached = code_cache.get(addr)
-                        if cached is not None:
-                            codes.append(cached)
-                        else:
-                            code = next(fetch_iter, None)
-                            if not isinstance(code, Exception) and code and code != "0x" and len(code) >= 10:
-                                async with code_cache_lock:
-                                    code_cache[addr] = code
-                            codes.append(code)
+                        codes.append(cached if cached is not None else fetched_map.get(addr))
                     for r, code in zip(jobs, codes):
                         if isinstance(code, Exception) or not code or code == "0x" or len(code) < 10:
                             continue
                         addr = r["contractAddress"]
                         sels = extract_selectors(code[2:])
                         pattern_matches = match_bytecode_patterns(sels)
+                        if not pattern_matches:
+                            impl_code = await resolve_proxy_impl(addr, code, blk_num)
+                            if impl_code:
+                                sels = extract_selectors(impl_code[2:])
+                                pattern_matches = match_bytecode_patterns(sels)
                         if pattern_matches:
                             m = {"chain": chain, "block": blk_num, "address": addr, "tx": r.get("transactionHash", ""), "selectors": sorted(sels), "patterns": [p[0] for p in pattern_matches], "scores": {p[0]: p[1] for p in pattern_matches}}
                             async with match_lock:
@@ -264,21 +318,25 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                         continue
                     tx_receipt_pairs.append((tx, receipt))
                     code_jobs.append(receipt["contractAddress"])
-                to_fetch = [i for i, addr in enumerate(code_jobs) if addr not in code_cache]
-                fetched_codes = await asyncio.gather(*[fetch_single("eth_getCode", [code_jobs[i], hex(blk_num)]) for i in to_fetch], return_exceptions=True)
-                fetch_iter = iter(fetched_codes)
+                missing = []
+                async with code_cache_lock:
+                    for addr in code_jobs:
+                        if addr not in code_cache:
+                            missing.append(addr)
+                missing = list(dict.fromkeys(missing))
+                fetched_codes = await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in missing], return_exceptions=True)
+                fetched_map = {}
+                for a, code in zip(missing, fetched_codes):
+                    if not isinstance(code, Exception) and code and code != "0x" and len(code) >= 10:
+                        async with code_cache_lock:
+                            if a not in code_cache:
+                                code_cache[a] = code
+                    fetched_map[a] = code
                 codes = []
                 for addr in code_jobs:
                     async with code_cache_lock:
                         cached = code_cache.get(addr)
-                    if cached is not None:
-                        codes.append(cached)
-                    else:
-                        code = next(fetch_iter, None)
-                        if not isinstance(code, Exception) and code and code != "0x" and len(code) >= 10:
-                            async with code_cache_lock:
-                                code_cache[addr] = code
-                        codes.append(code)
+                    codes.append(cached if cached is not None else fetched_map.get(addr))
                 for (tx, receipt), code in zip(tx_receipt_pairs, codes):
                     if isinstance(code, Exception) or not code or code == "0x" or len(code) < 10:
                         continue
@@ -286,14 +344,14 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     sels = extract_selectors(code[2:])
                     pattern_matches = match_bytecode_patterns(sels)
                     if pattern_matches:
-                        m = {"chain": chain, "block": blk_num, "address": addr, "tx": tx["hash"], "selectors": sorted(sels), "patterns": [p[0] for p in pattern_matches], "scores": {p[0]: p[1] for p in pattern_matches}}
+                        m = {"chain": chain, "block": blk_num, "address": addr, "tx": tx.get("hash", ""), "selectors": sorted(sels), "patterns": [p[0] for p in pattern_matches], "scores": {p[0]: p[1] for p in pattern_matches}}
                         async with match_lock:
                             matches.append(m)
                             for pname, score in pattern_matches:
                                 print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pname} (score={score})")
 
         # Batch processing: process 200 blocks at a time
-        batch_size = 200
+        batch_size = 100
         for start in range(start_block, start_block + scan_range, batch_size):
             end = min(start + batch_size, start_block + scan_range)
             tasks = [process_block(blk) for blk in range(start, end)]
@@ -305,14 +363,24 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             prog_path = PROGRESS_FILE.format(chain=chain)
             await asyncio.get_running_loop().run_in_executor(
                 None, _atomic_write_json, prog_path,
-                {"chain": chain, "last_block": end - 1, "matches": matches, "rpc_failures": rpc_failures}, None)
+                 {"chain": chain, "last_block": end - 1, "matches": list(matches), "rpc_failures": rpc_failures}, None)
 
         print(f"[{chain}] Scan complete: {len(matches)} matches, {rpc_failures} rpc failures")
         return matches
 
 def cmd_scan(args):
     print(f"Scanning for {len(BYTECODE_PATTERNS)} bytecode patterns...")
-    chains = list(SCAN_RPCS.keys()) if args.chains == "all" else [c.strip() for c in args.chains.split(",")]
+    raw = list(SCAN_RPCS.keys()) if args.chains == "all" else [c.strip() for c in args.chains.split(",")]
+    chains = []
+    for c in raw:
+        if c not in SCAN_RPCS:
+            print(f"[{c}] Unknown chain, skipping")
+            continue
+        safe = "".join(ch for ch in c if ch.isalnum() or ch in "._-")
+        if safe != c:
+            print(f"[{c}] Invalid chain name, skipping")
+            continue
+        chains.append(c)
 
     async def run():
         tasks = []
@@ -324,7 +392,7 @@ def cmd_scan(args):
             rf = None
             if os.path.exists(prog_file):
                 try:
-                    with open(prog_file) as f:
+                    with open(prog_file, encoding="utf-8") as f:
                         progress = json.load(f)
                     rf = progress.get("last_block")
                     if rf is not None:
@@ -342,7 +410,28 @@ def cmd_scan(args):
                 continue
             if isinstance(r, list):
                 all_matches.extend(r)
-        await asyncio.get_running_loop().run_in_executor(None, _atomic_write_json, RESULTS_FILE, all_matches, 2)
+        # Merge with any previously saved results to avoid data loss on resume
+        try:
+            if os.path.exists(RESULTS_FILE):
+                with open(RESULTS_FILE, encoding="utf-8") as f:
+                    prev = json.load(f)
+                if isinstance(prev, list):
+                    seen_keys = {(m.get("chain"), m.get("address")) for m in all_matches}
+                    for m in prev:
+                        if (m.get("chain"), m.get("address")) not in seen_keys:
+                            all_matches.append(m)
+                            seen_keys.add((m.get("chain"), m.get("address")))
+        except Exception:
+            pass
+        # Deduplicate by address
+        seen = set()
+        unique_matches = []
+        for m in all_matches:
+            key = (m.get("chain"), m.get("address"))
+            if key not in seen:
+                seen.add(key)
+                unique_matches.append(m)
+        await asyncio.get_running_loop().run_in_executor(None, _atomic_write_json, RESULTS_FILE, unique_matches, 2)
         print(f"\nTotal matches across all chains: {len(all_matches)}")
         if all_matches:
             print("KRW profit estimation requires forge reproduction of each matched contract.")
@@ -353,14 +442,6 @@ def cmd_scan(args):
             for m in all_matches:
                 if m.get("patterns"):
                     print(f"  [{m.get('chain')}] {m.get('address')} -> {', '.join(m.get('patterns', []))} (profit requires forge reproduction)")
-        # Deduplicate by address
-        seen = set()
-        unique_matches = []
-        for m in all_matches:
-            key = (m.get("chain"), m.get("address"))
-            if key not in seen:
-                seen.add(key)
-                unique_matches.append(m)
         print(f"Unique contracts: {len(unique_matches)}")
         for m in unique_matches:
             print(f"  [{m.get('chain')}] {m.get('address')} (block {m.get('block')}) patterns: {m.get('patterns', [])}")
