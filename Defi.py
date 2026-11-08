@@ -23,7 +23,6 @@ BYTECODE_PATTERNS = {
     "Slice": ({"0x9d2edfac"}, set()),
     "TENDRIL": ({"0x9c74daf0"}, {"0xedae876f", "0xb734e98b"}),
     "InsurancePool": ({"0x01681a62"}, {"0x09c5eabe", "0x13a1a562"}),
-    "Moonwell": ({"0x18bf5077"}, {"0x4bf5d7e9", "0x6fcfff45"}),
     "Hifi": ({"0x0f32f1c9"}, {"0x7adbf973", "0xc5ed81f7"}),
     "X100": ({"0xa4376352"}, {"0x3724fc1c", "0x4e71d92d"}),
     "zkLink": ({"0x68871c9c"}, {"0xbf22d9c3"}),
