@@ -92,6 +92,9 @@ def _atomic_write_json(path, data, indent=None):
                 pass
 
 
+_SELECTOR_RE = re.compile(r"63([0-9a-f]{8})14")
+
+
 def extract_selectors(code_hex):
     code_hex = code_hex.lower()
     sels = set()
@@ -103,13 +106,14 @@ def extract_selectors(code_hex):
             positions.append(p)
     if positions:
         cut = min(positions)
-        # Guard against false positives: only strip if marker is in trailing region
-        if cut >= len(code_hex) // 2:
+        # Guard against false positives: strip when marker is in trailing region,
+        # or close enough to the end to be metadata even on small contracts.
+        if cut >= len(code_hex) // 2 or (len(code_hex) - cut) <= 2048:
             code_hex = code_hex[:cut]
     n = len(code_hex)
     if n % 2:
         n -= 1
-    for m in re.finditer(r"63([0-9a-f]{8})14", code_hex[:n]):
+    for m in _SELECTOR_RE.finditer(code_hex[:n]):
         if m.start() % 2 != 0:
             continue
         sels.add("0x" + m.group(1))
@@ -137,6 +141,9 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
     if not urls:
         print(f"[{chain}] No RPC endpoints configured")
         return []
+    if resume_from is not None and resume_from < 0:
+        print(f"[{chain}] Invalid resume block {resume_from}; scanning fresh")
+        resume_from = None
     _own_session = False
     if session is None:
         connector = aiohttp.TCPConnector(limit=200, ttl_dns_cache=300)
@@ -148,7 +155,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         match_lock = asyncio.Lock()
         matches = []
         code_cache = {}
-        pending_codes = set()
+        pending_events = {}
         rpc_failures = 0
         rpc_lock = asyncio.Lock()
         url_lock = asyncio.Lock()
@@ -157,46 +164,68 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         request_timeout = aiohttp.ClientTimeout(total=15)
         code_cache_lock = asyncio.Lock()
         async def fetch_codes(addrs, blk_num):
+            wait_events = []
             missing = []
+            wait_seen = set()
             async with code_cache_lock:
                 for a in addrs:
-                    if a not in code_cache and a not in pending_codes:
+                    if a in code_cache:
+                        continue
+                    if a in pending_events:
+                        if a not in wait_seen:
+                            wait_events.append((a, pending_events[a]))
+                            wait_seen.add(a)
+                    else:
+                        ev = asyncio.Event()
+                        pending_events[a] = ev
                         missing.append(a)
-                        pending_codes.add(a)
-            missing = list(dict.fromkeys(missing))
-            if missing:
-                fetched = await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in missing], return_exceptions=True)
-            else:
-                fetched = []
-            fetched_map = {}
+                        wait_seen.add(a)
             updates = {}
             invalid = set()
-            for a, code in zip(missing, fetched):
-                if isinstance(code, str) and code and code != "0x" and len(code) >= 10:
-                    updates[a] = code
+            failures = set()
+            try:
+                if missing:
+                    fetched = []
+                    for i in range(0, len(missing), 100):
+                        chunk = missing[i:i + 100]
+                        fetched.extend(await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in chunk], return_exceptions=True))
                 else:
-                    invalid.add(a)
-                fetched_map[a] = code
+                    fetched = []
+                for a, code in zip(missing, fetched):
+                    if isinstance(code, str):
+                        is_zero = False
+                        if code.startswith("0x"):
+                            hexpart = code[2:]
+                            is_zero = (len(hexpart) == 0) or (not hexpart.strip("0"))
+                        if code in ("", "0x") or is_zero:
+                            invalid.add(a)
+                        else:
+                            updates[a] = code
+                    else:
+                        failures.add(a)
+            finally:
+                async with code_cache_lock:
+                    for a, code in updates.items():
+                        if a not in code_cache:
+                            code_cache[a] = code
+                    for a in invalid:
+                        if a not in code_cache:
+                            code_cache[a] = ""
+                    # Do not permanently cache failures: allow retry on transient RPC errors
+                    for a in missing:
+                        ev = pending_events.pop(a, None)
+                        if ev is not None:
+                            ev.set()
+            for _, ev in wait_events:
+                await ev.wait()
+            out = []
             async with code_cache_lock:
-                for a, code in updates.items():
-                    if a not in code_cache:
-                        code_cache[a] = code
-                for a in invalid:
-                    if a not in code_cache:
-                        code_cache[a] = ""
-                for a in missing:
-                    pending_codes.discard(a)
-                while len(code_cache) > 5000:
-                    try:
-                        code_cache.pop(next(iter(code_cache)))
-                    except (StopIteration, KeyError):
-                        break
-                out = []
                 for addr in addrs:
                     cached = code_cache.get(addr)
-                    if cached is not None and addr in code_cache:
-                        code_cache.move_to_end(addr)
-                    out.append(cached if (isinstance(cached, str) and cached) else fetched_map.get(addr))
+                    if isinstance(cached, str) and cached and cached != "":
+                        out.append(cached)
+                    else:
+                        out.append(None)
             return out
         url_order = list(urls)
 
@@ -214,7 +243,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                                     status_429 = True
                                 elif resp.status == 200:
                                     data = await resp.json(content_type=None)
-                                    if isinstance(data, dict) and "result" in data and data["result"] is not None:
+                                    if isinstance(data, dict) and "result" in data:
                                         if i != 0:
                                             async with url_lock:
                                                 if u in url_order:
@@ -224,7 +253,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     except Exception:
                         continue
                     if status_429:
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(2.0)
                         continue
                 if attempt < 1:
                     await asyncio.sleep(0.5 * (2 ** attempt))
@@ -292,7 +321,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             impl_addr = None
             if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 90 and ch[60:90] == "5af43d82803e903d91602b57fd5bf3":
                 impl_addr = "0x" + ch[20:60].lower()
-            elif len(ch) // 2 <= 200 and any(ch[i:i+2] == "f4" for i in range(0, len(ch) - 1, 2)):
+            elif len(ch) // 2 <= 100 and any(ch[i:i+2] == "f4" for i in range(0, len(ch), 2)):
                 slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
                 val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
                 if isinstance(val, str) and len(val) >= 66:
@@ -301,13 +330,42 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                         impl_addr = None
             if not impl_addr or impl_addr == "0x" + "0" * 40:
                 return None
-            impl_code = await fetch_single("eth_getCode", [impl_addr, hex(blk_num)])
-            if isinstance(impl_code, str) and impl_code and impl_code != "0x" and len(impl_code) >= 10:
-                return impl_code
-            return None
+            # Coalesce concurrent implementation fetches
+            _cached_hit = None
+            async with code_cache_lock:
+                cached = code_cache.get(impl_addr.lower())
+                if isinstance(cached, str) and cached and cached != "0x" and cached[2:].strip("0") != "":
+                    _cached_hit = cached
+                elif impl_addr.lower() in pending_events:
+                    ev = pending_events[impl_addr.lower()]
+                    wait = True
+                else:
+                    ev = asyncio.Event()
+                    pending_events[impl_addr.lower()] = ev
+                    wait = False
+            if _cached_hit is not None:
+                return _cached_hit
+            if wait:
+                await ev.wait()
+                async with code_cache_lock:
+                    cached = code_cache.get(impl_addr.lower())
+                if isinstance(cached, str) and cached and cached != "0x" and cached[2:].strip("0") != "":
+                    return cached
+                return None
+            try:
+                impl_code = await fetch_single("eth_getCode", [impl_addr, hex(blk_num)])
+                if isinstance(impl_code, str) and impl_code and impl_code != "0x" and len(impl_code) >= 10 and impl_code[2:].strip("0") != "":
+                    async with code_cache_lock:
+                        code_cache[impl_addr.lower()] = impl_code
+                    return impl_code
+                return None
+            finally:
+                async with code_cache_lock:
+                    e = pending_events.pop(impl_addr.lower(), None)
+                    if e is not None:
+                        e.set()
 
         async def process_block(blk_num):
-            nonlocal matches
             async with sem:
                 receipts = await fetch_single("eth_getBlockReceipts", [hex(blk_num)]) if receipts_supported else None
                 if isinstance(receipts, list):
@@ -317,7 +375,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     addrs = [r["contractAddress"] for r in jobs]
                     codes = await fetch_codes(addrs, blk_num)
                     for r, code in zip(jobs, codes):
-                        if isinstance(code, Exception) or not isinstance(code, str) or not code or code == "0x" or len(code) < 10:
+                        if not isinstance(code, str) or not code or code == "0x" or len(code) < 10 or code[2:].strip("0") == "":
                             continue
                         addr = r["contractAddress"]
                         sels = extract_selectors(code[2:])
@@ -337,9 +395,9 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 block = await fetch_single("eth_getBlockByNumber", [hex(blk_num), True])
                 if not block or not block.get("transactions"):
                     return
-                creation_txs = [tx for tx in block["transactions"] if isinstance(tx, dict) and tx.get("to") is None]
+                creation_txs = [tx for tx in block["transactions"] if isinstance(tx, dict) and (tx.get("to") is None or tx.get("to") in ("", "0x") or (isinstance(tx.get("to"), str) and tx.get("to").lower() == "0x" + "0" * 40))]
                 if creation_txs:
-                    fetched_receipts = await asyncio.gather(*[fetch_single("eth_getTransactionReceipt", [tx["hash"]]) for tx in creation_txs], return_exceptions=True)
+                    fetched_receipts = await asyncio.gather(*[fetch_single("eth_getTransactionReceipt", [tx.get("hash")]) for tx in creation_txs], return_exceptions=True)
                 else:
                     fetched_receipts = []
                 code_jobs = []
@@ -352,7 +410,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     code_jobs.append(receipt["contractAddress"])
                 codes = await fetch_codes(code_jobs, blk_num)
                 for (tx, receipt), code in zip(tx_receipt_pairs, codes):
-                    if isinstance(code, Exception) or not isinstance(code, str) or not code or code == "0x" or len(code) < 10:
+                    if not isinstance(code, str) or not code or code == "0x" or len(code) < 10 or code[2:].strip("0") == "":
                         continue
                     addr = receipt["contractAddress"]
                     sels = extract_selectors(code[2:])
@@ -370,7 +428,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                             print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pname} (score={score})")
 
         # Batch processing: process blocks in batches
-        batch_size = 200
+        batch_size = 100
         last_pm = -1
         last_pf = -1
         for start in range(start_block, start_block + scan_range, batch_size):
@@ -383,15 +441,15 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             async with match_lock:
                 _mc = len(matches)
                 _snapshot = list(matches)
-            print(f"  [{chain}] scanned to block {end - 1}, {_mc} matches, {rpc_failures} rpc failures")
-            is_last = (end >= start_block + scan_range)
-            if _mc != last_pm or rpc_failures != last_pf or is_last:
-                prog_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
-                await asyncio.get_running_loop().run_in_executor(
-                    None, _atomic_write_json, prog_path,
-                     {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None)
-                last_pm = _mc
-                last_pf = rpc_failures
+            async with rpc_lock:
+                _rf = rpc_failures
+            print(f"  [{chain}] scanned to block {end - 1}, {_mc} matches, {_rf} rpc failures")
+            prog_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
+            await asyncio.get_running_loop().run_in_executor(
+                None, _atomic_write_json, prog_path,
+                 {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None)
+            last_pm = _mc
+            last_pf = rpc_failures
 
         print(f"[{chain}] Scan complete: {len(matches)} matches, {rpc_failures} rpc failures")
         return matches
@@ -400,17 +458,17 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             await session.close()
 
 def cmd_scan(args):
-    print(f"Scanning for {len(BYTECODE_PATTERNS)} bytecode patterns...")
     if args.blocks <= 0:
         print("blocks must be > 0")
         return
-    raw = list(SCAN_RPCS.keys()) if args.chains == "all" else [c.strip() for c in args.chains.split(",")]
+    print(f"Scanning for {len(BYTECODE_PATTERNS)} bytecode patterns...")
+    raw = list(SCAN_RPCS.keys()) if args.chains.strip().lower() == "all" else [c.strip().lower() for c in args.chains.split(",")]
     chains = []
     for c in raw:
         if c not in SCAN_RPCS:
             print(f"[{c}] Unknown chain, skipping")
             continue
-        safe = "".join(ch for ch in c if ch.isalnum() or ch in "._-")
+        safe = "".join(ch for ch in c if ch.isascii() and (ch.isalnum() or ch in "._-"))
         if safe != c:
             print(f"[{c}] Invalid chain name, skipping")
             continue
