@@ -107,7 +107,7 @@ def extract_selectors(code_hex):
         code_hex = code_hex[:min(positions)]
     n = len(code_hex)
     i = 0
-    while i < n - 17:
+    while i < n - 10:
         if code_hex[i:i+2] == "63":
             sel = "0x" + code_hex[i+2:i+10]
             if code_hex[i+10:i+12] == "14":
@@ -139,7 +139,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
     if not urls:
         print(f"[{chain}] No RPC endpoints configured")
         return []
-    connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
+        connector = aiohttp.TCPConnector(limit=200, ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=connector) as session:
         if sem is None:
             sem = asyncio.Semaphore(100)
@@ -232,15 +232,15 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 matches[:] = uniq
                 if "rpc_failures" in prog:
                     rpc_failures = prog["rpc_failures"]
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[{chain}] progress read error: {e}")
 
         async def resolve_proxy_impl(addr, code, blk_num):
             ch = code[2:].lower() if isinstance(code, str) and code.startswith("0x") else (code.lower() if isinstance(code, str) else "")
             impl_addr = None
             if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 88:
                 impl_addr = "0x" + ch[20:60]
-            elif 200 <= len(ch) // 2 <= 3000:
+            elif 100 <= len(ch) // 2 <= 10000:
                 slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
                 val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
                 if isinstance(val, str) and len(val) >= 66:
@@ -329,6 +329,11 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                         async with code_cache_lock:
                             if a not in code_cache:
                                 code_cache[a] = code
+                                if len(code_cache) > 5000:
+                                    try:
+                                        code_cache.pop(next(iter(code_cache)))
+                                    except (StopIteration, KeyError):
+                                        pass
                     fetched_map[a] = code
                 codes = []
                 for addr in code_jobs:
@@ -400,11 +405,11 @@ def cmd_scan(args):
                     rf = progress.get("last_block")
                     if rf is not None:
                         print(f"[{c}] Resuming from block {rf}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[{c}] progress read error: {e}")
             resume_map[c] = rf
         for c in chains:
-            tasks.append(scan_chain(c, args.blocks, resume_map[c], global_sem, global_fetch_sem))
+            tasks.append(scan_chain(c, args.blocks, resume_map.get(c), global_sem, global_fetch_sem))
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_matches = []
         for r in results:
@@ -424,9 +429,8 @@ def cmd_scan(args):
                         if (m.get("chain"), m.get("address")) not in seen_keys:
                             all_matches.append(m)
                             seen_keys.add((m.get("chain"), m.get("address")))
-        except Exception:
-            pass
-        # Deduplicate by address
+        except Exception as e:
+            print(f"results merge error: {e}")
         seen = set()
         unique_matches = []
         for m in all_matches:
@@ -435,14 +439,14 @@ def cmd_scan(args):
                 seen.add(key)
                 unique_matches.append(m)
         await asyncio.get_running_loop().run_in_executor(None, _atomic_write_json, RESULTS_FILE, unique_matches, 2)
-        print(f"\nTotal matches across all chains: {len(all_matches)}")
+        print(f"\nTotal matches across all chains: {len(unique_matches)}")
         if all_matches:
             print("KRW profit estimation requires forge reproduction of each matched contract.")
             print("Approx rates: USDC/USDT/DAI=1363, ETH=3053802, BNB=946619 KRW")
-        pattern_count = sum(1 for m in all_matches if m.get("patterns"))
+        pattern_count = sum(1 for m in unique_matches if m.get("patterns"))
         if pattern_count:
             print(f"Pattern matches: {pattern_count}")
-            for m in all_matches:
+            for m in unique_matches:
                 if m.get("patterns"):
                     print(f"  [{m.get('chain')}] {m.get('address')} -> {', '.join(m.get('patterns', []))} (profit requires forge reproduction)")
         print(f"Unique contracts: {len(unique_matches)}")

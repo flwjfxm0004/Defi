@@ -1,6 +1,6 @@
 @echo off
 setlocal enableextensions
-cd /d "%~dp0"
+cd /d "%~dp0."
 
 rem --- locate git -----------------------------------------------------------
 set "GITEXE="
@@ -12,7 +12,8 @@ if not defined GITEXE (
     if exist "%~dp0bootstrap.ps1" (
         echo [INFO] git not found. Running bootstrap.ps1...
         powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1"
-        if exist "C:\Program Files\Git\cmd\git.exe" set "GITEXE=C:\Program Files\Git\cmd\git.exe"
+        for /f "delims=" %%G in ('where git 2^>nul') do if not defined GITEXE set "GITEXE=%%G"
+        if not defined GITEXE if exist "C:\Program Files\Git\cmd\git.exe" set "GITEXE=C:\Program Files\Git\cmd\git.exe"
         if not defined GITEXE if exist "C:\Program Files\Git\bin\git.exe" set "GITEXE=C:\Program Files\Git\bin\git.exe"
     )
 )
@@ -24,9 +25,15 @@ if not defined GITEXE (
 rem --- non-interactive safety ----------------------------------------------
 set "GIT_TERMINAL_PROMPT=0"
 set "GCM_INTERACTIVE=never"
+set "GIT_ASKPASS="
+set "SSH_ASKPASS="
 
 rem --- repo-local hygiene (avoid LF<->CRLF churn) ---------------------------
 "%GITEXE%" config --local core.autocrlf false >nul 2>&1
+
+rem --- network hang guard ---------------------------------------------------
+"%GITEXE%" config --local http.lowSpeedLimit 1000 >nul 2>&1
+"%GITEXE%" config --local http.lowSpeedTime 10 >nul 2>&1
 
 rem --- ensure identity (only if missing) ------------------------------------
 "%GITEXE%" config --get user.name >nul 2>&1
@@ -55,10 +62,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem --- unstage likely secrets (defense in depth) ----------------------------
-for %%P in (.env .env.* *.pem *.key *.p12 *.pfx id_rsa id_ed25519 *secret* *credential* *.keystore) do (
-    "%GITEXE%" reset -q HEAD -- "%%P" >nul 2>&1
-)
+rem --- unstage likely secrets (single call, defense in depth) ---------------
+"%GITEXE%" reset -q HEAD -- .env .env.* *.pem *.key *.p12 *.pfx id_rsa id_ed25519 *secret* *credential* *.keystore *.token *.asc *.ovpn *.jks secrets.yaml secrets.yml .npmrc .pypirc >nul 2>&1
 
 rem --- commit (only if staged changes) -------------------------------------
 "%GITEXE%" diff --cached --quiet
@@ -83,7 +88,10 @@ set "PUSH_TRIES=0"
 "%GITEXE%" push --quiet origin %BRANCH%
 if not errorlevel 1 goto push_ok
 "%GITEXE%" pull --rebase --autostash --quiet origin %BRANCH%
-if errorlevel 1 goto push_fail
+if errorlevel 1 (
+    "%GITEXE%" rebase --abort >nul 2>&1
+    goto push_fail
+)
 set /a PUSH_TRIES+=1
 if %PUSH_TRIES% lss 2 goto push_try
 goto push_fail
