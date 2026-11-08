@@ -67,27 +67,29 @@ SCAN_RPCS = {
     "gnosis": ["https://gnosis.drpc.org", "https://gnosis.api.pocket.network", "https://rpc.gnosischain.com", "https://rpc.ankr.com/gnosis/f098d8113a6ebea616cd06908b2421bdf72916efd6342ba6981db600d1e3c26f"],
 }
 
-def _atomic_write_json(path, data, indent=None):
+def _atomic_write_json(path, data, indent=None, fsync=True):
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent)
             f.flush()
-            os.fsync(f.fileno())
+            if fsync:
+                os.fsync(f.fileno())
         try:
             os.chmod(tmp, 0o600)
         except OSError:
             pass
         os.replace(tmp, path)
-        try:
-            dfd = os.open(d, os.O_RDONLY)
+        if fsync:
             try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
-        except OSError:
-            pass
+                dfd = os.open(d, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
     finally:
         if os.path.exists(tmp):
             try:
@@ -164,7 +166,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         rpc_lock = asyncio.Lock()
         url_lock = asyncio.Lock()
         if fetch_sem is None:
-            fetch_sem = asyncio.Semaphore(50)
+            fetch_sem = asyncio.Semaphore(100)
         request_timeout = aiohttp.ClientTimeout(total=15)
         code_cache_lock = asyncio.Lock()
         async def fetch_codes(addrs, blk_num):
@@ -191,7 +193,8 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     fetched = []
                     for i in range(0, len(missing), 100):
                         chunk = missing[i:i + 100]
-                        fetched.extend(await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in chunk], return_exceptions=True))
+                        params_list = [[a, hex(blk_num)] for a in chunk]
+                        fetched.extend(await fetch_batch("eth_getCode", params_list))
                 else:
                     fetched = []
                 for a, code in zip(missing, fetched):
@@ -256,13 +259,58 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     except Exception:
                         continue
                     if status_429:
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(1.0)
                         continue
                 if attempt < 1:
                     await asyncio.sleep(0.5 * (2 ** attempt))
             async with rpc_lock:
                 rpc_failures += 1
             return None
+
+        async def fetch_batch(method, params_list):
+            if not params_list:
+                return []
+            n = len(params_list)
+            for attempt in range(2):
+                async with url_lock:
+                    snapshot = list(url_order)
+                for i, u in enumerate(snapshot):
+                    status_429 = False
+                    try:
+                        body = [{"jsonrpc": "2.0", "method": method, "params": p, "id": idx} for idx, p in enumerate(params_list)]
+                        async with fetch_sem:
+                            async with session.post(u, json=body, timeout=request_timeout) as resp:
+                                if resp.status == 429:
+                                    status_429 = True
+                                elif resp.status == 200:
+                                    data = await resp.json(content_type=None)
+                                    if isinstance(data, list):
+                                        res = [None] * n
+                                        for item in data:
+                                            if isinstance(item, dict) and "id" in item:
+                                                idx = item["id"]
+                                                if 0 <= idx < n:
+                                                    if "result" in item:
+                                                        res[idx] = item["result"]
+                                                    elif "error" in item:
+                                                        res[idx] = None
+                                        # success if at least one result present or all legitimately null
+                                        if i != 0:
+                                            async with url_lock:
+                                                if u in url_order:
+                                                    url_order.remove(u)
+                                                    url_order.insert(0, u)
+                                        return res
+                    except Exception:
+                        continue
+                    if status_429:
+                        await asyncio.sleep(1.0)
+                        continue
+                if attempt < 1:
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+            # Fallback to individual calls
+            out = await asyncio.gather(*[fetch_single(method, p) for p in params_list], return_exceptions=True)
+            return [r if not isinstance(r, Exception) else None for r in out]
 
         # Get latest block
         latest = None
@@ -324,13 +372,6 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             impl_addr = None
             if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 90 and ch[60:90] == "5af43d82803e903d91602b57fd5bf3":
                 impl_addr = "0x" + ch[20:60].lower()
-            elif len(ch) // 2 <= 45 and any(ch[i:i+2] == "f4" for i in range(0, len(ch), 2)):
-                slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-                val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
-                if isinstance(val, str) and len(val) >= 66:
-                    impl_addr = "0x" + val[-40:].lower()
-                    if impl_addr == "0x" + "0" * 40:
-                        impl_addr = None
             if not impl_addr or impl_addr == "0x" + "0" * 40:
                 return None
             # Coalesce concurrent implementation fetches
@@ -461,7 +502,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             prog_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
             await asyncio.get_running_loop().run_in_executor(
                 None, _atomic_write_json, prog_path,
-                 {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None)
+                 {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None, False)
 
         print(f"[{chain}] Scan complete: {len(matches)} matches, {rpc_failures} rpc failures")
         return matches
@@ -493,7 +534,7 @@ def cmd_scan(args):
         tasks = []
         resume_map = {}
         global_sem = asyncio.Semaphore(200)
-        global_fetch_sem = asyncio.Semaphore(100)
+        global_fetch_sem = asyncio.Semaphore(200)
         for c in chains:
             prog_file = os.path.join(ROOT, f"scan_progress_{c}.json")
             rf = None
