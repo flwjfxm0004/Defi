@@ -10,7 +10,6 @@ import aiohttp
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
-PROGRESS_FILE = os.path.join(ROOT, "scan_progress_{chain}.json")
 RESULTS_FILE = os.path.join(ROOT, "scan_results.json")
 
 # Bytecode patterns: sets of selectors that must ALL be present (AND logic)
@@ -398,7 +397,7 @@ def cmd_scan(args):
         global_sem = asyncio.Semaphore(200)
         global_fetch_sem = asyncio.Semaphore(100)
         for c in chains:
-            prog_file = PROGRESS_FILE.format(chain=c)
+            prog_file = os.path.join(ROOT, f"scan_progress_{c}.json")
             rf = None
             if os.path.exists(prog_file):
                 try:

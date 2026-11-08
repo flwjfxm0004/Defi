@@ -1,2 +1,5 @@
 # Git LFS tracking for large artifacts
 *.ipa filter=lfs diff=lfs merge=lfs -text
+
+# Normalize line endings
+*.py text eol=lf
