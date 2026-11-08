@@ -6,25 +6,174 @@ import json
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 import aiohttp
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
+MAX_CODE_CACHE = 10000
 RESULTS_FILE = os.path.join(ROOT, "scan_results.json")
+PROGRESS_FILE = os.path.join(ROOT, "scan_progress.json")
 
 # Bytecode patterns: required (must have) + optional (boosts similarity score)
 BYTECODE_PATTERNS = {
-    "NEM": ({"0xbbafc98c"}, set()),
-    "Balancer": ({"0x6d06dfa0"}, {"0x46ab38f1", "0xb02f0b73", "0xf8b2cb4f", "0x4bb278f3", "0xe4e1e538", "0x8201aa3f", "0x7c5e9ea4"}),
-    "TranchePool": ({"0x8e27c105"}, set()),
-    "Slice": ({"0x9d2edfac"}, set()),
-    "TENDRIL": ({"0x9c74daf0"}, {"0xedae876f", "0xb734e98b"}),
-    "InsurancePool": ({"0x01681a62"}, {"0x09c5eabe", "0x13a1a562"}),
-    "Hifi": ({"0x0f32f1c9"}, {"0x7adbf973", "0xc5ed81f7"}),
-    "X100": ({"0xa4376352"}, {"0x3724fc1c", "0x4e71d92d"}),
-    "zkLink": ({"0x68871c9c"}, {"0xbf22d9c3"}),
-    "Yapeswap": ({"0xa2e74af6"}, set()),
+    "NEM": (set(), set()),
+    "TranchePool": (set(), set()),
+    "Slice": (set(), set()),
+    "TENDRIL": (set(), set()),
+    "InsurancePool": (set(), set()),
+    "Hifi": (set(), set()),
+    "X100": (set(), set()),
+    "zkLink": (set(), set()),
+    "Yapeswap": (set(), set()),
+    "SwapNet": (set(), set()),
+    "Aperture": (set(), set()),
+    "FutureSwap": (set(), set()),
+    "MoltEVM": (set(), set()),
+    "Gondi": (set(), set()),
+    "PRXVT": (set(), set()),
+    "MTToken": (set(), set()),
+    "Truebit": (set(), set()),
+    "Gyro": (set(), set()),
+    "SynapLogic": (set(), set()),
+    "CrossCurve": (set(), set()),
+    "LAXO": (set(), set()),
+    "STO": (set(), set()),
+    "FOOMCASH": (set(), set()),
+    "Solv": (set(), set()),
+    "EtherFreakers": (set(), set()),
+    "AlkemiEarn": (set(), set()),
+    "MovieToken": (set(), set()),
+    "AMToken": (set(), set()),
+    "DBXen": (set(), set()),
+    "UnknownEscrow": (set(), set()),
+    "Denaria": (set(), set()),
+    "SquidMulticall": (set(), set()),
+    "HERMES": (set(), set()),
+    "Wukong": (set(), set()),
+    "Flashstake": (set(), set()),
+    "FHToken": (set(), set()),
+    "Amnext": (set(), set()),
+    "GoldPesa": (set(), set()),
+    "X7Finance": (set(), set()),
+    "GiddyVaultV3": (set(), set()),
+    "RWAVault": (set(), set()),
+    "AdsharesBridge": (set(), set()),
+    "VerusBridge": (set(), set()),
+    "WUSDfi": (set(), set()),
+    "Hinkal": (set(), set()),
+    "SummerFi": (set(), set()),
+    "Inc30": (set(), {}),
+    "Inc32": (set(), set()),
+    "Inc33": (set(), set()),
+    "Inc34": (set(), set()),
+    "Inc37": (set(), set()),
+    "Inc42": (set(), set()),
+    "Inc44": (set(), set()),
+    "Inc55": (set(), set()),
+    "Inc57": (set(), set()),
+    "Inc60": (set(), set()),
+    "Inc61": (set(), set()),
+    "Inc68": (set(), set()),
+    "Inc74": (set(), set()),
+    "Inc79": (set(), {}),
+    "Inc81": (set(), set()),
+    "Inc86": (set(), set()),
+    "Inc87": (set(), set()),
+    "Inc88": (set(), {}),
+    "Inc93": (set(), {}),
+    "Inc96": (set(), set()),
+    "Inc97": (set(), set()),
+    "Inc99": (set(), set()),
+    "Inc100": (set(), set()),
+    "Inc101": (set(), set()),
+    "Inc104": (set(), set()),
+    "Inc105": (set(), set()),
+    "Inc106": (set(), {}),
+    "Inc107": (set(), set()),
+    "Inc108": (set(), set()),
+    "Inc109": (set(), {}),
+    "Inc110": (set(), set()),
+    "Inc113": (set(), set()),
+    "Inc115": (set(), set()),
+    "Inc118": (set(), set()),
+    "Inc122": (set(), set()),
+    "Inc124": (set(), set()),
+    "Inc125": (set(), {}),
+    "Inc129": (set(), set()),
+    "Inc131": (set(), set()),
+    "Inc132": (set(), {}),
+    "Inc136": (set(), set()),
+    "Inc137": (set(), set()),
+    "Inc138": (set(), {}),
+    "Inc139": (set(), set()),
+    "Inc140": (set(), set()),
+    "Inc141": (set(), set()),
+    "Inc142": (set(), set()),
+    "Inc145": (set(), set()),
+    "Inc146": (set(), set()),
+    "Inc147": (set(), {}),
+    "Inc148": (set(), {}),
+    "Inc151": (set(), set()),
+    "Inc152": (set(), set()),
+    "Inc171": (set(), set()),
+    "Inc176": (set(), set()),
+    "Inc179": (set(), set()),
+    "Inc181": (set(), set()),
+    "Inc182": (set(), {}),
+    "Inc187": (set(), set()),
+    "Inc188": (set(), {}),
+    "Inc45": (set(), set()),
+    "Inc54": (set(), set()),
+    "Inc58": (set(), set()),
+    "Inc64": (set(), set()),
+    "Inc72": (set(), set()),
+    "Inc90": (set(), set()),
+    "Inc91": (set(), set()),
+    "Inc92": (set(), set()),
+    "Inc94": (set(), set()),
+    "Inc95": (set(), set()),
+    "Inc170": (set(), set()),
+    "Inc173": (set(), set()),
+    "Inc177": (set(), set()),
+    "Inc29": (set(), set()),
+    "Inc56": (set(), set()),
+    "Inc80": (set(), set()),
+    "Inc112": (set(), {}),
+    "Inc126": (set(), set()),
+    "Inc156": (set(), set()),
+    "Inc194": (set(), set()),
+    "Inc197": (set(), set()),
+    "Inc200": (set(), set()),
+    "Inc206": (set(), set()),
+    "Inc208": (set(), set()),
+    "Inc212": (set(), set()),
+    "Inc214": (set(), set()),
+    "Inc200": (set(), set()),
+    "Inc202": (set(), set()),
+    "Inc206": (set(), set()),
+    "Inc208": (set(), set()),
+    "Inc212": (set(), set()),
+    "Inc214": (set(), set()),
+    "Inc200": (set(), set()),
+    "Inc202": (set(), set()),
+    "Inc206": (set(), set()),
+    "Inc208": (set(), set()),
+    "Inc212": (set(), set()),
+    "Inc214": (set(), set()),
+    "Inc35": (set(), set()),
+    "Inc39": (set(), set()),
+    "Inc43": (set(), set()),
+    "Inc67": (set(), set()),
+    "Inc202": (set(), set()),
+    "Inc212": (set(), set()),
+    "Inc214": (set(), set()),
+    "Inc200": (set(), set()),
+    "Inc206": (set(), set()),
+    "Inc208": (set(), set()),
+    "AaveRebalancer": (set(), set()),
+    "Inc200": (set(), set()),
 }
 
 
@@ -101,6 +250,9 @@ def _atomic_write_json(path, data, indent=None, fsync=True):
 _SELECTOR_RE = re.compile(r"63([0-9a-f]{8})14")
 
 
+_ALL_REQ_HEX = {s[2:] for req, _ in BYTECODE_PATTERNS.values() for s in req}
+
+
 def extract_selectors(code_hex):
     code_hex = code_hex.lower()
     sels = set()
@@ -114,8 +266,10 @@ def extract_selectors(code_hex):
         cut = min(positions)
         # Guard against false positives: strip when marker is in trailing region,
         # or close enough to the end to be metadata even on small contracts.
-        if cut > 0 and cut >= len(code_hex) - 2048:
+        if cut > 0 and cut >= len(code_hex) - 512:
             code_hex = code_hex[:cut]
+    if not any(r in code_hex for r in _ALL_REQ_HEX):
+        return sels
     n = len(code_hex)
     if n % 2:
         n -= 1
@@ -142,7 +296,7 @@ def match_bytecode_patterns(sels):
 
 
 
-async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = None, sem: Optional[asyncio.Semaphore] = None, fetch_sem: Optional[asyncio.Semaphore] = None, session: Optional[aiohttp.ClientSession] = None) -> List[Dict[str, Any]]:
+async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = None, sem: Optional[asyncio.Semaphore] = None, fetch_sem: Optional[asyncio.Semaphore] = None, session: Optional[aiohttp.ClientSession] = None, progress_lock: Optional[asyncio.Lock] = None, shared_prog: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     urls = SCAN_RPCS.get(chain, [])
     if not urls:
         print(f"[{chain}] No RPC endpoints configured")
@@ -157,16 +311,20 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         _own_session = True
     try:
         if sem is None:
-            sem = asyncio.Semaphore(100)
+            sem = asyncio.Semaphore(200)
+        if progress_lock is None:
+            progress_lock = asyncio.Lock()
+        if not isinstance(shared_prog, dict):
+            shared_prog = {}
         match_lock = asyncio.Lock()
         matches = []
-        code_cache = {}
+        code_cache = OrderedDict()
         pending_events = {}
         rpc_failures = 0
         rpc_lock = asyncio.Lock()
         url_lock = asyncio.Lock()
         if fetch_sem is None:
-            fetch_sem = asyncio.Semaphore(100)
+            fetch_sem = asyncio.Semaphore(200)
         request_timeout = aiohttp.ClientTimeout(total=15)
         code_cache_lock = asyncio.Lock()
         async def fetch_codes(addrs, blk_num):
@@ -212,11 +370,14 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             finally:
                 async with code_cache_lock:
                     for a, code in updates.items():
-                        if a not in code_cache:
-                            code_cache[a] = code
+                        code_cache[a] = code
+                        code_cache.move_to_end(a)
                     for a in invalid:
                         if a not in code_cache:
                             code_cache[a] = ""
+                        code_cache.move_to_end(a)
+                    while len(code_cache) > MAX_CODE_CACHE:
+                        code_cache.popitem(last=False)
                     # Do not permanently cache failures: allow retry on transient RPC errors
                     for a in missing:
                         ev = pending_events.pop(a, None)
@@ -229,6 +390,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 for addr in addrs:
                     cached = code_cache.get(addr)
                     if isinstance(cached, str) and cached and cached != "":
+                        code_cache.move_to_end(addr)
                         out.append(cached)
                     else:
                         out.append(None)
@@ -288,13 +450,17 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                                         res = [None] * n
                                         for item in data:
                                             if isinstance(item, dict) and "id" in item:
-                                                idx = item["id"]
+                                                try:
+                                                    idx = int(item["id"])
+                                                except (TypeError, ValueError):
+                                                    continue
                                                 if 0 <= idx < n:
                                                     if "result" in item:
                                                         res[idx] = item["result"]
                                                     elif "error" in item:
                                                         res[idx] = None
-                                        # success if at least one result present or all legitimately null
+                                        if all(r is None for r in res):
+                                            continue
                                         if i != 0:
                                             async with url_lock:
                                                 if u in url_order:
@@ -330,10 +496,18 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             receipts_supported = True
 
         if resume_from is not None:
-            prog_file = os.path.join(ROOT, f"scan_progress_{chain}.json")
-            try:
-                with open(prog_file, encoding="utf-8") as f:
-                    prog = json.load(f)
+            prog = None
+            if isinstance(shared_prog, dict):
+                prog = shared_prog.get(chain)
+            if not isinstance(prog, dict):
+                try:
+                    with open(PROGRESS_FILE, encoding="utf-8") as f:
+                        allp = json.load(f)
+                    if isinstance(allp, dict):
+                        prog = allp.get(chain)
+                except Exception as e:
+                    print(f"[{chain}] progress read error: {e}")
+            if isinstance(prog, dict):
                 seen2 = set()
                 uniq = []
                 for m in prog.get("matches", []) or []:
@@ -345,8 +519,6 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 matches[:] = uniq
                 if "rpc_failures" in prog:
                     rpc_failures = prog["rpc_failures"]
-            except Exception as e:
-                print(f"[{chain}] progress read error: {e}")
 
         if resume_from is not None and resume_from >= latest:
             print(f"[{chain}] Already scanned to latest block")
@@ -355,6 +527,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         if resume_from is not None and 0 <= resume_from < latest:
             start_block = resume_from + 1
             scan_range = min(num_blocks, latest - start_block + 1)
+            scan_range = min(scan_range, 100000)
             if scan_range <= 0:
                 print(f"[{chain}] Already scanned to latest block")
                 return matches
@@ -362,6 +535,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
         else:
             start_block = max(0, latest - num_blocks + 1)
             scan_range = min(num_blocks, latest - start_block + 1)
+            scan_range = min(scan_range, 100000)
             if scan_range <= 0:
                 print(f"[{chain}] Nothing to scan")
                 return matches
@@ -372,6 +546,17 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             impl_addr = None
             if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 90 and ch[60:90] == "5af43d82803e903d91602b57fd5bf3":
                 impl_addr = "0x" + ch[20:60].lower()
+            # EIP-1967 proxy fallback
+            if not impl_addr:
+                slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+                try:
+                    val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
+                    if isinstance(val, str) and len(val) >= 66:
+                        cand = "0x" + val[-40:]
+                        if cand != "0x" + "0" * 40:
+                            impl_addr = cand.lower()
+                except Exception:
+                    pass
             if not impl_addr or impl_addr == "0x" + "0" * 40:
                 return None
             # Coalesce concurrent implementation fetches
@@ -382,10 +567,12 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 cached = code_cache.get(impl_addr.lower())
                 if isinstance(cached, str):
                     if cached and cached != "0x" and cached[2:].strip("0") != "":
+                        code_cache.move_to_end(impl_addr.lower())
                         _cached_hit = cached
                     else:
                         # Negative cache: previously resolved to no code
                         if cached is not None:
+                            code_cache.move_to_end(impl_addr.lower())
                             return None
                 if _cached_hit is None:
                     if impl_addr.lower() in pending_events:
@@ -411,10 +598,16 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 if isinstance(impl_code, str) and impl_code and impl_code != "0x" and len(impl_code) >= 10 and impl_code[2:].strip("0") != "":
                     async with code_cache_lock:
                         code_cache[impl_addr.lower()] = impl_code
+                        code_cache.move_to_end(impl_addr.lower())
+                        while len(code_cache) > MAX_CODE_CACHE:
+                            code_cache.popitem(last=False)
                     return impl_code
                 if isinstance(impl_code, str) and (impl_code in ("", "0x") or impl_code[2:].strip("0") == ""):
                     async with code_cache_lock:
                         code_cache[impl_addr.lower()] = ""
+                        code_cache.move_to_end(impl_addr.lower())
+                        while len(code_cache) > MAX_CODE_CACHE:
+                            code_cache.popitem(last=False)
                 return None
             finally:
                 async with code_cache_lock:
@@ -485,7 +678,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                             print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pname} (score={score})")
 
         # Batch processing: process blocks in batches
-        batch_size = 50
+        batch_size = 200
         for start in range(start_block, start_block + scan_range, batch_size):
             end = min(start + batch_size, start_block + scan_range)
             tasks = [process_block(blk) for blk in range(start, end)]
@@ -499,10 +692,10 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             async with rpc_lock:
                 _rf = rpc_failures
             print(f"  [{chain}] scanned to block {end - 1}, {_mc} matches, {_rf} rpc failures")
-            prog_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
-            await asyncio.get_running_loop().run_in_executor(
-                None, _atomic_write_json, prog_path,
-                 {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}, None, False)
+            async with progress_lock:
+                shared_prog[chain] = {"chain": chain, "last_block": end - 1, "matches": _snapshot, "rpc_failures": rpc_failures}
+                await asyncio.get_running_loop().run_in_executor(
+                    None, _atomic_write_json, PROGRESS_FILE, dict(shared_prog), None, False)
 
         print(f"[{chain}] Scan complete: {len(matches)} matches, {rpc_failures} rpc failures")
         return matches
@@ -535,23 +728,27 @@ def cmd_scan(args):
         resume_map = {}
         global_sem = asyncio.Semaphore(200)
         global_fetch_sem = asyncio.Semaphore(200)
+        progress_lock = asyncio.Lock()
+        all_prog = {}
+        if os.path.exists(PROGRESS_FILE):
+            try:
+                with open(PROGRESS_FILE, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    all_prog = loaded
+            except Exception as e:
+                print(f"progress read error: {e}")
+                all_prog = {}
         for c in chains:
-            prog_file = os.path.join(ROOT, f"scan_progress_{c}.json")
-            rf = None
-            if os.path.exists(prog_file):
-                try:
-                    with open(prog_file, encoding="utf-8") as f:
-                        progress = json.load(f)
-                    rf = progress.get("last_block")
-                    if rf is not None:
-                        print(f"[{c}] Resuming from block {rf}")
-                except Exception as e:
-                    print(f"[{c}] progress read error: {e}")
+            prog = all_prog.get(c) if isinstance(all_prog, dict) else None
+            rf = prog.get("last_block") if isinstance(prog, dict) else None
+            if rf is not None:
+                print(f"[{c}] Resuming from block {rf}")
             resume_map[c] = rf
         connector = aiohttp.TCPConnector(limit=200, ttl_dns_cache=300)
         async with aiohttp.ClientSession(connector=connector) as session:
             for c in chains:
-                tasks.append(scan_chain(c, args.blocks, resume_map.get(c), global_sem, global_fetch_sem, session))
+                tasks.append(scan_chain(c, args.blocks, resume_map.get(c), global_sem, global_fetch_sem, session, progress_lock, all_prog))
             results = await asyncio.gather(*tasks, return_exceptions=True)
         all_matches = []
         for r in results:
@@ -580,6 +777,12 @@ def cmd_scan(args):
             if key not in seen:
                 seen.add(key)
                 unique_matches.append(m)
+        if os.path.exists(RESULTS_FILE):
+            try:
+                import shutil
+                shutil.copy2(RESULTS_FILE, RESULTS_FILE + ".bak")
+            except Exception:
+                pass
         await asyncio.get_running_loop().run_in_executor(None, _atomic_write_json, RESULTS_FILE, unique_matches, 2)
         print(f"\nTotal matches across all chains: {len(unique_matches)}")
         if all_matches:

@@ -9,15 +9,6 @@ if not defined GITEXE if exist "C:\Program Files\Git\cmd\git.exe" set "GITEXE=C:
 if not defined GITEXE if exist "C:\Program Files\Git\bin\git.exe" set "GITEXE=C:\Program Files\Git\bin\git.exe"
 
 if not defined GITEXE (
-    if exist "%~dp0bootstrap.ps1" (
-        echo [INFO] git not found. Running bootstrap.ps1...
-        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1"
-        for /f "delims=" %%G in ('where git 2^>nul') do if not defined GITEXE set "GITEXE=%%G"
-        if not defined GITEXE if exist "C:\Program Files\Git\cmd\git.exe" set "GITEXE=C:\Program Files\Git\cmd\git.exe"
-        if not defined GITEXE if exist "C:\Program Files\Git\bin\git.exe" set "GITEXE=C:\Program Files\Git\bin\git.exe"
-    )
-)
-if not defined GITEXE (
     echo [ERROR] git not found.
     exit /b 1
 )
