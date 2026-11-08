@@ -239,11 +239,11 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             ch = code[2:].lower() if isinstance(code, str) and code.startswith("0x") else (code.lower() if isinstance(code, str) else "")
             impl_addr = None
             if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 88:
-                impl_addr = "0x" + ch[44:84]
+                impl_addr = "0x" + ch[20:60]
             elif 200 <= len(ch) // 2 <= 3000:
                 slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
                 val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
-                if isinstance(val, str) and len(val) >= 42:
+                if isinstance(val, str) and len(val) >= 66:
                     impl_addr = "0x" + val[-40:]
                     if impl_addr == "0x" + "0" * 40:
                         impl_addr = None
@@ -341,6 +341,11 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                     addr = receipt["contractAddress"]
                     sels = extract_selectors(code[2:])
                     pattern_matches = match_bytecode_patterns(sels)
+                    if not pattern_matches:
+                        impl_code = await resolve_proxy_impl(addr, code, blk_num)
+                        if impl_code:
+                            sels = extract_selectors(impl_code[2:])
+                            pattern_matches = match_bytecode_patterns(sels)
                     if pattern_matches:
                         m = {"chain": chain, "block": blk_num, "address": addr, "tx": tx.get("hash", ""), "selectors": sorted(sels), "patterns": [p[0] for p in pattern_matches], "scores": {p[0]: p[1] for p in pattern_matches}}
                         async with match_lock:

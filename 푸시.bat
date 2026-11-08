@@ -1,5 +1,5 @@
 @echo off
-setlocal enableextensions enabledelayedexpansion
+setlocal enableextensions
 cd /d "%~dp0"
 
 rem --- locate git -----------------------------------------------------------
@@ -13,6 +13,7 @@ if not defined GITEXE (
         echo [INFO] git not found. Running bootstrap.ps1...
         powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1"
         if exist "C:\Program Files\Git\cmd\git.exe" set "GITEXE=C:\Program Files\Git\cmd\git.exe"
+        if not defined GITEXE if exist "C:\Program Files\Git\bin\git.exe" set "GITEXE=C:\Program Files\Git\bin\git.exe"
     )
 )
 if not defined GITEXE (
@@ -33,6 +34,12 @@ if errorlevel 1 "%GITEXE%" config --local user.name "flwjfxm0004" >nul 2>&1
 "%GITEXE%" config --get user.email >nul 2>&1
 if errorlevel 1 "%GITEXE%" config --local user.email "flwjfxm0004@users.noreply.github.com" >nul 2>&1
 
+rem --- current branch (fallback: master) ------------------------------------
+set "BRANCH=master"
+for /f "delims=" %%B in ('"%GITEXE%" rev-parse --abbrev-ref HEAD 2^>nul') do set "BRANCH=%%B"
+if "%BRANCH%"=="" set "BRANCH=master"
+if "%BRANCH%"=="HEAD" set "BRANCH=master"
+
 rem --- lfs (only if git-lfs present AND lfs files tracked) ------------------
 where git-lfs >nul 2>&1
 if not errorlevel 1 (
@@ -46,6 +53,11 @@ rem --- stage ---------------------------------------------------------------
 if errorlevel 1 (
     echo [ERROR] git add failed.
     exit /b 1
+)
+
+rem --- unstage likely secrets (defense in depth) ----------------------------
+for %%P in (.env .env.* *.pem *.key *.p12 *.pfx id_rsa id_ed25519 *secret* *credential* *.keystore) do (
+    "%GITEXE%" reset -q HEAD -- "%%P" >nul 2>&1
 )
 
 rem --- commit (only if staged changes) -------------------------------------
@@ -64,23 +76,23 @@ if errorlevel 1 (
     echo [INFO] No changes to commit.
 )
 
-rem --- push (retry up to 2 times with rebase on failure) --------------------
-set "PUSH_OK=0"
-for /l %%i in (1,1,2) do (
-    if "!PUSH_OK!"=="0" (
-        "%GITEXE%" push --quiet origin master
-        if not errorlevel 1 (
-            set "PUSH_OK=1"
-        ) else (
-            "%GITEXE%" pull --rebase --autostash --quiet origin master
-        )
-    )
-)
-if "!PUSH_OK!"=="0" (
-    echo [ERROR] Push failed.
-    exit /b 1
-)
+rem --- push (retry up to 2 times with rebase on failure, early exit) --------
+set "PUSH_TRIES=0"
 
+:push_try
+"%GITEXE%" push --quiet origin %BRANCH%
+if not errorlevel 1 goto push_ok
+"%GITEXE%" pull --rebase --autostash --quiet origin %BRANCH%
+if errorlevel 1 goto push_fail
+set /a PUSH_TRIES+=1
+if %PUSH_TRIES% lss 2 goto push_try
+goto push_fail
+
+:push_fail
+echo [ERROR] Push failed.
+exit /b 1
+
+:push_ok
 echo Done.
 endlocal
 exit /b 0
