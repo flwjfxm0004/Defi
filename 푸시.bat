@@ -28,8 +28,6 @@ set "GCM_INTERACTIVE=never"
 set "GIT_ASKPASS="
 set "SSH_ASKPASS="
 
-rem --- repo-local hygiene (avoid LF<->CRLF churn) ---------------------------
-"%GITEXE%" config --local core.autocrlf true >nul 2>&1
 
 rem --- network hang guard ---------------------------------------------------
 "%GITEXE%" config --local http.lowSpeedLimit 1000 >nul 2>&1
