@@ -106,6 +106,8 @@ def extract_selectors(code_hex):
     if positions:
         code_hex = code_hex[:min(positions)]
     n = len(code_hex)
+    if n % 2:
+        n -= 1
     i = 0
     while i < n - 10:
         if code_hex[i:i+2] == "63":
@@ -358,7 +360,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                             for pname, score in pattern_matches:
                                 print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pname} (score={score})")
 
-        # Batch processing: process 200 blocks at a time
+        # Batch processing: process 100 blocks at a time
         batch_size = 100
         for start in range(start_block, start_block + scan_range, batch_size):
             end = min(start + batch_size, start_block + scan_range)
@@ -368,7 +370,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 if isinstance(res, Exception):
                     print(f"  [{chain}] block {blk} error: {res}")
             print(f"  [{chain}] scanned to block {end - 1}, {len(matches)} matches, {rpc_failures} rpc failures")
-            prog_path = PROGRESS_FILE.format(chain=chain)
+            prog_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
             await asyncio.get_running_loop().run_in_executor(
                 None, _atomic_write_json, prog_path,
                  {"chain": chain, "last_block": end - 1, "matches": list(matches), "rpc_failures": rpc_failures}, None)
