@@ -108,7 +108,7 @@ def extract_selectors(code_hex):
         cut = min(positions)
         # Guard against false positives: strip when marker is in trailing region,
         # or close enough to the end to be metadata even on small contracts.
-        if cut >= len(code_hex) // 2 or (len(code_hex) - cut) <= 2048:
+        if cut > 0 and cut >= len(code_hex) - 2048:
             code_hex = code_hex[:cut]
     n = len(code_hex)
     if n % 2:
@@ -186,7 +186,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             try:
                 if missing:
                     fetched = []
-                    for i in range(0, len(missing), 100):
+                    for i in range(0, len(missing), 50):
                         chunk = missing[i:i + 100]
                         fetched.extend(await asyncio.gather(*[fetch_single("eth_getCode", [a, hex(blk_num)]) for a in chunk], return_exceptions=True))
                 else:
@@ -321,7 +321,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
             impl_addr = None
             if ch.startswith("363d3d373d3d3d363d73") and len(ch) >= 90 and ch[60:90] == "5af43d82803e903d91602b57fd5bf3":
                 impl_addr = "0x" + ch[20:60].lower()
-            elif len(ch) // 2 <= 100 and any(ch[i:i+2] == "f4" for i in range(0, len(ch), 2)):
+            elif len(ch) // 2 <= 45 and any(ch[i:i+2] == "f4" for i in range(0, len(ch), 2)):
                 slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
                 val = await fetch_single("eth_getStorageAt", [addr, slot, hex(blk_num)])
                 if isinstance(val, str) and len(val) >= 66:
@@ -332,6 +332,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                 return None
             # Coalesce concurrent implementation fetches
             _cached_hit = None
+            wait = False
             async with code_cache_lock:
                 cached = code_cache.get(impl_addr.lower())
                 if isinstance(cached, str) and cached and cached != "0x" and cached[2:].strip("0") != "":
@@ -428,7 +429,7 @@ async def scan_chain(chain: str, num_blocks: int, resume_from: Optional[int] = N
                             print(f"  [{chain}] PATTERN MATCH: block {blk_num} addr {addr} -> {pname} (score={score})")
 
         # Batch processing: process blocks in batches
-        batch_size = 100
+        batch_size = 50
         last_pm = -1
         last_pf = -1
         for start in range(start_block, start_block + scan_range, batch_size):
