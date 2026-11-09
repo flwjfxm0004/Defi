@@ -31,14 +31,16 @@ PROGRESS_FILE = os.path.join(ROOT, "scan_progress.json")
 CODE_CACHE_FILE = os.path.join(ROOT, "code_cache.json")
 
 MAX_CODE_CACHE = 100_000  # 메모리 상 코드 캐시 최대 항목수(실효적 LRU 상한)
-CODE_CACHE_SAVE_INTERVAL = 100  # 새 코드가 확정된 블록 N개마다 디스크 캐시 저장(스로틀)
+CODE_CACHE_SAVE_INTERVAL = 1000  # 새 코드가 확정된 블록 N개마다 디스크 캐시 저장(스로틀)
+CACHE_SWAP_DIR = os.path.join(ROOT, "code_cache_swap")  # 메모리 초과 시 디스크 스왑 디렉터리
+TX_CACHE_SWAP_DIR = os.path.join(ROOT, "tx_cache_swap")  # 트랜잭션 해시→to 매핑 디스크 스왑
 BATCH_SIZE = 200
-BLOCK_BATCH = 10
+BLOCK_BATCH = 100
 SIMILARITY_THRESHOLD = 0.4
 LENGTH_RATIO_MIN = 0.5
 LENGTH_RATIO_MAX = 2.0
 NGRAM_SIZE = 16  # 바이트코드 전체 n-grams 창 크기(8바이트). 셀렉터(4바이트) 아님.
-PROGRESS_INTERVAL = 100
+PROGRESS_INTERVAL = 1000
 CONCURRENCY = 60
 CONC_RECOVER_EVERY = 20
 CONNECTOR_LIMIT = 200
@@ -515,7 +517,57 @@ class Scanner:
         self._active_lock = asyncio.Lock()
         self._conc_successes = 0
         self._ngram_index: Dict[str, Set[int]] = {}
+        self._dead_urls: Dict[str, Set[str]] = {}
+        self._current_chain: Optional[str] = None
         self._load_disk_cache()
+        try:
+            os.makedirs(CACHE_SWAP_DIR, exist_ok=True)
+            os.makedirs(TX_CACHE_SWAP_DIR, exist_ok=True)
+        except Exception:
+            pass
+
+    def _swap_path(self, k: Tuple[str, str]) -> str:
+        ch, a = k
+        safe = f"{ch}_{a.lower()}.json"
+        return os.path.join(CACHE_SWAP_DIR, safe)
+
+    def _save_to_swap(self, k: Tuple[str, str], v: str) -> None:
+        try:
+            path = self._swap_path(k)
+            _awj(path, v, None)
+        except Exception:
+            pass
+
+    def _load_from_swap(self, k: Tuple[str, str]) -> Optional[str]:
+        try:
+            path = self._swap_path(k)
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
+
+    def _tx_swap_path(self, h: str) -> str:
+        safe = h.lower().replace("0x", "") + ".json"
+        return os.path.join(TX_CACHE_SWAP_DIR, safe)
+
+    def _save_tx_to_swap(self, h: str, v: str) -> None:
+        try:
+            path = self._tx_swap_path(h)
+            _awj(path, v, None)
+        except Exception:
+            pass
+
+    def _load_tx_from_swap(self, h: str) -> Optional[str]:
+        try:
+            path = self._tx_swap_path(h)
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
 
     def _load_disk_cache(self):
         if not os.path.exists(CODE_CACHE_FILE):
@@ -559,6 +611,9 @@ class Scanner:
             uf[u] = uf.get(u, 0) + 1
             if uf[u] >= 3 and u in uo:
                 uo.remove(u)
+                ch = self._current_chain
+                if ch:
+                    self._dead_urls.setdefault(ch, set()).add(u)
 
     async def _rl_sleep(self, r):
         ra = r.headers.get("Retry-After")
@@ -600,16 +655,22 @@ class Scanner:
             snap = list(uo)
         if not snap:
             return None
-        results = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap], return_exceptions=True)
-        for res in results:
-            if isinstance(res, Exception):
-                continue
-            u, result, ok = res
+        for u in snap:
+            try:
+                _, result, ok = await self._try_one_url(sess, method, params, u, fs, rt)
+            except Exception:
+                ok = False
+                result = None
             if ok:
                 async with ul:
                     if u in uo:
                         uo.remove(u)
                         uo.insert(0, u)
+                    ch = self._current_chain
+                    if ch and self._dead_urls.get(ch):
+                        recovered = self._dead_urls[ch].pop()
+                        uo.insert(0, recovered)
+                        uf.pop(recovered, None)
                 return result
             await self._bad(u, ul, uo, uf)
         return None
@@ -660,16 +721,22 @@ class Scanner:
             snap = list(uo)
         if not snap:
             return [None] * n
-        results = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap], return_exceptions=True)
-        for res in results:
-            if isinstance(res, Exception):
-                continue
-            u, rl, ok = res
+        for u in snap:
+            try:
+                _, rl, ok = await self._try_batch_url(sess, method, pl, u, fs, rt)
+            except Exception:
+                ok = False
+                rl = None
             if ok:
                 async with ul:
                     if u in uo:
                         uo.remove(u)
                         uo.insert(0, u)
+                    ch = self._current_chain
+                    if ch and self._dead_urls.get(ch):
+                        recovered = self._dead_urls[ch].pop()
+                        uo.insert(0, recovered)
+                        uf.pop(recovered, None)
                 return rl
             await self._bad(u, ul, uo, uf)
         return [None] * n
@@ -724,7 +791,9 @@ class Scanner:
                         self.code_cache[k] = ""
                     self.code_cache.move_to_end(k)
                 while len(self.code_cache) > MAX_CODE_CACHE:
-                    self.code_cache.popitem(last=False)
+                    k_evict, v_evict = self.code_cache.popitem(last=False)
+                    if v_evict:
+                        self._save_to_swap(k_evict, v_evict)
                 if upd:
                     self._cc_dirty = True
                 for a in miss:
@@ -736,6 +805,11 @@ class Scanner:
         for a in addrs:
             k = (chain, a)
             c = self.code_cache.get(k)
+            if c is None:
+                c = self._load_from_swap(k)
+                if c is not None:
+                    self.code_cache[k] = c
+                    self.code_cache.move_to_end(k)
             if isinstance(c, str) and c and c != "0x":
                 self.code_cache.move_to_end(k)
                 out.append(c)
@@ -764,15 +838,22 @@ class Scanner:
         pending_all = [s for s in seeds if not s.code_hex]
         if not pending_all:
             return
-        for i in range(0, len(pending_all), BATCH_SIZE):
-            chunk = pending_all[i:i+BATCH_SIZE]
-            pl_ = [[s.address, "latest"] for s in chunk]
-            got = await self._batch(sess, "eth_getCode", pl_, fs, ul, uo, uf, rt)
-            for s, c in zip(chunk, got):
-                if isinstance(c, str) and c and c != "0x":
-                    s.code_hex = c.lower()
-                    s.ngrams = ngrams(c[2:])
-                    s.length = len(c[2:])
+        for attempt in range(3):
+            pending = [s for s in pending_all if not s.code_hex]
+            if not pending:
+                break
+            for i in range(0, len(pending), BATCH_SIZE):
+                chunk = pending[i:i+BATCH_SIZE]
+                pl_ = [[s.address, "latest"] for s in chunk]
+                got = await self._batch(sess, "eth_getCode", pl_, fs, ul, uo, uf, rt)
+                for s, c in zip(chunk, got):
+                    if isinstance(c, str) and c and c != "0x":
+                        s.code_hex = c.lower()
+                        s.ngrams = ngrams(c[2:])
+                        s.length = len(c[2:])
+            if all(s.code_hex for s in pending_all):
+                break
+            await asyncio.sleep(2.0)
         remaining = [s for s in seeds if not s.code_hex]
         if remaining:
             print(f"[{chain}] seed code fetch failed for {len(remaining)} seeds")
@@ -796,6 +877,8 @@ class Scanner:
         return jaccard(ng, seed.ngrams)
 
     async def scan_chain(self, chain, sess, resume=None, fs=None, pl=None, sp=None):
+        self._current_chain = chain
+        self._dead_urls[chain] = set()
         uo = list(SCAN_RPCS.get(chain, []))
         if not uo:
             print(f"[{chain}] no rpc")
@@ -905,7 +988,7 @@ class Scanner:
             # 해시만 있으면 to 주소를 알 수 없으므로 eth_getTransactionByHash로 조회.
             if txs and isinstance(txs[0], str):
                 # 병렬 시도(_batch 재사용): 모든 URL 동시 호출, 첫 성공 반환.
-                miss_hashes = [h for h in txs if h not in self._tx_cache]
+                miss_hashes = [h for h in txs if h not in self._tx_cache and self._load_tx_from_swap(h) is None]
                 for i in range(0, len(miss_hashes), BATCH_SIZE):
                     hash_batch = miss_hashes[i:i+BATCH_SIZE]
                     pl_ = [[h] for h in hash_batch]
@@ -916,12 +999,20 @@ class Scanner:
                             if isinstance(to, str) and ADDRESS_RE.fullmatch(to):
                                 if len(self._tx_cache) >= MAX_TX_CACHE:
                                     oldest = next(iter(self._tx_cache))
-                                    del self._tx_cache[oldest]
+                                    oldest_v = self._tx_cache.pop(oldest, None)
+                                    if oldest_v:
+                                        self._save_tx_to_swap(oldest, oldest_v)
                                 self._tx_cache[h] = to.lower()
                                 addrs.add(to.lower())
+                                self._save_tx_to_swap(h, to.lower())
                 for h in txs:
                     if h in self._tx_cache:
                         addrs.add(self._tx_cache[h])
+                    else:
+                        v = self._load_tx_from_swap(h)
+                        if v is not None:
+                            self._tx_cache[h] = v
+                            addrs.add(v)
                 return addrs
             for tx in txs:
                 if not isinstance(tx, dict):
@@ -969,9 +1060,6 @@ class Scanner:
                         best_ix = i
                 if best_sim >= SIMILARITY_THRESHOLD:
                     a0, l0, n0, p0 = sinfo[best_ix]
-                    prev = addr_best.get(a)
-                    if prev and prev["similarity"] >= best_sim:
-                        continue
                     m = {
                         "chain": chain,
                         "block": blk,
