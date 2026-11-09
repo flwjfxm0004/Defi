@@ -509,6 +509,8 @@ class Scanner:
         self._cc_since_save = 0
         self._conc = CONCURRENCY
         self._conc_lock = asyncio.Lock()
+        self._active = 0
+        self._active_lock = asyncio.Lock()
         self._load_disk_cache()
 
     def _load_disk_cache(self):
@@ -551,6 +553,11 @@ class Scanner:
 
     async def _try_one_url(self, sess, method, params, u, fs, rt):
         try:
+            async with self._active_lock:
+                self._active += 1
+                active = self._active
+            if active > self._conc:
+                await asyncio.sleep(0.25 * (active - self._conc))
             async with fs:
                 async with sess.post(u, json={"jsonrpc":"2.0","method":method,"params":params,"id":_next_rid()}, headers=HEADERS, timeout=rt) as r:
                     if r.status == 200:
@@ -559,9 +566,14 @@ class Scanner:
                             return u, d["result"], True
                     if r.status == 429:
                         await self._rl_sleep(r)
+                        async with self._conc_lock:
+                            self._conc = max(1, self._conc - 1)
                     return u, None, False
         except Exception:
             return u, None, False
+        finally:
+            async with self._active_lock:
+                self._active -= 1
 
     async def _one(self, sess, method, params, fs, ul, uo, uf, rt):
         async with ul:
@@ -585,6 +597,11 @@ class Scanner:
     async def _try_batch_url(self, sess, method, pl, u, fs, rt):
         try:
             body = [{"jsonrpc":"2.0","method":method,"params":p,"id":ix} for ix, p in enumerate(pl)]
+            async with self._active_lock:
+                self._active += 1
+                active = self._active
+            if active > self._conc:
+                await asyncio.sleep(0.25 * (active - self._conc))
             async with fs:
                 async with sess.post(u, json=body, headers=HEADERS, timeout=rt) as r:
                     if r.status == 200:
@@ -610,6 +627,9 @@ class Scanner:
                     return u, None, False
         except Exception:
             return u, None, False
+        finally:
+            async with self._active_lock:
+                self._active -= 1
 
     async def _batch(self, sess, method, pl, fs, ul, uo, uf, rt):
         if not pl:
