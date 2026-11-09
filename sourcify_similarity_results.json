@@ -1,0 +1,687 @@
+{
+  "total_seeds": 88,
+  "results": [
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0xdac30a5e2612206e2756836ed6764ec5817e6fff",
+      "description": "",
+      "bytecode_length": 9534,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xDAc30a5e2612206E2756836Ed6764EC5817e6Fff on chain 8453 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "arbitrum",
+      "chain_id": "42161",
+      "address": "0x27037a167a60bc6ecdede086dddc5d250263e76d",
+      "description": "",
+      "bytecode_length": 18013,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"fa7b5643-3635-4bc3-9777-2463b8559501\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x764c64b2a09b09acb100b80d8c505aa6a0302ef2",
+      "description": "",
+      "bytecode_length": 2241,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"d3a97479-4e0c-42c8-9ca7-d31f43f43dba\"}"
+      }
+    },
+    {
+      "chain": "arbitrum",
+      "chain_id": "42161",
+      "address": "0xf7ca7384cc6619866749955065f17bedd3ed80bc",
+      "description": "",
+      "bytecode_length": 2125,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"9eda96b3-2896-40fc-8232-a28a0138d0e0\"}"
+      }
+    },
+    {
+      "chain": "arbitrum",
+      "chain_id": "42161",
+      "address": "0xf7ca7384cc6619866749955065f17bedd3ed80bc",
+      "description": "",
+      "bytecode_length": 2125,
+      "sourcify_result": {
+        "status": 429,
+        "error": "{\n  \"type\": \"https://docs.sourcify.dev/docs/repository/download-dataset/\",\n  \"title\": \"Too many requests\",\n  \"status\": 429,\n  \"detail\": \"You sent too many requests. Wait at least 60 seconds before the"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x32e616f4f17d43f9a5cd9be0e294727187064cb3",
+      "description": "",
+      "bytecode_length": 23636,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"647cebd8-d08c-4202-a133-a93d894e7539\"}"
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0xc859ac8429fb4a5e24f24a7bed3fe3a8db4fb371",
+      "description": "",
+      "bytecode_length": 8490,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"951fdcfc-3d42-429f-856a-c14e51bd14e5\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xd83d960debec397fb149b51f8f37dd3b5cfa8913",
+      "description": "",
+      "bytecode_length": 19444,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"c5ddf5d3-2aef-4e6d-a0f8-c06a803dc3d7\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x99003cf72c30ef5c29070261df7a79bef60d2e63",
+      "description": "",
+      "bytecode_length": 20035,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"7ac851b8-ad65-47e9-8aa0-c9b78cb8f2c6\"}"
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0x22ce292d882c7799183949509b011512352454cb",
+      "description": "",
+      "bytecode_length": 23027,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"05dd6345-9166-40ce-b2ae-c1fdc4b8126a\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x02411c115f63e19fa2c4c42f7b99734036d6e758",
+      "description": "",
+      "bytecode_length": 11030,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"8e784a36-377f-49f5-aab9-4c4dc873c3e7\"}"
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0xec942be8a8114bfd0396a5052c36027f2ca6a9d0",
+      "description": "",
+      "bytecode_length": 4026,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xEC942bE8A8114bFD0396A5052c36027f2cA6a9d0 on chain 8453 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x02739be625f7a1cb196f42dceee630c394dd9faa",
+      "description": "",
+      "bytecode_length": 13595,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x02739BE625f7A1Cb196F42dceEe630C394DD9FAA on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x62951cad7659393bf07fbe790cf898a3b6d317cb",
+      "description": "",
+      "bytecode_length": 8485,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x62951CaD7659393BF07fbe790cF898A3B6d317CB on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xfe33eb082b2374ecd9fb550f833db88cad8d084b",
+      "description": "",
+      "bytecode_length": 10383,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xFE33EB082B2374ecd9Fb550f833DB88CaD8d084B on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x9dce7a180c34203fee8ce8ca62f244feeb67bd30",
+      "description": "",
+      "bytecode_length": 3406,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x9DCE7A180C34203fEE8cE8CA62f244FeeB67BD30 on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x79f9b0b81e08efc3690bb78611620cb1b708fccb",
+      "description": "",
+      "bytecode_length": 24146,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"6c1ef08a-0154-40b8-a9ed-8ca2ae202d3c\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x20dbf42970eb3fabe62615534c4ef15fd4d59596",
+      "description": "",
+      "bytecode_length": 211,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"ac293e17-3b2b-446c-916f-022310c9262b\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x014e6f6ba7a9f4c9a51a0aa3189b5c0a21006869",
+      "description": "",
+      "bytecode_length": 296,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x014e6F6ba7a9f4C9a51a0Aa3189B5c0a21006869 on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0x225da3d879d379ff6510c1cc27ac8535353f501f",
+      "description": "",
+      "bytecode_length": 15309,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"ddf9529c-d22e-496a-bf31-09546c6c52d3\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xc10472ac1bf9f2e58ff2c83596b4535334c90814",
+      "description": "",
+      "bytecode_length": 24082,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"d703debe-7ce5-4241-ad13-58aa9ca18742\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x4822d9172e5b76b9db37b75f5552f9988f98a888",
+      "description": "",
+      "bytecode_length": 2262,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"80890773-9b50-494b-bc95-f3bf6d41c58f\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x045e2df638ebec29130dd3be61161cba5f00a9c8",
+      "description": "",
+      "bytecode_length": 10399,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x045e2Df638eBEc29130DD3bE61161cbA5F00a9c8 on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x07d398c888c353565cf549bbee3446791a49f285",
+      "description": "",
+      "bytecode_length": 131,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"0c97e089-7f94-4365-a5db-3c46228fa2e8\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x27f9787dbdca43f92ccc499892a082494c23213f",
+      "description": "",
+      "bytecode_length": 9231,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x27f9787DbdcA43F92cCC499892a082494c23213f on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x86e06eafa6a1ea631eab51de500e3d474933739f",
+      "description": "",
+      "bytecode_length": 8013,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"3777cf28-a23d-494c-b7c3-79c6a8e343dd\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x237d59bf98ec4f4f013bc35d66f22d2bc9504b3f",
+      "description": "",
+      "bytecode_length": 13159,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"32490335-5f70-418f-88cf-4b74ff56957c\"}"
+      }
+    },
+    {
+      "chain": "polygon",
+      "chain_id": "137",
+      "address": "0x13046f513802de93f3fc48f0cdb2cb7df22ec01a",
+      "description": "",
+      "bytecode_length": 11970,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"a5634be0-92dc-4d22-8f86-0030eba30756\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xfda3a0effe2f3917aa60e0741c6788619ae19e84",
+      "description": "",
+      "bytecode_length": 19308,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"12c8e2d7-150c-4060-aa2e-e09a3c17883f\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x1f8336aef584795e282fece8de356babd7734c59",
+      "description": "",
+      "bytecode_length": 2759,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x1F8336aEF584795E282FECe8DE356BaBD7734c59 on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x46280c1a2e17cfc151f50a885363408368bb163a",
+      "description": "",
+      "bytecode_length": 22852,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"ec878f43-df61-4c16-b0b4-3d57704bc3b5\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xb042ea7b35826e6e537a63bb9fc9fb06b50ae10b",
+      "description": "",
+      "bytecode_length": 18853,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xb042Ea7B35826e6E537a63BB9fC9FB06B50aE10b on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xf0a105d93eec8781e15222ad754fcf1264568c97",
+      "description": "",
+      "bytecode_length": 5138,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"fca46620-e0cf-4d5e-add2-25799bc688b8\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x39ed372f8e9f316029994ca7f73b6683829c6b08",
+      "description": "",
+      "bytecode_length": 20130,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"c97c06c6-4e11-4522-a116-ffe2bc41b7c1\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xcdb189d377ac1cf9d7b1d1a988f2025b99999999",
+      "description": "",
+      "bytecode_length": 14850,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xcdb189D377AC1cF9D7B1D1a988f2025B99999999 on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0xeab948ec7ce3f403b63787ba3884aaf43d07ca9c",
+      "description": "",
+      "bytecode_length": 8723,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xeAB948eC7CE3f403b63787bA3884AAF43d07CA9c on chain 8453 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "optimism",
+      "chain_id": "10",
+      "address": "0x833a17fa29bc2772e4302823b7d39edd7c4bb79a",
+      "description": "",
+      "bytecode_length": 7974,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x833A17FA29bc2772e4302823B7d39eDd7C4bB79a on chain 10 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x03d8096377ea7683d840e395d72439f7b6415abe",
+      "description": "",
+      "bytecode_length": 6169,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x03D8096377Ea7683d840E395d72439F7B6415Abe on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "arbitrum",
+      "chain_id": "42161",
+      "address": "0xbf4b4a83708474528a93c123f817e7f2a0637a88",
+      "description": "",
+      "bytecode_length": 12471,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"d76cdff2-c875-4644-a9bf-a79a835d37ce\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xae406f357541f45f01bec21f9f28c43757f202e4",
+      "description": "",
+      "bytecode_length": 1102,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"bce2b420-4791-4159-8f25-4d2afdcf0ef7\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xbfa266aeb18d34ef4f8749fc7a1b2064af3d91c6",
+      "description": "",
+      "bytecode_length": 18612,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xbFa266aEb18D34ef4f8749fc7a1B2064Af3D91c6 on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "linea",
+      "chain_id": "59141",
+      "address": "0xb68396dd4230253d27589e2004ac37389836ae17",
+      "description": "",
+      "bytecode_length": 24428,
+      "sourcify_result": {
+        "status": 404,
+        "error": "There is no bytecode at address 0xB68396dD4230253d27589e2004Ac37389836AE17 on chain 59141."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xf04b12b838ae18bbc32ce950a4ada6a558aac2f1",
+      "description": "",
+      "bytecode_length": 13734,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"fa1e1974-cd0b-4ede-a8f2-5a6ec5a41969\"}"
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x86ddbfc6f2e3cf096e80ca79e46042392bd90aef",
+      "description": "",
+      "bytecode_length": 171,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"f350a807-90a0-423b-9c17-5c884dc25c36\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x6c84edd2a018b1fe2fc93a56066b5c60da4e6d64",
+      "description": "",
+      "bytecode_length": 21688,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"fe8eb0d0-b53a-4a58-8a7a-53d15d382c36\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xd05909852ae07118857f9d071781671d12c0f36c",
+      "description": "",
+      "bytecode_length": 2215,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"2d414e70-ebf0-4fbe-9591-9f3b9ff6403c\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x2005e0ca201a37694125ff267ae57872bea0a0ce",
+      "description": "",
+      "bytecode_length": 18643,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x2005E0CA201a37694125fF267ae57872bEA0a0Ce on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0xd7ab8cc95eab59bab429242ec176feebaea88da3",
+      "description": "",
+      "bytecode_length": 3269,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xD7AB8cc95eab59Bab429242Ec176FEEBAEA88Da3 on chain 56 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xf3a3648bb1da9d3aea107da77e6f5ba9cf313127",
+      "description": "",
+      "bytecode_length": 12611,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xf3A3648bB1Da9D3aeA107da77E6f5bA9Cf313127 on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "avalanche",
+      "chain_id": "43114",
+      "address": "0x7a7bab45363efb0394ff27bfa29bb7c0534ca8c9",
+      "description": "",
+      "bytecode_length": 3776,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"9c184575-9bae-4ca2-8f8d-015211e6497f\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x1880d832aa283d05b8eab68877717e25fbd550bb",
+      "description": "",
+      "bytecode_length": 21112,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x1880D832aa283d05b8eAB68877717E25FbD550Bb on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x80b8eeb34a2ba5dd90c61e02a12ea30515dca6f5",
+      "description": "",
+      "bytecode_length": 16098,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"11d98d81-84d9-4c05-9514-f5558dc99e90\"}"
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0xd35c6717cca1e04696b694dcb1643ac3620d2152",
+      "description": "",
+      "bytecode_length": 1891,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0xd35C6717cCa1E04696B694DCb1643Ac3620D2152 on chain 8453 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x5f0ad32c00641d1d2bb628ff341e0d4bb4494318",
+      "description": "",
+      "bytecode_length": 16219,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x5F0Ad32C00641D1d2Bb628fF341e0D4bb4494318 on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x48b9aacc350b20147001f88821d31731ba4c30ed",
+      "description": "",
+      "bytecode_length": 184,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x48B9AACC350b20147001f88821d31731Ba4C30ed on chain 1 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "base",
+      "chain_id": "8453",
+      "address": "0x67b93f6676bd1911c5fae7ffa90fff5f35e14dcd",
+      "description": "",
+      "bytecode_length": 46,
+      "sourcify_result": {
+        "status": 400,
+        "error": "The bytecode at address 0x67b93f6676bd1911c5FAe7Ffa90fFf5f35E14dCd on chain 8453 is only 45 bytes long. Similarity verification requires at least 75 bytes."
+      }
+    },
+    {
+      "chain": "bsc",
+      "chain_id": "56",
+      "address": "0x1dd00f433371a54ee4229b27f3e995ad9bb21459",
+      "description": "",
+      "bytecode_length": 14560,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"3182117b-97fa-4560-9121-493cae54b107\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xb9c7c84a1aa0dd40b5b38aae815ad0cdd2e5f88a",
+      "description": "",
+      "bytecode_length": 46,
+      "sourcify_result": {
+        "status": 400,
+        "error": "The bytecode at address 0xB9C7C84A1Aa0dD40b5B38Aae815AD0CDD2E5F88a on chain 1 is only 45 bytes long. Similarity verification requires at least 75 bytes."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x2d886570a0da04885bfd6eb48ed8b8ff01a0eb7e",
+      "description": "",
+      "bytecode_length": 11830,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"e45c19ea-ed50-48fe-a724-7b64baa92aeb\"}"
+      }
+    },
+    {
+      "chain": "arbitrum",
+      "chain_id": "42161",
+      "address": "0x729cf665c09ef112c607290415a566fffa45826f",
+      "description": "",
+      "bytecode_length": 10833,
+      "sourcify_result": {
+        "status": 409,
+        "error": "Contract 0x729Cf665C09Ef112c607290415a566fffa45826f on chain 42161 is already verified with runtimeMatch and creationMatch both being exact matches."
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0x72e9d9038ce484ee986fea183f8d8df93f9ada13",
+      "description": "",
+      "bytecode_length": 2577,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"453dc2b5-2c80-4bea-b16b-73bf827d6619\"}"
+      }
+    },
+    {
+      "chain": "ethereum",
+      "chain_id": "1",
+      "address": "0xeeeeee53033f7227d488ae83a27bc9a9d5051756",
+      "description": "",
+      "bytecode_length": 4402,
+      "sourcify_result": {
+        "status": 202,
+        "error": "{\"verificationId\":\"9107991a-91d4-4950-8d42-8038e0709b8b\"}"
+      }
+    }
+  ]
+}
