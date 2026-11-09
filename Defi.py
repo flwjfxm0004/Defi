@@ -38,7 +38,7 @@ TX_CACHE_SWAP_DIR = os.path.join(ROOT, "tx_cache_swap")  # 트랜잭션 해시�
 MAX_SWAP_FILES = 200_000  # 스왑 파일 최대 개수(디스크 공간 방지)
 BATCH_SIZE = 1000
 BLOCK_BATCH = 20
-SIMILARITY_THRESHOLD = 0.4
+SIMILARITY_THRESHOLD = 0.2
 LENGTH_RATIO_MIN = 0.5
 LENGTH_RATIO_MAX = 2.0
 NGRAM_SIZE = 16  # 바이트코드 전체 n-grams 창 크기(8바이트). 셀렉터(4바이트) 아님.
@@ -341,6 +341,18 @@ SCAN_RPCS: Dict[str, List[str]] = {
         "https://rpc.ankr.com/xrplevm",
         f"https://rpc.ankr.com/xrplevm/{ANKR_KEY}",
     ],
+    "cronos": [
+        "https://evm.cronos.org",
+        "https://cronos-evm-rpc.publicnode.com",
+        "https://cronos.drpc.org",
+    ],
+    "flow-evm": [
+        "https://mainnet.evm.nodes.onflow.org",
+    ],
+    "core": [
+        "https://rpc.coredao.org",
+        "https://core.drpc.org",
+    ],
 }
 
 CHAIN_ALIASES: Dict[str, str] = {
@@ -384,6 +396,9 @@ CHAIN_ALIASES: Dict[str, str] = {
     "oasis": "oasis",
     "iotex": "iotex",
     "robinhood": "robinhood",
+    "cronos": "cronos",
+    "flow-evm": "flow-evm",
+    "core": "core",
 }
 
 def _norm(raw: str) -> Optional[str]:
@@ -519,6 +534,7 @@ class Scanner:
         self._ngram_index: Dict[str, Set[int]] = {}
         self._dead_urls: Dict[str, Set[str]] = {}
         self._current_chain: Optional[str] = None
+        self._seen_addresses: Set[str] = set()
         self._total_blocks_scanned = 0
         self._total_lock = asyncio.Lock()
         self._load_disk_cache()
@@ -1073,6 +1089,8 @@ class Scanner:
                         best_sim = sc
                         best_ix = i
                 if best_sim >= SIMILARITY_THRESHOLD:
+                    if a in self._seen_addresses:
+                        continue
                     a0, l0, n0, p0 = sinfo[best_ix]
                     m = {
                         "chain": chain,
@@ -1096,6 +1114,7 @@ class Scanner:
                     }
                     cm.append(m)
                     self.matches.append(m)
+                    self._seen_addresses.add(a)
                     new_matches += 1
                     print(f"  [{chain}] b{blk} MATCH {a} <- {a0} sim={best_sim:.4f}", flush=True)
                     with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
