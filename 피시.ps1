@@ -47,7 +47,7 @@ foreach ($drv in @('MWMiniflt')) {
 }
 
 # 2) Disable services
-foreach ($s in @('pmsys','igreensys')) {
+foreach ($s in @('pmsys','igreensys','WCGuard','wchwmon','wcwatch')) {
     $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
     if ($svc) {
         if ($svc.Status -eq 'Running') { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue }
@@ -79,13 +79,13 @@ Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | ForEach-Obj
     }
 }
 
-$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen')
+$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user')
 function Is-Target($name, $value) {
     foreach ($t in $targetNames) {
         if ($name -eq $t) { return $true }
         if ($name -like "*$t*") { return $true }
     }
-    if ($value -and ($value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen')) { return $true }
+    if ($value -and ($value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST')) { return $true }
     return $false
 }
 
@@ -104,19 +104,19 @@ foreach ($rk in $runKeys) {
     }
 }
 
-# 4) Remove scheduled tasks whose action references pica/pc cafe
+# 4) Remove scheduled tasks whose action references pica/pc cafe/world class
 Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
     $task = $_
     $match = $false
     foreach ($a in $task.Actions) {
-        if ($a.Execute -match 'pica|PcCafe|igreen' -or $a.Arguments -match 'pica|PcCafe|igreen') { $match = $true }
+        if ($a.Execute -match 'pica|PcCafe|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST' -or $a.Arguments -match 'pica|PcCafe|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST') { $match = $true }
     }
     if ($match) {
         try { Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -Confirm:$false -ErrorAction SilentlyContinue; Write-Host "Removed scheduled task: $($task.TaskPath)$($task.TaskName)" } catch {}
     }
 }
 
-# 5) Remove startup folder shortcuts pointing to pica
+# 5) Remove startup folder shortcuts pointing to pica/world class
 $startupFolders = @(
     "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
     "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -127,7 +127,7 @@ foreach ($folder in $startupFolders) {
         try {
             $sh = New-Object -ComObject WScript.Shell
             $sc = $sh.CreateShortcut($_.FullName)
-            if ($sc.TargetPath -match 'pica|PcCafe|igreen') {
+            if ($sc.TargetPath -match 'pica|PcCafe|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST') {
                 Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
                 Write-Host "Removed startup shortcut: $($_.FullName)"
             }
@@ -143,12 +143,12 @@ try {
     Write-Host "Backup save failed: $_"
 }
 
-# 6) Kill all Pica/PcCafe related processes (by path or name)
+# 6) Kill all Pica/PcCafe/World Class related processes (by path or name)
 $all = Get-Process -ErrorAction SilentlyContinue
 foreach ($p in $all) {
     $kill = $false
-    if ($p.Path -and ($p.Path -match 'PicaClient|Picaigreen|PcCafeMonitor')) { $kill = $true }
-    if ($p.Name -match '^(pm|AutoStart|CraftBox|picaigreen|PicaClient)') { $kill = $true }
+    if ($p.Path -and ($p.Path -match 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST')) { $kill = $true }
+    if ($p.Name -match '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service)') { $kill = $true }
     if ($kill) {
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         Write-Host "Killed: $($p.Name) ($($p.Id))"

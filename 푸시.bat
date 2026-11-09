@@ -24,9 +24,12 @@ if not defined GITEXE (
 
 rem --- non-interactive safety ----------------------------------------------
 set "GIT_TERMINAL_PROMPT=0"
-set "GCM_INTERACTIVE=never"
+set "GCM_INTERACTIVE="
 set "GIT_ASKPASS="
 set "SSH_ASKPASS="
+
+rem --- credential helper: web login via Windows Credential Manager -----------
+"%GITEXE%" config --local credential.helper manager >nul 2>&1
 
 rem --- network hang guard ---------------------------------------------------
 "%GITEXE%" config --local http.lowSpeedLimit 1000 >nul 2>&1
