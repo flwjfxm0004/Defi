@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Defi pipeline: 36-chain full-history bytecode similarity scanner.
 
+# [CRITICAL DESIGN - NEVER CHANGE] 크로스체인 전수 비교: 반드시 모든 씨드를 모든 체인에서 비교함.
+# 취약 컨트랙트 바이트코드를 해당 체인에서만 비교하면,
+# 이더리움의 취약 컨트랙트와 바이트코드가 동일한 BSC/아비트럼 등 타 체인 클론을 절대 잡을 수 없음.
+# 따라서 각 체인 스캔 시 self.all_seeds(전 체인 모든 씨드)와 비교하는 것이 의도된 설계이며,
+# "체인별 씨드 분리"는 크로스체인 커버리지 저하로 금지됨.
+
 목표 (Goal):
 - 해킹.md에 등록된 취약 컨트랙트 주소의 배포 바이트코드를 씨드(Seed)로 수집함.
 - 전체 36 EVM 체인, 전체 블록(full history)을 순회하면서 블록 내 `to` 주소(배포된 컨트랙트)의 바이트코드를 조회함.
-- 각 주소 바이트코드를 해당 체인의 모든 씨드 바이트코드와 n-grams(8바이트 창) 자카드 유사도로 비교함.
+- 각 주소 바이트코드를 **모든 체인의 모든 씨드 바이트코드**와 n-grams(8바이트 창) 자카드 유사도로 비교함.
 - 유사도가 0.4 이상이면 매칭으로 기록하여 scan_results.json에 저장함.
 - 진행 상황은 scan_progress.json에 원자적으로 체크포인트 저장. 크래시/중단 후 재개 가능함.
 
@@ -25,9 +31,9 @@
 8. MAX_CODE_CACHE=100_000은 메모리 상 코드 캐시 최대 항목 수(실효적 LRU 상한).
    OrderedDict로 동작하며, 초과 시 가장 오래된 항목부터 퇴거.
    운영 환경 메모리 제약에 맞게 하향 조정 가능.
-9. 체크포인트는 매번 전체 매칭 리스트를 원자적으로 재기록함(증분 저장 미사용).
+9. 체크포인트는 매칭 변화가 있을 때만 전체 매칭 리스트를 원자적으로 재기록함(변화 없으면 재기록 생략).
    크래시 시 일관성 복구를 우선하는 의도적 설계임.
-10. 현재 구조는 브루트포스 전수 비교(전 체인 × 전체 블록 × 블록당 주소 × 해당 체인 seed)를
+    10. 현재 구조는 브루트포스 전수 비교(전 체인 × 전체 블록 × 블록당 주소 × 전 체인 seed)를
     유지함. 이는 사용자 요구(전체 커버리지, CLI 없음) 하의 의도적 설계임.
 """
 import asyncio
@@ -46,8 +52,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 HACK_FILE = os.path.join(ROOT, "해킹.md")
 RESULTS_FILE = os.path.join(ROOT, "scan_results.json")
 PROGRESS_FILE = os.path.join(ROOT, "scan_progress.json")
+CODE_CACHE_FILE = os.path.join(ROOT, "code_cache.json")
 
 MAX_CODE_CACHE = 100_000  # 메모리 상 코드 캐시 최대 항목수(실효적 LRU 상한)
+CODE_CACHE_SAVE_INTERVAL = 100  # 새 코드가 확정된 블록 N개마다 디스크 캐시 저장(스로틀)
 BATCH_SIZE = 200
 BLOCK_BATCH = 10
 SIMILARITY_THRESHOLD = 0.4
@@ -509,10 +517,36 @@ class Scanner:
         self.seeds_by_chain = seeds_by_chain
         self.all_seeds: List[Seed] = [s for seeds in seeds_by_chain.values() for s in seeds]
         self.code_cache: OrderedDict = OrderedDict()
+        self.ngram_cache: Dict[str, Set[str]] = {}
         self.ccl = asyncio.Lock()
         self.ml = asyncio.Lock()
         self.matches: List[Dict[str, Any]] = []
         self._pe: Dict[str, asyncio.Event] = {}
+        self._cc_dirty = False
+        self._cc_since_save = 0
+        self._load_disk_cache()
+
+    def _load_disk_cache(self):
+        if not os.path.exists(CODE_CACHE_FILE):
+            return
+        try:
+            with open(CODE_CACHE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    parts = k.split("|", 1)
+                    if len(parts) == 2:
+                        chain, addr = parts
+                        self.code_cache[(chain, addr.lower())] = v
+        except Exception:
+            pass
+
+    def _save_disk_cache(self):
+        try:
+            data = {f"{ch}|{a}": c for (ch, a), c in self.code_cache.items() if c}
+            _awj(CODE_CACHE_FILE, data, None)
+        except Exception:
+            pass
 
     async def _bad(self, u, ul, uo, uf):
         async with ul:
@@ -530,86 +564,120 @@ class Scanner:
         else:
             await asyncio.sleep(1.0)
 
+    async def _try_one_url(self, sess, method, params, u, fs, rt):
+        try:
+            async with fs:
+                async with sess.post(u, json={"jsonrpc":"2.0","method":method,"params":params,"id":_next_rid()}, headers=HEADERS, timeout=rt) as r:
+                    if r.status == 200:
+                        d = await r.json(content_type=None)
+                        if isinstance(d, dict) and "result" in d:
+                            return u, d["result"], True
+                    if r.status == 429:
+                        await self._rl_sleep(r)
+                    return u, None, False
+        except Exception:
+            return u, None, False
+
     async def _one(self, sess, method, params, fs, ul, uo, uf, rt):
-        for at in range(2):
-            async with ul:
-                snap = list(uo)
-            for i, u in enumerate(snap):
-                try:
-                    async with fs:
-                        async with sess.post(u, json={"jsonrpc":"2.0","method":method,"params":params,"id":_next_rid()}, headers=HEADERS, timeout=rt) as r:
-                            if r.status == 200:
-                                d = await r.json(content_type=None)
-                                if isinstance(d, dict) and "result" in d:
-                                    if i != 0:
-                                        async with ul:
-                                            if u in uo:
-                                                uo.remove(u)
-                                                uo.insert(0, u)
-                                    return d["result"]
-                                # 200이지만 결과가 없는 응답(예: 비정상 바디)은 실패 처리 후 다음 URL로
-                                await self._bad(u, ul, uo, uf)
-                                continue
-                            else:
-                                # 429 포함 모든 비-200은 실패 카운트에 포함되어 3회 초과 시 URL 제거
-                                await self._bad(u, ul, uo, uf)
-                                if r.status == 429:
-                                    await self._rl_sleep(r)
-                except Exception:
-                    await self._bad(u, ul, uo, uf)
+        async with ul:
+            snap = list(uo)
+        if not snap:
+            return None
+        # 모든 URL을 병렬로 시도, 첫 성공 즉시 반환 (순차 15초 대기 제거)
+        results = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap], return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                continue
+            u, result, ok = res
+            if ok:
+                async with ul:
+                    if u in uo:
+                        uo.remove(u)
+                        uo.insert(0, u)
+                return result
+            await self._bad(u, ul, uo, uf)
+        await asyncio.sleep(0.5)
+        async with ul:
+            snap2 = list(uo)
+        if snap2:
+            results2 = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap2], return_exceptions=True)
+            for res in results2:
+                if isinstance(res, Exception):
                     continue
-            if at < 1:
-                await asyncio.sleep(0.5 * (2 ** at))
+                u, result, ok = res
+                if ok:
+                    async with ul:
+                        if u in uo:
+                            uo.remove(u)
+                            uo.insert(0, u)
+                    return result
+                await self._bad(u, ul, uo, uf)
         return None
+
+    async def _try_batch_url(self, sess, method, pl, u, fs, rt):
+        try:
+            body = [{"jsonrpc":"2.0","method":method,"params":p,"id":ix} for ix, p in enumerate(pl)]
+            async with fs:
+                async with sess.post(u, json=body, headers=HEADERS, timeout=rt) as r:
+                    if r.status == 200:
+                        d = await r.json(content_type=None)
+                        if isinstance(d, list):
+                            n = len(pl)
+                            rl = [None] * n
+                            for it in d:
+                                if isinstance(it, dict) and "id" in it:
+                                    try:
+                                        ix = int(it["id"])
+                                    except Exception:
+                                        continue
+                                    if 0 <= ix < n:
+                                        rl[ix] = it.get("result") if "result" in it else None
+                            if all(x is None for x in rl):
+                                return u, None, False
+                            return u, rl, True
+                    if r.status == 429:
+                        await self._rl_sleep(r)
+                    return u, None, False
+        except Exception:
+            return u, None, False
 
     async def _batch(self, sess, method, pl, fs, ul, uo, uf, rt):
         if not pl:
             return []
         n = len(pl)
-        for at in range(2):
-            async with ul:
-                snap = list(uo)
-            for i, u in enumerate(snap):
-                try:
-                    body = [{"jsonrpc":"2.0","method":method,"params":p,"id":ix} for ix, p in enumerate(pl)]
-                    async with fs:
-                        async with sess.post(u, json=body, headers=HEADERS, timeout=rt) as r:
-                            if r.status == 200:
-                                d = await r.json(content_type=None)
-                                if isinstance(d, list):
-                                    rl = [None] * n
-                                    for it in d:
-                                        if isinstance(it, dict) and "id" in it:
-                                            try:
-                                                ix = int(it["id"])
-                                            except Exception:
-                                                continue
-                                            if 0 <= ix < n:
-                                                rl[ix] = it.get("result") if "result" in it else None
-                                    if all(x is None for x in rl):
-                                        await self._bad(u, ul, uo, uf)
-                                        continue
-                                    if i != 0:
-                                        async with ul:
-                                            if u in uo:
-                                                uo.remove(u)
-                                                uo.insert(0, u)
-                                    return rl
-                                # 200이지만 결과가 없는 응답은 실패 처리 후 다음 URL로
-                                await self._bad(u, ul, uo, uf)
-                                continue
-                            else:
-                                # 429 포함 모든 비-200은 실패 카운트에 포함되어 3회 초과 시 URL 제거
-                                await self._bad(u, ul, uo, uf)
-                                if r.status == 429:
-                                    await self._rl_sleep(r)
-                except Exception:
-                    await self._bad(u, ul, uo, uf)
+        async with ul:
+            snap = list(uo)
+        if not snap:
+            return [None] * n
+        # 모든 URL을 병렬로 시도, 첫 성공 즉시 반환
+        results = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap], return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                continue
+            u, rl, ok = res
+            if ok:
+                async with ul:
+                    if u in uo:
+                        uo.remove(u)
+                        uo.insert(0, u)
+                return rl
+            await self._bad(u, ul, uo, uf)
+        await asyncio.sleep(0.5)
+        async with ul:
+            snap2 = list(uo)
+        if snap2:
+            results2 = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap2], return_exceptions=True)
+            for res in results2:
+                if isinstance(res, Exception):
                     continue
-            if at < 1:
-                await asyncio.sleep(0.5 * (2 ** at))
-        # 두 시도 모두 실패: 이미 지친 RPC에 개별 폴백 요청을 추가로 퍼붓지 않음.
-        # 해당 주소는 캐시되지 않아 다음 블록에서 재시도됨.
+                u, rl, ok = res
+                if ok:
+                    async with ul:
+                        if u in uo:
+                            uo.remove(u)
+                            uo.insert(0, u)
+                    return rl
+                await self._bad(u, ul, uo, uf)
         return [None] * n
 
     async def get_codes(self, sess, chain, addrs, blk, fs, ul, uo, uf, rt):
@@ -663,11 +731,21 @@ class Scanner:
                     self.code_cache.move_to_end(k)
                 while len(self.code_cache) > MAX_CODE_CACHE:
                     self.code_cache.popitem(last=False)
+                if upd:
+                    self._cc_dirty = True
                 for a in miss:
                     k = (chain, a)
                     ev = self._pe.pop(k, None)
                     if ev is not None:
                         ev.set()
+        if self._cc_dirty:
+            self._cc_since_save += 1
+            # 디스크 캐시 저장 스로틀: 새 코드가 나온 쿨로그 블록마다 수십 MB JSON 전체 재작성 방지.
+            # (크래시 시 최대 주기만큼 재조회 손실 감수, 커버리지·정확성엔 무영향)
+            if self._cc_since_save >= CODE_CACHE_SAVE_INTERVAL:
+                self._save_disk_cache()
+                self._cc_since_save = 0
+                self._cc_dirty = False
         for _, ev in wait:
             await ev.wait()
         out: List[Optional[str]] = []
@@ -690,59 +768,21 @@ class Scanner:
         ul = asyncio.Lock()
         uf: Dict[str, int] = {}
         rt = aiohttp.ClientTimeout(total=15)
-        for u in list(uo):
-            try:
-                done_all = True
-                for i in range(0, len(seeds), BATCH_SIZE):
-                    chunk = seeds[i:i+BATCH_SIZE]
-                    pl_ = [[a.address, "latest"] for a in chunk]
-                    # 이미 코드가 채워진 시드는 중복 RPC 호출 방지를 위해 요청 대상에서 제외
-                    pending = [s for s in chunk if not s.code_hex]
-                    if not pending:
-                        continue
-                    pl_ = [[s.address, "latest"] for s in pending]
-                    body = [{"jsonrpc":"2.0","method":"eth_getCode","params":p,"id":ix} for ix, p in enumerate(pl_)]
-                    async with fs:
-                        async with sess.post(u, json=body, headers=HEADERS, timeout=rt) as r:
-                            if r.status == 200:
-                                d = await r.json(content_type=None)
-                                if isinstance(d, list):
-                                    chunk_done = True
-                                    for idx in range(len(pending)):
-                                        it = d[idx] if idx < len(d) else None
-                                        s = pending[idx]
-                                        if isinstance(it, dict) and "result" in it:
-                                            c = it["result"]
-                                            if isinstance(c, str) and c and c != "0x":
-                                                s.code_hex = c.lower()
-                                                s.ngrams = ngrams(c[2:])
-                                                s.length = len(c[2:])
-                                        else:
-                                            # 배치 내 개별 항목이 누락되면 해당 청크 미완료로 처리해 다음 URL 재시도
-                                            chunk_done = False
-                                    if not chunk_done:
-                                        done_all = False
-                                        break
-                                else:
-                                    # 200이지만 바디가 리스트가 아니면(예: 에러 객체) 실패 처리 후 다음 URL
-                                    if r.status == 429:
-                                        await self._rl_sleep(r)
-                                    await self._bad(u, ul, uo, uf)
-                                    done_all = False
-                                    break
-                                continue
-                            else:
-                                if r.status == 429:
-                                    await self._rl_sleep(r)
-                                await self._bad(u, ul, uo, uf)
-                                done_all = False
-                                break
-                if done_all:
-                    return
-            except Exception:
-                await self._bad(u, ul, uo, uf)
-                continue
-        print(f"[{chain}] seed code fetch failed for {len(seeds)} seeds")
+        pending_all = [s for s in seeds if not s.code_hex]
+        if not pending_all:
+            return
+        for i in range(0, len(pending_all), BATCH_SIZE):
+            chunk = pending_all[i:i+BATCH_SIZE]
+            pl_ = [[s.address, "latest"] for s in chunk]
+            got = await self._batch(sess, "eth_getCode", pl_, fs, ul, uo, uf, rt)
+            for s, c in zip(chunk, got):
+                if isinstance(c, str) and c and c != "0x":
+                    s.code_hex = c.lower()
+                    s.ngrams = ngrams(c[2:])
+                    s.length = len(c[2:])
+        remaining = [s for s in seeds if not s.code_hex]
+        if remaining:
+            print(f"[{chain}] seed code fetch failed for {len(remaining)} seeds")
 
     def _similarity(self, hp: str, seed: Seed) -> float:
         if seed.code_hex and hp == seed.code_hex[2:].lower():
@@ -751,7 +791,13 @@ class Scanner:
             ratio = len(hp) / seed.length
             if ratio < LENGTH_RATIO_MIN or ratio > LENGTH_RATIO_MAX:
                 return 0.0
-        ng = ngrams(hp)
+        # n-gram 재계산 제거: 동일한 코드 해시는 캐시에서 재사용
+        ng = self.ngram_cache.get(hp)
+        if ng is None:
+            ng = ngrams(hp)
+            if len(self.ngram_cache) >= MAX_CODE_CACHE:
+                self.ngram_cache.pop(next(iter(self.ngram_cache)))
+            self.ngram_cache[hp] = ng
         return jaccard(ng, seed.ngrams)
 
     async def scan_chain(self, chain, sess, resume=None, fs=None, pl=None, sp=None):
@@ -841,6 +887,9 @@ class Scanner:
         else:
             print(f"[{chain}] latest {latest} scan {sr} (full history)")
 
+        # [CRITICAL DESIGN - NEVER CHANGE] 모든 씨드를 모든 체인에서 비교함.
+        # 이더리움 취약 컨트랙트와 동일한 바이트코드가 BSC/아비트럼 등 타 체인에 클론 배포된 경우를
+        # 잡기 위해 체인별 씨드 분리는 금지함. self.all_seeds(전 체인 모든 씨드)와 비교하는 것이 의도된 설계임.
         seeds = self.all_seeds
         sinfo = [(s.address, s.label, s.incident, s.principle) for s in seeds]
 
@@ -854,40 +903,17 @@ class Scanner:
                 return addrs
             # 일부 RPC는 full=True를 무시하고 tx 해시 문자열만 반환함.
             # 해시만 있으면 to 주소를 알 수 없으므로 eth_getTransactionByHash로 조회.
-            # 전체 tx 해시를 BATCH_SIZE 단위로 순회하며 누락 없이 수집함.
             if txs and isinstance(txs[0], str):
+                # 병렬 시도(_batch 재사용): 모든 URL 동시 호출, 첫 성공 반환.
                 for i in range(0, len(txs), BATCH_SIZE):
                     hash_batch = txs[i:i+BATCH_SIZE]
-                    bodies = [
-                        {"jsonrpc": "2.0", "method": "eth_getTransactionByHash", "params": [h], "id": ix}
-                        for ix, h in enumerate(hash_batch)
-                    ]
-                    async with ul:
-                        snap = list(uo)
-                    batch_ok = False
-                    for u in snap:
-                        try:
-                            async with fs:
-                                async with sess.post(u, json=bodies, headers=HEADERS, timeout=rt) as r:
-                                    if r.status == 200:
-                                        d = await r.json(content_type=None)
-                                        if isinstance(d, list):
-                                            batch_ok = True
-                                            for it in d:
-                                                if isinstance(it, dict) and "result" in it and it["result"]:
-                                                    tx = it["result"]
-                                                    to = tx.get("to")
-                                                    if isinstance(to, str) and ADDRESS_RE.fullmatch(to):
-                                                        addrs.add(to.lower())
-                                        break
-                                    else:
-                                        await self._bad(u, ul, uo, uf)
-                        except Exception:
-                            await self._bad(u, ul, uo, uf)
-                            continue
-                    if not batch_ok:
-                        # 해당 배치가 전체 URL 실패 시 해당 해시들은 수집 못 하고 다음 배치로 넘어감
-                        continue
+                    pl_ = [[h] for h in hash_batch]
+                    got = await self._batch(sess, "eth_getTransactionByHash", pl_, fs, ul, uo, uf, rt)
+                    for h, c in zip(hash_batch, got):
+                        if isinstance(c, dict):
+                            to = c.get("to")
+                            if isinstance(to, str) and ADDRESS_RE.fullmatch(to):
+                                addrs.add(to.lower())
                 return addrs
             for tx in txs:
                 if not isinstance(tx, dict):
@@ -959,9 +985,9 @@ class Scanner:
                 if isinstance(x, Exception):
                     print(f"  [{chain}] b{b} {x}")
             blocks_since_checkpoint += len(batch_blks)
-            # 체크포인트는 매번 전체 매칭 리스트를 원자적으로 재기록함(증분 저장 미사용).
-            # 크래시 시 일관성 복구를 우선하는 의도적 설계이며, 리뷰 시 "매번 전체 재기록" 지적은 제외 대상.
-            if blocks_since_checkpoint >= PROGRESS_INTERVAL or ed - 1 == latest:
+            # 체크포인트는 매칭 변화가 있을 때만 전체 재기록 (변화 없으면 디스크 I/O 스킵).
+            # 크래시 시 일관성 복구를 우선하는 의도적 설계 유지.
+            if (blocks_since_checkpoint >= PROGRESS_INTERVAL or ed - 1 == latest) and len(cm) != last_checkpoint_len:
                 async with pl:
                     sp[chain] = {"chain": chain, "last_block": ed - 1, "matches": list(cm)}
                     await asyncio.get_running_loop().run_in_executor(None, _awj, PROGRESS_FILE, dict(sp), None, False)
@@ -1011,7 +1037,11 @@ async def main_async():
             pg = sp.get(ch) if isinstance(sp, dict) else None
             rf = pg.get("last_block") if isinstance(pg, dict) else None
             stasks.append(sc.scan_chain(ch, sess, rf, fs_map[ch], pl, sp))
-        await asyncio.gather(*stasks, return_exceptions=True)
+        gs = await asyncio.gather(*stasks, return_exceptions=True)
+        for ch, x in zip(chains, gs):
+            if isinstance(x, Exception):
+                print(f"  [{ch}] scan task failed: {x!r}")
+    sc._save_disk_cache()
     seen = {}
     uniq = []
     for m in sc.matches:
