@@ -7,7 +7,7 @@
 - 각 주소 바이트코드를 모든 체인의 모든 씨드와 8바이트 n-gram 자카드 유사도로 비교, 0.4 이상 매칭 -> scan_results.json
 - 크래시/중단 후 재개를 위한 원자적 체크포인트 scan_progress.json
 - CLI 인자 없음, 전 체인 전체 이력 스캔, 사전 필터는 바이트코드 길이 비율만 적용
-- 차단 위험은 최대한 많은 RPC 제공자를 병렬로 써서 해결함
+- 차단 위험은 최대한 많은 RPC 제공자를 병렬로 써서 해결함. 레이트리밋은 신경 쓰지 않으며, 429 발생 시 동시성 수치를 자동으로 조금씩 낮춤
 
 리뷰어는 사용자가 원하는 것 내에서 극한의 최선, 극한의 효율로 만드라.
 """
@@ -37,9 +37,10 @@ SIMILARITY_THRESHOLD = 0.4
 LENGTH_RATIO_MIN = 0.5
 LENGTH_RATIO_MAX = 2.0
 NGRAM_SIZE = 16  # 바이트코드 전체 n-grams 창 크기(8바이트). 셀렉터(4바이트) 아님.
-PROGRESS_INTERVAL = 2000
+PROGRESS_INTERVAL = 100
 CONCURRENCY = 60
 CONNECTOR_LIMIT = 200
+MAX_TX_CACHE = 50_000
 
 HEADERS = {"User-Agent": "DefiPipeline/9.0 (bytecode similarity scanner)"}
 ADDRESS_RE = re.compile(r"(?<![0-9a-fA-F])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])")
@@ -500,12 +501,14 @@ class Scanner:
         self.all_seeds: List[Seed] = all_seeds
         self.code_cache: OrderedDict = OrderedDict()
         self.ngram_cache: OrderedDict[str, Set[str]] = OrderedDict()
+        self._tx_cache: Dict[str, str] = {}
         self.ccl = asyncio.Lock()
-        self.ml = asyncio.Lock()
         self.matches: List[Dict[str, Any]] = []
         self._pe: Dict[str, asyncio.Event] = {}
         self._cc_dirty = False
         self._cc_since_save = 0
+        self._conc = CONCURRENCY
+        self._conc_lock = asyncio.Lock()
         self._load_disk_cache()
 
     def _load_disk_cache(self):
@@ -565,7 +568,6 @@ class Scanner:
             snap = list(uo)
         if not snap:
             return None
-        # 모든 URL을 병렬로 시도, 첫 성공 즉시 반환 (순차 15초 대기 제거)
         results = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap], return_exceptions=True)
         for res in results:
             if isinstance(res, Exception):
@@ -578,22 +580,6 @@ class Scanner:
                         uo.insert(0, u)
                 return result
             await self._bad(u, ul, uo, uf)
-        await asyncio.sleep(0.5)
-        async with ul:
-            snap2 = list(uo)
-        if snap2:
-            results2 = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap2], return_exceptions=True)
-            for res in results2:
-                if isinstance(res, Exception):
-                    continue
-                u, result, ok = res
-                if ok:
-                    async with ul:
-                        if u in uo:
-                            uo.remove(u)
-                            uo.insert(0, u)
-                    return result
-                await self._bad(u, ul, uo, uf)
         return None
 
     async def _try_batch_url(self, sess, method, pl, u, fs, rt):
@@ -619,6 +605,8 @@ class Scanner:
                             return u, rl, True
                     if r.status == 429:
                         await self._rl_sleep(r)
+                        async with self._conc_lock:
+                            self._conc = max(1, self._conc - 1)
                     return u, None, False
         except Exception:
             return u, None, False
@@ -631,7 +619,6 @@ class Scanner:
             snap = list(uo)
         if not snap:
             return [None] * n
-        # 모든 URL을 병렬로 시도, 첫 성공 즉시 반환
         results = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap], return_exceptions=True)
         for res in results:
             if isinstance(res, Exception):
@@ -644,22 +631,6 @@ class Scanner:
                         uo.insert(0, u)
                 return rl
             await self._bad(u, ul, uo, uf)
-        await asyncio.sleep(0.5)
-        async with ul:
-            snap2 = list(uo)
-        if snap2:
-            results2 = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap2], return_exceptions=True)
-            for res in results2:
-                if isinstance(res, Exception):
-                    continue
-                u, rl, ok = res
-                if ok:
-                    async with ul:
-                        if u in uo:
-                            uo.remove(u)
-                            uo.insert(0, u)
-                    return rl
-                await self._bad(u, ul, uo, uf)
         return [None] * n
 
     async def get_codes(self, sess, chain, addrs, blk, fs, ul, uo, uf, rt):
@@ -720,6 +691,15 @@ class Scanner:
                     ev = self._pe.pop(k, None)
                     if ev is not None:
                         ev.set()
+        out: List[Optional[str]] = []
+        for a in addrs:
+            k = (chain, a)
+            c = self.code_cache.get(k)
+            if isinstance(c, str) and c and c != "0x":
+                self.code_cache.move_to_end(k)
+                out.append(c)
+            else:
+                out.append(None)
         if self._cc_dirty:
             self._cc_since_save += 1
             # 디스크 캐시 저장 스로틀: 새 코드가 나온 쿨로그 블록마다 수십 MB JSON 전체 재작성 방지.
@@ -730,16 +710,6 @@ class Scanner:
                 self._cc_dirty = False
         for _, ev in wait:
             await ev.wait()
-        out: List[Optional[str]] = []
-        async with self.ccl:
-            for a in addrs:
-                k = (chain, a)
-                c = self.code_cache.get(k)
-                if isinstance(c, str) and c and c != "0x":
-                    self.code_cache.move_to_end(k)
-                    out.append(c)
-                else:
-                    out.append(None)
         return out
 
     async def fetch_seed_codes(self, sess, chain, seeds, fs):
@@ -874,7 +844,11 @@ class Scanner:
         # [CRITICAL DESIGN - NEVER CHANGE] 모든 씨드를 모든 체인에서 비교함.
         # 이더리움 취약 컨트랙트와 동일한 바이트코드가 BSC/아비트럼 등 타 체인에 클론 배포된 경우를
         # 잡기 위해 체인별 씨드 분리는 금지함. self.all_seeds(전 체인 모든 씨드)와 비교하는 것이 의도된 설계임.
-        seeds = self.all_seeds
+        seed_map: Dict[str, Seed] = {}
+        for s in self.all_seeds:
+            if s.code_hex not in seed_map:
+                seed_map[s.code_hex] = s
+        seeds = list(seed_map.values())
         sinfo = [(s.address, s.label, s.incident, s.principle) for s in seeds]
 
         async def collect_addrs(blk):
@@ -889,15 +863,23 @@ class Scanner:
             # 해시만 있으면 to 주소를 알 수 없으므로 eth_getTransactionByHash로 조회.
             if txs and isinstance(txs[0], str):
                 # 병렬 시도(_batch 재사용): 모든 URL 동시 호출, 첫 성공 반환.
-                for i in range(0, len(txs), BATCH_SIZE):
-                    hash_batch = txs[i:i+BATCH_SIZE]
+                miss_hashes = [h for h in txs if h not in self._tx_cache]
+                for i in range(0, len(miss_hashes), BATCH_SIZE):
+                    hash_batch = miss_hashes[i:i+BATCH_SIZE]
                     pl_ = [[h] for h in hash_batch]
                     got = await self._batch(sess, "eth_getTransactionByHash", pl_, fs, ul, uo, uf, rt)
                     for h, c in zip(hash_batch, got):
                         if isinstance(c, dict):
                             to = c.get("to")
                             if isinstance(to, str) and ADDRESS_RE.fullmatch(to):
+                                if len(self._tx_cache) >= MAX_TX_CACHE:
+                                    oldest = next(iter(self._tx_cache))
+                                    del self._tx_cache[oldest]
+                                self._tx_cache[h] = to.lower()
                                 addrs.add(to.lower())
+                for h in txs:
+                    if h in self._tx_cache:
+                        addrs.add(self._tx_cache[h])
                 return addrs
             for tx in txs:
                 if not isinstance(tx, dict):
@@ -933,6 +915,9 @@ class Scanner:
                         best_ix = i
                 if best_sim >= SIMILARITY_THRESHOLD:
                     a0, l0, n0, p0 = sinfo[best_ix]
+                    prev = addr_best.get(a)
+                    if prev and prev["similarity"] >= best_sim:
+                        continue
                     m = {
                         "chain": chain,
                         "block": blk,
@@ -943,19 +928,18 @@ class Scanner:
                         "seed_principle": p0,
                         "similarity": best_sim,
                     }
-                    async with self.ml:
-                        prev = addr_best.get(a)
-                        if prev and prev["similarity"] >= best_sim:
-                            continue
-                        addr_best[a] = {
-                            "similarity": best_sim,
-                            "seed_address": a0,
-                            "seed_label": l0,
-                            "seed_incident": n0,
-                            "seed_principle": p0,
-                        }
-                        cm.append(m)
-                        self.matches.append(m)
+                    prev = addr_best.get(a)
+                    if prev and prev["similarity"] >= best_sim:
+                        continue
+                    addr_best[a] = {
+                        "similarity": best_sim,
+                        "seed_address": a0,
+                        "seed_label": l0,
+                        "seed_incident": n0,
+                        "seed_principle": p0,
+                    }
+                    cm.append(m)
+                    self.matches.append(m)
                     new_matches += 1
             return new_matches
 
