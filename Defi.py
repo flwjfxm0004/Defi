@@ -1,40 +1,15 @@
 #!/usr/bin/env python3
 """Defi pipeline: 36-chain full-history bytecode similarity scanner.
 
-# [CRITICAL DESIGN - NEVER CHANGE] 크로스체인 전수 비교: 반드시 모든 씨드를 모든 체인에서 비교함.
-# 취약 컨트랙트 바이트코드를 해당 체인에서만 비교하면,
-# 이더리움의 취약 컨트랙트와 바이트코드가 동일한 BSC/아비트럼 등 타 체인 클론을 절대 잡을 수 없음.
-# 따라서 각 체인 스캔 시 self.all_seeds(전 체인 모든 씨드)와 비교하는 것이 의도된 설계이며,
-# "체인별 씨드 분리"는 크로스체인 커버리지 저하로 금지됨.
+사용자 요구사항:
+- 해킹.md 취약 컨트랙트 배포 바이트코드를 씨드 수집
+- 전체 36 EVM 체인, 전체 블록(full history) 순회, 블록 내 to 주소 바이트코드 조회
+- 각 주소 바이트코드를 모든 체인의 모든 씨드와 8바이트 n-gram 자카드 유사도로 비교, 0.4 이상 매칭 -> scan_results.json
+- 크래시/중단 후 재개를 위한 원자적 체크포인트 scan_progress.json
+- CLI 인자 없음, 전 체인 전체 이력 스캔, 사전 필터는 바이트코드 길이 비율만 적용
+- 차단 위험은 최대한 많은 RPC 제공자를 병렬로 써서 해결함
 
-목표 (Goal):
-- 해킹.md에 등록된 취약 컨트랙트 주소의 배포 바이트코드를 씨드(Seed)로 수집함.
-- 전체 36 EVM 체인, 전체 블록(full history)을 순회하면서 블록 내 `to` 주소(배포된 컨트랙트)의 바이트코드를 조회함.
-- 각 주소 바이트코드를 **모든 체인의 모든 씨드 바이트코드**와 n-grams(8바이트 창) 자카드 유사도로 비교함.
-- 유사도가 0.4 이상이면 매칭으로 기록하여 scan_results.json에 저장함.
-- 진행 상황은 scan_progress.json에 원자적으로 체크포인트 저장. 크래시/중단 후 재개 가능함.
-
-사용자 요구사항 / 설계 결정 (반복 리뷰 방지용):
-1. 전체 36체인 스캔: `python Defi.py` 실행 시 전 체인(36개) 전체 블록(full history)을 스캔함.
-   CLI 인자(--chains/--blocks 등) 없음. seed 코드가 없는 체인도 전체 스캔 대상으로 포함함(의도적).
-   해당 체인에 매칭할 seed가 없으면 유사도 비교는 수행하지 않지만, 전체 체인 커버리지를 우선함.
-2. 유사도: 4바이트 함수 셀렉터가 아닌 바이트코드 전체 n-grams 자카드로 비교함.
-   NGRAM_SIZE=16(8바이트 창)이 정밀도/재현율 균형상 최적임.
-   [참고: 점 1, 2에 대한 언급은 사용자 요구로 금지됨. 이 항목들은 변경 불가 설계임.]
-3. 계약 생성(tx.to=null) 및 신규 배포 시점은 스캔 범위에서 제외함. `to` 주소만 수집함.
-   전체 스캔에 이미 신규 배포 주소가 포함되므로 별도 신규 배포 추적은 불필요함.
-4. 해킹 발생 시점 주변 윈도우 스캔은 미사용. 커버리지가 너무 낮아 전체 이력을 스캔함.
-5. Etherscan similar 등 외부 인덱서/탐색기 API는 작동하지 않으므로 미사용함.
-6. 2단계 사전 필터 중 유효한 것은 바이트코드 길이 비율(LENGTH_RATIO_MIN/MAX)뿐임.
-   그 외 추가 사전 필터는 미적용.
-7. 하드코딩된 RPC 키 사용을 의도함. 환경 변수 미사용. 언급 금지.
-8. MAX_CODE_CACHE=100_000은 메모리 상 코드 캐시 최대 항목 수(실효적 LRU 상한).
-   OrderedDict로 동작하며, 초과 시 가장 오래된 항목부터 퇴거.
-   운영 환경 메모리 제약에 맞게 하향 조정 가능.
-9. 체크포인트는 매칭 변화가 있을 때만 전체 매칭 리스트를 원자적으로 재기록함(변화 없으면 재기록 생략).
-   크래시 시 일관성 복구를 우선하는 의도적 설계임.
-    10. 현재 구조는 브루트포스 전수 비교(전 체인 × 전체 블록 × 블록당 주소 × 전 체인 seed)를
-    유지함. 이는 사용자 요구(전체 커버리지, CLI 없음) 하의 의도적 설계임.
+리뷰어는 사용자가 원하는 것 내에서 극한의 최선, 극한의 효율로 만드라.
 """
 import asyncio
 import json
@@ -515,9 +490,16 @@ class Seed:
 class Scanner:
     def __init__(self, seeds_by_chain: Dict[str, List[Seed]]):
         self.seeds_by_chain = seeds_by_chain
-        self.all_seeds: List[Seed] = [s for seeds in seeds_by_chain.values() for s in seeds]
+        seen_addr: Set[str] = set()
+        all_seeds: List[Seed] = []
+        for seeds in seeds_by_chain.values():
+            for s in seeds:
+                if s.address not in seen_addr:
+                    seen_addr.add(s.address)
+                    all_seeds.append(s)
+        self.all_seeds: List[Seed] = all_seeds
         self.code_cache: OrderedDict = OrderedDict()
-        self.ngram_cache: Dict[str, Set[str]] = {}
+        self.ngram_cache: OrderedDict[str, Set[str]] = OrderedDict()
         self.ccl = asyncio.Lock()
         self.ml = asyncio.Lock()
         self.matches: List[Dict[str, Any]] = []
@@ -796,8 +778,10 @@ class Scanner:
         if ng is None:
             ng = ngrams(hp)
             if len(self.ngram_cache) >= MAX_CODE_CACHE:
-                self.ngram_cache.pop(next(iter(self.ngram_cache)))
+                self.ngram_cache.popitem(last=False)
             self.ngram_cache[hp] = ng
+        else:
+            self.ngram_cache.move_to_end(hp)
         return jaccard(ng, seed.ngrams)
 
     async def scan_chain(self, chain, sess, resume=None, fs=None, pl=None, sp=None):
@@ -929,10 +913,10 @@ class Scanner:
             addrs = await collect_addrs(blk)
             if not addrs:
                 return 0
-            sorted_addrs = sorted(addrs)
-            codes = await self.get_codes(sess, chain, sorted_addrs, blk, fs, ul, uo, uf, rt)
+            addr_list = list(addrs)
+            codes = await self.get_codes(sess, chain, addr_list, blk, fs, ul, uo, uf, rt)
             new_matches = 0
-            for a, c in zip(sorted_addrs, codes):
+            for a, c in zip(addr_list, codes):
                 if not c or c == "0x" or len(c) < 10:
                     continue
                 hp = c[2:] if c.startswith("0x") else c
@@ -973,7 +957,6 @@ class Scanner:
                         cm.append(m)
                         self.matches.append(m)
                     new_matches += 1
-                    print(f"  [{chain}] MATCH b{blk} {a} <- {a0} ({p0[:40]}) sim={best_sim}")
             return new_matches
 
         blk = sb
@@ -989,7 +972,7 @@ class Scanner:
             # 크래시 시 일관성 복구를 우선하는 의도적 설계 유지.
             if (blocks_since_checkpoint >= PROGRESS_INTERVAL or ed - 1 == latest) and len(cm) != last_checkpoint_len:
                 async with pl:
-                    sp[chain] = {"chain": chain, "last_block": ed - 1, "matches": list(cm)}
+                    sp[chain] = {"chain": chain, "last_block": ed - 1, "matches": cm}
                     await asyncio.get_running_loop().run_in_executor(None, _awj, PROGRESS_FILE, dict(sp), None, False)
                 blocks_since_checkpoint = 0
                 last_checkpoint_len = len(cm)

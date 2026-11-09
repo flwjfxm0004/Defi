@@ -1,13 +1,13 @@
-﻿# Permanent stop: kill all Pica/PcCafe/World Class/PFGamePot processes WITHOUT shutting down the PC.
+﻿# Permanent stop: kill all Pica/PcCafe/World Class/PFGamePot/HyperOTT(NsmPlayer)/DAK.GG processes WITHOUT shutting down the PC.
 # CRITICAL: World Class shutdown protection triggers PC power-off when WCCustomer dies
 # while its watchdogs (wchwmon, WCCST) are still alive. Therefore watchdogs MUST be
 # killed FIRST and fully before any WCCustomer process is touched.
 # No sleeps between kill steps to prevent watchdog respawn windows.
 
-$processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|GamePot|PF|PFGameDisk|PFGameSync|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|DesktopAgent'
-$processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent)$'
-$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service','PFControlMgr','PFHardwardHelper','PFGameSyncMgr','DesktopAgent')
-$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager','PFGamePot','PFCms','PFDesktopClient','PFGameDisk','PFGameSyncAgent')
+$processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|GamePot|PF|PFGameDisk|PFGameSync|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|DesktopAgent|NsmPlayer|HyperOTT|Nsm|muplayer|DAK\.GG'
+$processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|NsmPlayer2|muplayer|DAK\.GG)$'
+$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service','PFControlMgr','PFHardwardHelper','PFGameSyncMgr','DesktopAgent','NsmPlayer2','muplayer','DAK.GG')
+$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager','PFGamePot','PFCms','PFDesktopClient','PFGameDisk','PFGameSyncAgent','NsmPlayer2','muplayer','DAK.GG')
 
 function Kill-ByName($name) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
@@ -51,7 +51,11 @@ $foldersToDelete = @(
     "C:\Users\Administrator\AppData\Roaming\world-class-user\runtime",
     "H:\GamePot_Client",
     "H:\PFGameSync_Client",
-    "C:\PFGameDisk"
+    "C:\PFGameDisk",
+    "H:\DATA\HyperOTT",
+    "H:\DATA\DAK.GG",
+    "C:\Users\Administrator\AppData\Local\Programs\DAK.GG",
+    "C:\Users\Administrator\AppData\Roaming\DAK.GG"
 )
 
 foreach ($folder in $foldersToDelete) {
@@ -84,18 +88,21 @@ foreach ($p in $all) {
 }
 
 # ============================================================
-# STEP 5: Stop and permanently disable/delete services
+# STEP 5: Stop and permanently disable/delete services + kernel drivers
 # ============================================================
-Write-Host "[5/9] Removing services..."
-$services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent')
+Write-Host "[5/9] Removing services and kernel drivers..."
+$services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','R0PFHardwardHelper','PFGameDiskPNP','NsmPlayer2','muplayer','DAK.GG')
 foreach ($s in $services) {
     $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
     if ($svc) {
-        if ($svc.Status -eq 'Running') { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue }
+        if ($svc.Status -eq 'Running') {
+            try { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue } catch {}
+            try { sc.exe stop $s 2>&1 | Out-Null } catch {}
+        }
         try { Set-Service -Name $s -StartupType Disabled -ErrorAction SilentlyContinue } catch {}
         try { sc.exe config $s start= disabled 2>&1 | Out-Null } catch {}
         try { sc.exe delete $s 2>&1 | Out-Null } catch {}
-        Write-Host "Service removed: $s"
+        Write-Host "Service/driver removed: $s"
     }
 }
 
@@ -103,7 +110,7 @@ foreach ($s in $services) {
 # STEP 6: Remove registry Run/RunOnce entries (all hives/paths) - NO BACKUP
 # ============================================================
 Write-Host "[6/9] Removing registry auto-start entries..."
-$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','GamePot')
+$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','GamePot','NsmPlayer','HyperOTT','Nsm','muplayer','DAK.GG','electron.app.DAK.GG')
 function Is-TargetName($name) {
     foreach ($t in $targetNames) {
         if ($name -eq $t) { return $true }
@@ -113,7 +120,7 @@ function Is-TargetName($name) {
 }
 function Is-TargetValue($value) {
     if (-not $value) { return $false }
-    return $value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|GamePot'
+    return $value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|GamePot|NsmPlayer|HyperOTT|Nsm|muplayer|DAK\.GG'
 }
 
 $runKeys = @(
@@ -186,6 +193,18 @@ foreach ($folder in $startupFolders) {
     }
 }
 
+# Delete DAK.GG shortcuts from Start Menu Programs and Desktop
+$shortcutPaths = @(
+    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\DAK.GG.lnk",
+    "$env:USERPROFILE\Desktop\DAK.GG.lnk",
+    "H:\DATA\Desktop\DAK.GG.lnk"
+)
+foreach ($sp in $shortcutPaths) {
+    if (Test-Path $sp) {
+        try { Remove-Item -LiteralPath $sp -Force -ErrorAction SilentlyContinue; Write-Host "Deleted shortcut: $sp" } catch {}
+    }
+}
+
 # ============================================================
 # STEP 8: Final confirmation sweep
 # ============================================================
@@ -216,4 +235,4 @@ foreach ($folder in $foldersToDelete) {
     }
 }
 
-Write-Host "Done. All Pica/PcCafe/World Class/PFGamePot entries permanently disabled. PC was NOT shut down. No backup saved."
+Write-Host "Done. All Pica/PcCafe/World Class/PFGamePot/HyperOTT(NsmPlayer)/DAK.GG entries permanently disabled. PC was NOT shut down. No backup saved."
