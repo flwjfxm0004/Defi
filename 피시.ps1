@@ -6,10 +6,10 @@
 # Also kills all revival/resurrection mechanisms: watchdogs, services, kernel drivers,
 # registry Run/RunOnce, scheduled tasks, startup shortcuts.
 
-$processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|GamePot|PF|PFGameDisk|PFGameSync|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|DesktopAgent|NsmPlayer|HyperOTT|Nsm|muplayer|DAK\.GG|iGreensys|PicaigreenClient|picaigreenClient|picaigreenRun|picaigreenupC|picaigreenDownC|CounterIPSet|igreenup|AutoStarter|snetcfg|Setup_DriverSigning|NBMS|BarClient|BarMonitor|BarRemote|WmClt|WMCLT|GameHub|Launcher|DisklessStart|P2PSync|VideoSet|SSDSyncer|Nexon|게토|Geto'
-$processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|NsmPlayer2|muplayer|DAK\.GG|iGreensys|PicaigreenClient|picaigreenClient|picaigreenRun|picaigreenupC|picaigreenDownC|CounterIPSet|igreenup|AutoStarter|snetcfg|Setup_DriverSigning|BarClientView|BarMonitor|BarRemoteSrv|BarClientTask|WmClt|WMCLTSVC|GameHub|Launcher Start|DisklessStart|P2PSyncService|VideoSet|SSDSyncer|게토|Geto)$'
-$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service','PFControlMgr','PFHardwardHelper','PFGameSyncMgr','DesktopAgent','NsmPlayer2','muplayer','DAK.GG','iGreensys','picaigreenRun','picaigreenupC','picaigreenDownC','CounterIPSet','igreenup','AutoStarter','snetcfg','Setup_DriverSigning','BarClientView','BarMonitor','BarRemoteSrv','BarClientTask','WmClt','WMCLTSVC','GameHub','Launcher Start','DisklessStart','P2PSyncService','VideoSet','SSDSyncer','게토','Geto')
-$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager','PFGamePot','PFCms','PFDesktopClient','PFGameDisk','PFGameSyncAgent','NsmPlayer2','muplayer','DAK.GG','PicaigreenClient','picaigreenClient','iGreensys','BarClientView','BarMonitor','BarRemoteSrv','BarClientTask','WmClt','WMCLTSVC','GameHub','Launcher Start','DisklessStart','P2PSyncService','VideoSet','SSDSyncer','게토','Geto')
+$processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|GamePot|PF|PFGameDisk|PFGameSync|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|DesktopAgent|NsmPlayer|HyperOTT|Nsm|muplayer|DAK\.GG|iGreensys|PicaigreenClient|picaigreenClient|picaigreenRun|picaigreenupC|picaigreenDownC|CounterIPSet|igreenup|AutoStarter|snetcfg|Setup_DriverSigning|NBMS|BarClient|BarMonitor|BarRemote|WmClt|WMCLT|GameHub|Launcher|DisklessStart|P2PSync|VideoSet|SSDSyncer|Nexon|게토|Geto|ohm|playdonut|wico'
+$processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|NsmPlayer2|muplayer|DAK\.GG|iGreensys|PicaigreenClient|picaigreenClient|picaigreenRun|picaigreenupC|picaigreenDownC|CounterIPSet|igreenup|AutoStarter|snetcfg|Setup_DriverSigning|BarClientView|BarMonitor|BarRemoteSrv|BarClientTask|WmClt|WMCLTSVC|GameHub|Launcher Start|DisklessStart|P2PSyncService|VideoSet|SSDSyncer|게토|Geto|ohm|playdonut_hm)$'
+$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service','PFControlMgr','PFHardwardHelper','PFGameSyncMgr','DesktopAgent','NsmPlayer2','muplayer','DAK.GG','iGreensys','picaigreenRun','picaigreenupC','picaigreenDownC','CounterIPSet','igreenup','AutoStarter','snetcfg','Setup_DriverSigning','BarClientView','BarMonitor','BarRemoteSrv','BarClientTask','WmClt','WMCLTSVC','GameHub','Launcher Start','DisklessStart','P2PSyncService','VideoSet','SSDSyncer','게토','Geto','ohm','playdonut_hm')
+$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager','PFGamePot','PFCms','PFDesktopClient','PFGameDisk','PFGameSyncAgent','NsmPlayer2','muplayer','DAK.GG','PicaigreenClient','picaigreenClient','iGreensys','BarClientView','BarMonitor','BarRemoteSrv','BarClientTask','WmClt','WMCLTSVC','GameHub','Launcher Start','DisklessStart','P2PSyncService','VideoSet','SSDSyncer','게토','Geto','ohm','playdonut_hm')
 
 function Kill-ByName($name) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
@@ -63,7 +63,8 @@ $foldersToDelete = @(
     "B:\NBMSClient",
     "B:\bClient",
     "C:\Launcher",
-    "C:\Program Files (x86)\Mobilnet\Wm\WmClt"
+    "C:\Program Files (x86)\Mobilnet\Wm\WmClt",
+    "Y:\wico"
 )
 
 foreach ($folder in $foldersToDelete) {
@@ -98,7 +99,7 @@ foreach ($p in $all) {
 # STEP 5: Stop and permanently disable/delete services + kernel drivers
 # ============================================================
 Write-Host "[5/9] Removing services and kernel drivers..."
-$services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','R0PFHardwardHelper','PFGameDiskPNP','NsmPlayer2','muplayer','DAK.GG','igreensys','BarRemote2','WMCLTSVC','Nexon Launcher','P2PSyncService')
+$services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','R0PFHardwardHelper','PFGameDiskPNP','NsmPlayer2','muplayer','DAK.GG','igreensys','BarRemote2','WMCLTSVC','Nexon Launcher','P2PSyncService','ohm','playdonut_hm')
 foreach ($s in $services) {
     $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
     if ($svc) {
@@ -117,7 +118,7 @@ foreach ($s in $services) {
 # STEP 6: Remove registry Run/RunOnce entries (all hives/paths) - blocks revival on boot
 # ============================================================
 Write-Host "[6/9] Removing registry auto-start entries (revival block)..."
-$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','GamePot','NsmPlayer','HyperOTT','Nsm','muplayer','DAK.GG','electron.app.DAK.GG','DisklessStart','Launcher Start','BarClientTask','WMCLT','BarRemote2','WMCLTSVC','Nexon Launcher','게토','Geto')
+$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','GamePot','NsmPlayer','HyperOTT','Nsm','muplayer','DAK.GG','electron.app.DAK.GG','DisklessStart','Launcher Start','BarClientTask','WMCLT','BarRemote2','WMCLTSVC','Nexon Launcher','게토','Geto','ohm','playdonut_hm','wico')
 function Is-TargetName($name) {
     foreach ($t in $targetNames) {
         if ($name -eq $t) { return $true }
@@ -127,7 +128,7 @@ function Is-TargetName($name) {
 }
 function Is-TargetValue($value) {
     if (-not $value) { return $false }
-    return $value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|GamePot|NsmPlayer|HyperOTT|Nsm|muplayer|DAK\.GG|NBMS|BarClient|BarMonitor|BarRemote|WmClt|WMCLT|GameHub|Launcher|DisklessStart|P2PSync|VideoSet|SSDSyncer|Nexon|게토|Geto'
+    return $value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|GamePot|NsmPlayer|HyperOTT|Nsm|muplayer|DAK\.GG|NBMS|BarClient|BarMonitor|BarRemote|WmClt|WMCLT|GameHub|Launcher|DisklessStart|P2PSync|VideoSet|SSDSyncer|Nexon|게토|Geto|ohm|playdonut|wico'
 }
 
 $runKeys = @(
