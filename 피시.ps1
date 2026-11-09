@@ -1,19 +1,64 @@
-﻿# Permanent stop: kill all Pica/PcCafe/World Class processes, disable/delete services/drivers, remove all auto-start entries.
-# 1) Kill all related processes FIRST (so watchdogs cannot respawn during cleanup)
+﻿# Permanent stop: kill all Pica/PcCafe/World Class processes WITHOUT shutting down the PC.
+# CRITICAL: World Class shutdown protection triggers PC power-off when WCCustomer dies
+# while its watchdogs (wchwmon, WCCST) are still alive. Therefore watchdogs MUST be
+# killed FIRST and fully before any WCCustomer process is touched.
+
 $processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1'
 $processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스)$'
+$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service')
+$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager')
+
+function Kill-ByName($name) {
+    Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
+        try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; Write-Host "Killed: $($_.Name) ($($_.Id))" } catch {}
+    }
+}
+
+function Kill-ByPathPattern() {
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -match $processPatterns) } | ForEach-Object {
+        try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; Write-Host "Killed(path): $($_.Name) ($($_.Id))" } catch {}
+    }
+}
+
+# ============================================================
+# STEP 1: Kill ALL watchdogs FIRST (so WCCustomer death does NOT trigger PC shutdown)
+# ============================================================
+Write-Host "[1/7] Removing watchdogs before touching WCCustomer..."
+foreach ($wd in $watchdogNames) { Kill-ByName $wd }
+Kill-ByPathPattern
+Start-Sleep -Seconds 3
+# Second pass to catch any that respawned during the first pass
+foreach ($wd in $watchdogNames) { Kill-ByName $wd }
+Kill-ByPathPattern
+Start-Sleep -Seconds 2
+
+# ============================================================
+# STEP 2: Kill WCCustomer only AFTER watchdogs are dead
+# ============================================================
+Write-Host "[2/7] Removing WCCustomer processes (watchdogs already removed)..."
+foreach ($c in $customerNames) { Kill-ByName $c }
+Kill-ByPathPattern
+Start-Sleep -Seconds 2
+
+# ============================================================
+# STEP 3: Final sweep - kill any remaining related processes
+# ============================================================
+Write-Host "[3/7] Final process sweep..."
 $all = Get-Process -ErrorAction SilentlyContinue
 foreach ($p in $all) {
     $kill = $false
     if ($p.Path -and ($p.Path -match $processPatterns)) { $kill = $true }
     if ($p.Name -match $processNamePatterns) { $kill = $true }
     if ($kill) {
-        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-        Write-Host "Killed: $($p.Name) ($($p.Id))"
+        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host "Final kill: $($p.Name) ($($p.Id))" } catch {}
     }
 }
+Start-Sleep -Seconds 2
 
-# 2) Stop and permanently disable/delete services
+# ============================================================
+# STEP 4: Stop and permanently disable/delete services
+# ============================================================
+Write-Host "[4/7] Removing services..."
 $services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass')
 foreach ($s in $services) {
     $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
@@ -22,11 +67,14 @@ foreach ($s in $services) {
         try { Set-Service -Name $s -StartupType Disabled -ErrorAction SilentlyContinue } catch {}
         try { sc.exe config $s start= disabled 2>&1 | Out-Null } catch {}
         try { sc.exe delete $s 2>&1 | Out-Null } catch {}
-        Write-Host "Service stopped+disabled+deleted: $s"
+        Write-Host "Service removed: $s"
     }
 }
 
-# 3) Remove registry Run/RunOnce entries (all hives/paths) - NO BACKUP
+# ============================================================
+# STEP 5: Remove registry Run/RunOnce entries (all hives/paths) - NO BACKUP
+# ============================================================
+Write-Host "[5/7] Removing registry auto-start entries..."
 $targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스')
 function Is-TargetName($name) {
     foreach ($t in $targetNames) {
@@ -65,19 +113,30 @@ foreach ($rk in $runKeys) {
         if ($prop.Name -match '^PS') { continue }
         if (Is-TargetName $prop.Name -or Is-TargetValue $prop.Value) {
             Remove-ItemProperty -Path $rk.Path -Name $prop.Name -ErrorAction SilentlyContinue
-            Write-Host "Removed registry: $($rk.Hive)\$($prop.Name) = $($prop.Value)"
+            Write-Host "Removed registry: $($rk.Hive)\$($prop.Name)"
         }
     }
 }
 
-# 4) Delete old backup file so nothing can be restored
+# ============================================================
+# STEP 6: Delete backup file + runtime folder + scheduled tasks + startup shortcuts
+# ============================================================
+Write-Host "[6/7] Deleting backup file, runtime folder, scheduled tasks, shortcuts..."
+
 $backupFile = "C:\Users\Administrator\pcbtest\registry-backup.json"
 if (Test-Path $backupFile) {
     Remove-Item -Path $backupFile -Force -ErrorAction SilentlyContinue
     Write-Host "Deleted backup file: $backupFile"
 }
 
-# 5) Remove scheduled tasks whose action references pica/pc cafe/world class (including self-guard)
+# Delete the World Class runtime folder so it cannot restart
+$runtimeDir = "C:\Users\Administrator\AppData\Roaming\world-class-user\runtime"
+if (Test-Path $runtimeDir) {
+    Remove-Item -Path $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Deleted runtime folder: $runtimeDir"
+}
+
+# Scheduled tasks
 Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
     $task = $_
     $match = $false
@@ -89,7 +148,7 @@ Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
     }
 }
 
-# 6) Remove startup folder shortcuts pointing to pica/world class
+# Startup folder shortcuts
 $startupFolders = @(
     "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
     "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -108,16 +167,18 @@ foreach ($folder in $startupFolders) {
     }
 }
 
-# 7) Final sweep: kill any processes that may have respawned
+# ============================================================
+# STEP 7: Final confirmation sweep
+# ============================================================
+Write-Host "[7/7] Final confirmation sweep..."
 $all2 = Get-Process -ErrorAction SilentlyContinue
 foreach ($p in $all2) {
     $kill = $false
     if ($p.Path -and ($p.Path -match $processPatterns)) { $kill = $true }
     if ($p.Name -match $processNamePatterns) { $kill = $true }
     if ($kill) {
-        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-        Write-Host "Final kill: $($p.Name) ($($p.Id))"
+        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host "Confirmed kill: $($p.Name) ($($p.Id))" } catch {}
     }
 }
 
-Write-Host "Done. All Pica/PcCafe/World Class entries permanently disabled. No backup saved."
+Write-Host "Done. All Pica/PcCafe/World Class entries permanently disabled. PC was NOT shut down. No backup saved."
