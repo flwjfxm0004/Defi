@@ -507,6 +507,7 @@ class Seed:
 class Scanner:
     def __init__(self, seeds_by_chain: Dict[str, List[Seed]]):
         self.seeds_by_chain = seeds_by_chain
+        self.all_seeds: List[Seed] = [s for seeds in seeds_by_chain.values() for s in seeds]
         self.code_cache: OrderedDict = OrderedDict()
         self.ccl = asyncio.Lock()
         self.ml = asyncio.Lock()
@@ -840,7 +841,7 @@ class Scanner:
         else:
             print(f"[{chain}] latest {latest} scan {sr} (full history)")
 
-        seeds = self.seeds_by_chain.get(chain, [])
+        seeds = self.all_seeds
         sinfo = [(s.address, s.label, s.incident, s.principle) for s in seeds]
 
         async def collect_addrs(blk):
