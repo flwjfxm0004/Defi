@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -27,23 +28,24 @@ import aiohttp
 ROOT = os.path.dirname(os.path.abspath(__file__))
 HACK_FILE = os.path.join(ROOT, "해킹.md")
 RESULTS_FILE = os.path.join(ROOT, "scan_results.json")
+MONITOR_FILE = os.path.join(ROOT, "scan_monitor.log")
 PROGRESS_FILE = os.path.join(ROOT, "scan_progress.json")
 CODE_CACHE_FILE = os.path.join(ROOT, "code_cache.json")
 
 MAX_CODE_CACHE = 100_000  # 메모리 상 코드 캐시 최대 항목수(실효적 LRU 상한)
-CODE_CACHE_SAVE_INTERVAL = 1000  # 새 코드가 확정된 블록 N개마다 디스크 캐시 저장(스로틀)
 CACHE_SWAP_DIR = os.path.join(ROOT, "code_cache_swap")  # 메모리 초과 시 디스크 스왑 디렉터리
 TX_CACHE_SWAP_DIR = os.path.join(ROOT, "tx_cache_swap")  # 트랜잭션 해시→to 매핑 디스크 스왑
-BATCH_SIZE = 200
-BLOCK_BATCH = 100
+MAX_SWAP_FILES = 200_000  # 스왑 파일 최대 개수(디스크 공간 방지)
+BATCH_SIZE = 1000
+BLOCK_BATCH = 20
 SIMILARITY_THRESHOLD = 0.4
 LENGTH_RATIO_MIN = 0.5
 LENGTH_RATIO_MAX = 2.0
 NGRAM_SIZE = 16  # 바이트코드 전체 n-grams 창 크기(8바이트). 셀렉터(4바이트) 아님.
-PROGRESS_INTERVAL = 1000
-CONCURRENCY = 60
-CONC_RECOVER_EVERY = 20
-CONNECTOR_LIMIT = 200
+PROGRESS_INTERVAL = 100
+CONCURRENCY = 200
+CONC_RECOVER_EVERY = 10
+CONNECTOR_LIMIT = 400
 MAX_TX_CACHE = 50_000
 
 HEADERS = {"User-Agent": "DefiPipeline/9.0 (bytecode similarity scanner)"}
@@ -509,8 +511,6 @@ class Scanner:
         self.ccl = asyncio.Lock()
         self.matches: List[Dict[str, Any]] = []
         self._pe: Dict[str, asyncio.Event] = {}
-        self._cc_dirty = False
-        self._cc_since_save = 0
         self._conc = CONCURRENCY
         self._conc_lock = asyncio.Lock()
         self._active = 0
@@ -519,6 +519,8 @@ class Scanner:
         self._ngram_index: Dict[str, Set[int]] = {}
         self._dead_urls: Dict[str, Set[str]] = {}
         self._current_chain: Optional[str] = None
+        self._total_blocks_scanned = 0
+        self._total_lock = asyncio.Lock()
         self._load_disk_cache()
         try:
             os.makedirs(CACHE_SWAP_DIR, exist_ok=True)
@@ -533,8 +535,23 @@ class Scanner:
 
     def _save_to_swap(self, k: Tuple[str, str], v: str) -> None:
         try:
+            self._enforce_swap_limit(CACHE_SWAP_DIR)
             path = self._swap_path(k)
             _awj(path, v, None)
+        except Exception:
+            pass
+
+    def _enforce_swap_limit(self, swap_dir: str) -> None:
+        try:
+            files = [f for f in os.listdir(swap_dir) if f.endswith(".json")]
+            if len(files) <= MAX_SWAP_FILES:
+                return
+            files.sort(key=lambda f: os.path.getmtime(os.path.join(swap_dir, f)))
+            for f in files[: len(files) - MAX_SWAP_FILES]:
+                try:
+                    os.remove(os.path.join(swap_dir, f))
+                except OSError:
+                    pass
         except Exception:
             pass
 
@@ -554,6 +571,7 @@ class Scanner:
 
     def _save_tx_to_swap(self, h: str, v: str) -> None:
         try:
+            self._enforce_swap_limit(TX_CACHE_SWAP_DIR)
             path = self._tx_swap_path(h)
             _awj(path, v, None)
         except Exception:
@@ -652,15 +670,14 @@ class Scanner:
 
     async def _one(self, sess, method, params, fs, ul, uo, uf, rt):
         async with ul:
-            snap = list(uo)
+            snap = [u for u in uo if u not in self._dead_urls.get(self._current_chain or "", set())]
         if not snap:
             return None
-        for u in snap:
-            try:
-                _, result, ok = await self._try_one_url(sess, method, params, u, fs, rt)
-            except Exception:
-                ok = False
-                result = None
+        results = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap], return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                continue
+            u, result, ok = res
             if ok:
                 async with ul:
                     if u in uo:
@@ -718,15 +735,14 @@ class Scanner:
             return []
         n = len(pl)
         async with ul:
-            snap = list(uo)
+            snap = [u for u in uo if u not in self._dead_urls.get(self._current_chain or "", set())]
         if not snap:
             return [None] * n
-        for u in snap:
-            try:
-                _, rl, ok = await self._try_batch_url(sess, method, pl, u, fs, rt)
-            except Exception:
-                ok = False
-                rl = None
+        results = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap], return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                continue
+            u, rl, ok = res
             if ok:
                 async with ul:
                     if u in uo:
@@ -815,14 +831,6 @@ class Scanner:
                 out.append(c)
             else:
                 out.append(None)
-        if self._cc_dirty:
-            self._cc_since_save += 1
-            # 디스크 캐시 저장 스로틀: 새 코드가 나온 쿨로그 블록마다 수십 MB JSON 전체 재작성 방지.
-            # (크래시 시 최대 주기만큼 재조회 손실 감수, 커버리지·정확성엔 무영향)
-            if self._cc_since_save >= CODE_CACHE_SAVE_INTERVAL:
-                self._save_disk_cache()
-                self._cc_since_save = 0
-                self._cc_dirty = False
         for _, ev in wait:
             await ev.wait()
         return out
@@ -962,8 +970,14 @@ class Scanner:
             return cm
         if resume is not None:
             print(f"[{chain}] res {sb} scan {sr}")
+            with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
+                mf.write(f"[{chain}] res {sb} scan {sr}\n")
+                mf.flush()
         else:
             print(f"[{chain}] latest {latest} scan {sr} (full history)")
+            with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
+                mf.write(f"[{chain}] latest {latest} scan {sr} (full history)\n")
+                mf.flush()
 
         # [CRITICAL DESIGN - NEVER CHANGE] 모든 씨드를 모든 체인에서 비교함.
         # 이더리움 취약 컨트랙트와 동일한 바이트코드가 BSC/아비트럼 등 타 체인에 클론 배포된 경우를
@@ -1083,99 +1097,144 @@ class Scanner:
                     cm.append(m)
                     self.matches.append(m)
                     new_matches += 1
+                    print(f"  [{chain}] b{blk} MATCH {a} <- {a0} sim={best_sim:.4f}", flush=True)
+                    with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
+                        mf.write(f"  [{chain}] b{blk} MATCH {a} <- {a0} sim={best_sim:.4f}\n")
+                        mf.flush()
             return new_matches
 
         blk = sb
-        while blk <= latest:
-            ed = min(blk + BLOCK_BATCH, latest + 1)
-            batch_blks = list(range(blk, ed))
-            rs = await asyncio.gather(*[process_block(b) for b in batch_blks], return_exceptions=True)
-            for b, x in zip(batch_blks, rs):
-                if isinstance(x, Exception):
-                    print(f"  [{chain}] b{b} {x}")
-            blocks_since_checkpoint += len(batch_blks)
-            # 체크포인트는 매칭 변화가 있을 때만 전체 재기록 (변화 없으면 디스크 I/O 스킵).
-            # 크래시 시 일관성 복구를 우선하는 의도적 설계 유지.
-            if (blocks_since_checkpoint >= PROGRESS_INTERVAL or ed - 1 == latest) and len(cm) != last_checkpoint_len:
-                async with pl:
-                    sp[chain] = {"chain": chain, "last_block": ed - 1, "matches": cm}
-                    progress_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
-                    await asyncio.get_running_loop().run_in_executor(None, _awj, progress_path, sp[chain], None, False)
-                blocks_since_checkpoint = 0
-                last_checkpoint_len = len(cm)
-                print(f"  [{chain}] checkpoint b{ed-1} {len(cm)} matches")
-            blk = ed
-        print(f"[{chain}] complete {len(cm)} matches")
+        cumulative_blocks = 0
+        last_log_blocks = 0
+        matches_since_save = 0
+        total_blocks = latest - sb + 1
+        try:
+            while blk <= latest:
+                ed = min(blk + BLOCK_BATCH, latest + 1)
+                batch_blks = list(range(blk, ed))
+                rs = await asyncio.gather(*[process_block(b) for b in batch_blks], return_exceptions=True)
+                for b, x in zip(batch_blks, rs):
+                    if isinstance(x, Exception):
+                        print(f"  [{chain}] b{b} {x}")
+                cumulative_blocks += len(batch_blks)
+                matches_since_save += sum(r for r in rs if not isinstance(r, Exception))
+                now = asyncio.get_event_loop().time()
+                if cumulative_blocks - last_log_blocks >= BLOCK_BATCH:
+                    prog = f"  [{chain}] b{ed-1} {cumulative_blocks}/{total_blocks} blocks ({cumulative_blocks / total_blocks * 100:.1f}%)\n"
+                    with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
+                        mf.write(prog)
+                        mf.flush()
+                    last_log_blocks = cumulative_blocks
+                blocks_since_checkpoint += len(batch_blks)
+                if matches_since_save >= 1:
+                    async with pl:
+                        seen = {}
+                        uniq = []
+                        for mm in self.matches:
+                            k = (mm.get("chain"), mm.get("address"))
+                            sim = mm.get("similarity", 0.0)
+                            if k not in seen or sim > seen[k][0]:
+                                seen[k] = (sim, mm)
+                        uniq = [v[1] for v in seen.values()]
+                        uniq.sort(key=lambda m: m.get("similarity", 0.0), reverse=True)
+                        await asyncio.get_running_loop().run_in_executor(None, _awj, RESULTS_FILE, uniq, 2)
+                    matches_since_save = 0
+                if (blocks_since_checkpoint >= PROGRESS_INTERVAL or ed - 1 == latest) and len(cm) != last_checkpoint_len:
+                    async with pl:
+                        sp[chain] = {"chain": chain, "last_block": ed - 1, "matches": cm}
+                        progress_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
+                        await asyncio.get_running_loop().run_in_executor(None, _awj, progress_path, sp[chain], None, False)
+                    blocks_since_checkpoint = 0
+                    last_checkpoint_len = len(cm)
+                    print(f"  [{chain}] checkpoint b{ed-1} {len(cm)} matches", flush=True)
+                    with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
+                        mf.write(f"  [{chain}] checkpoint b{ed-1} {len(cm)} matches\n")
+                        mf.flush()
+                blk = ed
+        except Exception as e:
+            print(f"  [{chain}] FATAL loop error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+        print(f"[{chain}] complete {len(cm)} matches", flush=True)
+        with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
+            mf.write(f"[{chain}] complete {len(cm)} matches\n")
+            mf.flush()
         return cm
 
 async def main_async():
-    raw = parse_hack_md(HACK_FILE)
-    sbc: Dict[str, List[Seed]] = {}
-    for ch, en in raw.items():
-        sbc[ch] = [Seed(chain=ch, address=a, label=l, incident=n, principle=p) for a, l, n, p in en]
-    # seed 코드가 없는 체인도 전체 블록을 스캔함(의도적).
-    # 해당 체인에 매칭할 seed가 없으면 유사도 비교는 수행하지 않지만,
-    # 전체 체인 커버리지를 우선하며 seed가 나중에 추가될 경우를 대비함.
-    chains = list(SCAN_RPCS.keys())
-    if not chains:
-        print("no chains")
-        return
-    conn = aiohttp.TCPConnector(limit=CONNECTOR_LIMIT, ttl_dns_cache=3600)
-    fs_map: Dict[str, asyncio.Semaphore] = {ch: asyncio.Semaphore(CONCURRENCY) for ch in chains}
-    pl = asyncio.Lock()
-    sp: Dict[str, Any] = {}
-    sc = Scanner(sbc)
-    for fname in os.listdir(ROOT):
-        if fname.startswith("scan_progress_") and fname.endswith(".json"):
-            ch = fname[len("scan_progress_"):-len(".json")]
+    try:
+        raw = parse_hack_md(HACK_FILE)
+        sbc: Dict[str, List[Seed]] = {}
+        for ch, en in raw.items():
+            sbc[ch] = [Seed(chain=ch, address=a, label=l, incident=n, principle=p) for a, l, n, p in en]
+        # seed 코드가 없는 체인도 전체 블록을 스캔함(의도적).
+        # 해당 체인에 매칭할 seed가 없으면 유사도 비교는 수행하지 않지만,
+        # 전체 체인 커버리지를 우선하며 seed가 나중에 추가될 경우를 대비함.
+        chains = list(SCAN_RPCS.keys())
+        if not chains:
+            print("no chains")
+            return
+        conn = aiohttp.TCPConnector(limit=CONNECTOR_LIMIT, ttl_dns_cache=3600)
+        fs_map: Dict[str, asyncio.Semaphore] = {ch: asyncio.Semaphore(CONCURRENCY) for ch in chains}
+        pl = asyncio.Lock()
+        sp: Dict[str, Any] = {}
+        sc = Scanner(sbc)
+        for fname in os.listdir(ROOT):
+            if fname.startswith("scan_progress_") and fname.endswith(".json"):
+                ch = fname[len("scan_progress_"):-len(".json")]
+                try:
+                    with open(os.path.join(ROOT, fname), encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        sp[ch] = data
+                except Exception:
+                    pass
+        if not sp and os.path.exists(PROGRESS_FILE):
             try:
-                with open(os.path.join(ROOT, fname), encoding="utf-8") as f:
+                with open(PROGRESS_FILE, encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    sp[ch] = data
+                    sp = data
             except Exception:
-                pass
-    if not sp and os.path.exists(PROGRESS_FILE):
-        try:
-            with open(PROGRESS_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                sp = data
-        except Exception:
-            sp = {}
-    async with aiohttp.ClientSession(connector=conn) as sess:
-        tasks = []
-        for ch in chains:
-            if sbc.get(ch):
-                tasks.append(sc.fetch_seed_codes(sess, ch, sbc[ch], fs_map[ch]))
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        print(f"Seeds: {sum(len(v) for v in sbc.values())} across {len(sbc)} chains")
-        print(f"Scanning {len(chains)} chains: {', '.join(chains)}")
-        stasks = []
-        for ch in chains:
-            pg = sp.get(ch) if isinstance(sp, dict) else None
-            rf = pg.get("last_block") if isinstance(pg, dict) else None
-            stasks.append(sc.scan_chain(ch, sess, rf, fs_map[ch], pl, sp))
-        gs = await asyncio.gather(*stasks, return_exceptions=True)
-        for ch, x in zip(chains, gs):
-            if isinstance(x, Exception):
-                print(f"  [{ch}] scan task failed: {x!r}")
-    sc._save_disk_cache()
-    seen = {}
-    uniq = []
-    for m in sc.matches:
-        k = (m.get("chain"), m.get("address"))
-        sim = m.get("similarity", 0.0)
-        if k not in seen or sim > seen[k][0]:
-            seen[k] = (sim, m)
-    uniq = [v[1] for v in seen.values()]
-    uniq.sort(key=lambda m: m.get("similarity", 0.0), reverse=True)
-    await asyncio.get_running_loop().run_in_executor(None, _awj, RESULTS_FILE, uniq, 2)
-    print(f"\nTotal matches: {len(uniq)}")
-    print(f"Results written to {RESULTS_FILE}")
-    for m in uniq[:20]:
-        print(f"  [{m.get('chain')}] {m.get('address')} <- {m.get('seed_address')} {m.get('seed_principle','')[:50]} sim={m.get('similarity')}")
+                sp = {}
+        async with aiohttp.ClientSession(connector=conn) as sess:
+            tasks = []
+            for ch in chains:
+                if sbc.get(ch):
+                    tasks.append(sc.fetch_seed_codes(sess, ch, sbc[ch], fs_map[ch]))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            print(f"Seeds: {sum(len(v) for v in sbc.values())} across {len(sbc)} chains", flush=True)
+            print(f"Scanning {len(chains)} chains: {', '.join(chains)}", flush=True)
+            stasks = []
+            for ch in chains:
+                pg = sp.get(ch) if isinstance(sp, dict) else None
+                rf = pg.get("last_block") if isinstance(pg, dict) else None
+                stasks.append(sc.scan_chain(ch, sess, rf, fs_map[ch], pl, sp))
+            gs = await asyncio.gather(*stasks, return_exceptions=True)
+            for ch, x in zip(chains, gs):
+                if isinstance(x, Exception):
+                    print(f"  [{ch}] scan task failed: {x!r}", flush=True)
+        sc._save_disk_cache()
+        seen = {}
+        uniq = []
+        for m in sc.matches:
+            k = (m.get("chain"), m.get("address"))
+            sim = m.get("similarity", 0.0)
+            if k not in seen or sim > seen[k][0]:
+                seen[k] = (sim, m)
+        uniq = [v[1] for v in seen.values()]
+        uniq.sort(key=lambda m: m.get("similarity", 0.0), reverse=True)
+        await asyncio.get_running_loop().run_in_executor(None, _awj, RESULTS_FILE, uniq, 2)
+        print(f"\nTotal matches: {len(uniq)}", flush=True)
+        print(f"Results written to {RESULTS_FILE}", flush=True)
+        for m in uniq[:20]:
+            print(f"  [{m.get('chain')}] {m.get('address')} <- {m.get('seed_address')} {m.get('seed_principle','')[:50]} sim={m.get('similarity')}", flush=True)
+    except Exception as e:
+        print(f"FATAL main_async error: {type(e).__name__}: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
 
 def main():
     asyncio.run(main_async())
