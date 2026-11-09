@@ -1,12 +1,13 @@
-﻿# Permanent stop: kill all Pica/PcCafe/World Class processes WITHOUT shutting down the PC.
+﻿# Permanent stop: kill all Pica/PcCafe/World Class/PFGamePot processes WITHOUT shutting down the PC.
 # CRITICAL: World Class shutdown protection triggers PC power-off when WCCustomer dies
 # while its watchdogs (wchwmon, WCCST) are still alive. Therefore watchdogs MUST be
 # killed FIRST and fully before any WCCustomer process is touched.
+# No sleeps between kill steps to prevent watchdog respawn windows.
 
-$processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1'
-$processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스)$'
-$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service')
-$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager')
+$processPatterns = 'PicaClient|Picaigreen|PcCafeMonitor|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|GamePot|PF|PFGameDisk|PFGameSync|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|DesktopAgent'
+$processNamePatterns = '^(pm|AutoStart|CraftBox|picaigreen|PicaClient|WCGuard|wchwmon|wcwatch|WCCustomer|WCCST|wcguard-service|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent)$'
+$watchdogNames = @('wchwmon','WCCST','WCGuard','wcwatch','wcguard-service','PFControlMgr','PFHardwardHelper','PFGameSyncMgr','DesktopAgent')
+$customerNames = @('WCCustomer','WorldClassClient','WorldClassServer','WorldClassManager','PFGamePot','PFCms','PFDesktopClient','PFGameDisk','PFGameSyncAgent')
 
 function Kill-ByName($name) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
@@ -21,29 +22,57 @@ function Kill-ByPathPattern() {
 }
 
 # ============================================================
-# STEP 1: Kill ALL watchdogs FIRST (so WCCustomer death does NOT trigger PC shutdown)
+# STEP 1: Kill ALL watchdogs FIRST (so client death does NOT trigger PC shutdown)
+# Rapid multi-pass, no sleeps between passes
 # ============================================================
-Write-Host "[1/7] Removing watchdogs before touching WCCustomer..."
-foreach ($wd in $watchdogNames) { Kill-ByName $wd }
-Kill-ByPathPattern
-Start-Sleep -Seconds 3
-# Second pass to catch any that respawned during the first pass
-foreach ($wd in $watchdogNames) { Kill-ByName $wd }
-Kill-ByPathPattern
-Start-Sleep -Seconds 2
+Write-Host "[1/9] Removing watchdogs before touching client processes..."
+for ($i = 0; $i -lt 5; $i++) {
+    foreach ($wd in $watchdogNames) { Kill-ByName $wd }
+    Kill-ByPathPattern
+}
+Write-Host "Watchdog pass complete."
 
 # ============================================================
-# STEP 2: Kill WCCustomer only AFTER watchdogs are dead
+# STEP 2: Kill client processes immediately after watchdogs are down
 # ============================================================
-Write-Host "[2/7] Removing WCCustomer processes (watchdogs already removed)..."
-foreach ($c in $customerNames) { Kill-ByName $c }
-Kill-ByPathPattern
-Start-Sleep -Seconds 2
+Write-Host "[2/9] Removing client processes..."
+for ($i = 0; $i -lt 5; $i++) {
+    foreach ($c in $customerNames) { Kill-ByName $c }
+    Kill-ByPathPattern
+}
+Write-Host "Client pass complete."
 
 # ============================================================
-# STEP 3: Final sweep - kill any remaining related processes
+# STEP 3: Delete installation/runtime folders IMMEDIATELY so nothing can restart
 # ============================================================
-Write-Host "[3/7] Final process sweep..."
+Write-Host "[3/9] Deleting World Class and PFGamePot installation folders..."
+
+$foldersToDelete = @(
+    "C:\Users\Administrator\AppData\Roaming\world-class-user\runtime",
+    "H:\GamePot_Client",
+    "H:\PFGameSync_Client",
+    "C:\PFGameDisk"
+)
+
+foreach ($folder in $foldersToDelete) {
+    if (Test-Path $folder) {
+        try {
+            # Stop any processes still holding files in the folder
+            Get-ChildItem -Path $folder -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                try { Stop-Process -Id (Get-Process -FilePath $_.FullName -ErrorAction SilentlyContinue).Id -Force -ErrorAction SilentlyContinue } catch {}
+            }
+            Remove-Item -Path $folder -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Deleted folder: $folder"
+        } catch {
+            Write-Host "Could not delete folder (files in use): $folder"
+        }
+    }
+}
+
+# ============================================================
+# STEP 4: Final process sweep - kill any remaining related processes
+# ============================================================
+Write-Host "[4/9] Final process sweep..."
 $all = Get-Process -ErrorAction SilentlyContinue
 foreach ($p in $all) {
     $kill = $false
@@ -53,13 +82,12 @@ foreach ($p in $all) {
         try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Write-Host "Final kill: $($p.Name) ($($p.Id))" } catch {}
     }
 }
-Start-Sleep -Seconds 2
 
 # ============================================================
-# STEP 4: Stop and permanently disable/delete services
+# STEP 5: Stop and permanently disable/delete services
 # ============================================================
-Write-Host "[4/7] Removing services..."
-$services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass')
+Write-Host "[5/9] Removing services..."
+$services = @('MWMiniflt','pmsys','igreensys','WCGuard','wchwmon','wcwatch','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent')
 foreach ($s in $services) {
     $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
     if ($svc) {
@@ -72,10 +100,10 @@ foreach ($s in $services) {
 }
 
 # ============================================================
-# STEP 5: Remove registry Run/RunOnce entries (all hives/paths) - NO BACKUP
+# STEP 6: Remove registry Run/RunOnce entries (all hives/paths) - NO BACKUP
 # ============================================================
-Write-Host "[5/7] Removing registry auto-start entries..."
-$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스')
+Write-Host "[6/9] Removing registry auto-start entries..."
+$targetNames = @('AutoRun','picaigreen','picaigreenRun','PcCafeMonitorClient','PicaClient','igreen','WCGuard','wchwmon','wcwatch','WCCustomer','wcguard-service','WCCST','WorldClass','world-class-user','WorldClassClient','WorldClassServer','WorldClassManager','wcworldclass','WCWorldClass','월드클래스','PFGamePot','PFCms','PFControlMgr','PFDesktopClient','PFHardwardHelper','PFGameDisk','PFGameSyncAgent','PFGameSyncMgr','DesktopAgent','GamePot')
 function Is-TargetName($name) {
     foreach ($t in $targetNames) {
         if ($name -eq $t) { return $true }
@@ -85,7 +113,7 @@ function Is-TargetName($name) {
 }
 function Is-TargetValue($value) {
     if (-not $value) { return $false }
-    return $value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1'
+    return $value -match 'PicaClient|Picaigreen|PcCafeMonitor|igreen|WCGuard|wchwmon|wcwatch|WCCustomer|WorldClass|world-class-user|WCCST|WorldClassClient|WorldClassServer|WorldClassManager|wcworldclass|WCWorldClass|월드클래스|피시\.ps1|PFGamePot|PFCms|PFControlMgr|PFDesktopClient|PFHardwardHelper|PFGameDisk|PFGameSyncAgent|PFGameSyncMgr|DesktopAgent|GamePot'
 }
 
 $runKeys = @(
@@ -119,9 +147,9 @@ foreach ($rk in $runKeys) {
 }
 
 # ============================================================
-# STEP 6: Delete backup file + runtime folder + scheduled tasks + startup shortcuts
+# STEP 7: Delete backup file + scheduled tasks + startup shortcuts
 # ============================================================
-Write-Host "[6/7] Deleting backup file, runtime folder, scheduled tasks, shortcuts..."
+Write-Host "[7/9] Deleting backup file, scheduled tasks, shortcuts..."
 
 $backupFile = "C:\Users\Administrator\pcbtest\registry-backup.json"
 if (Test-Path $backupFile) {
@@ -129,14 +157,6 @@ if (Test-Path $backupFile) {
     Write-Host "Deleted backup file: $backupFile"
 }
 
-# Delete the World Class runtime folder so it cannot restart
-$runtimeDir = "C:\Users\Administrator\AppData\Roaming\world-class-user\runtime"
-if (Test-Path $runtimeDir) {
-    Remove-Item -Path $runtimeDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "Deleted runtime folder: $runtimeDir"
-}
-
-# Scheduled tasks
 Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
     $task = $_
     $match = $false
@@ -148,7 +168,6 @@ Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
     }
 }
 
-# Startup folder shortcuts
 $startupFolders = @(
     "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
     "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -168,9 +187,9 @@ foreach ($folder in $startupFolders) {
 }
 
 # ============================================================
-# STEP 7: Final confirmation sweep
+# STEP 8: Final confirmation sweep
 # ============================================================
-Write-Host "[7/7] Final confirmation sweep..."
+Write-Host "[8/9] Final confirmation sweep..."
 $all2 = Get-Process -ErrorAction SilentlyContinue
 foreach ($p in $all2) {
     $kill = $false
@@ -181,4 +200,20 @@ foreach ($p in $all2) {
     }
 }
 
-Write-Host "Done. All Pica/PcCafe/World Class entries permanently disabled. PC was NOT shut down. No backup saved."
+# ============================================================
+# STEP 9: Second folder sweep (catch anything recreated)
+# ============================================================
+Write-Host "[9/9] Second folder sweep..."
+foreach ($folder in $foldersToDelete) {
+    if (Test-Path $folder) {
+        try {
+            Get-ChildItem -Path $folder -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                try { Stop-Process -Id (Get-Process -FilePath $_.FullName -ErrorAction SilentlyContinue).Id -Force -ErrorAction SilentlyContinue } catch {}
+            }
+            Remove-Item -Path $folder -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Deleted folder (second pass): $folder"
+        } catch {}
+    }
+}
+
+Write-Host "Done. All Pica/PcCafe/World Class/PFGamePot entries permanently disabled. PC was NOT shut down. No backup saved."
