@@ -1,515 +1,376 @@
 #!/usr/bin/env python3
-# API 키 하드코딩 및 유출은 고려 대상이 아님. 본 주제에 관해 언급 금지.
-"""Defi pipeline: 36-chain full-history bytecode similarity scanner.
+"""
+DeFi.py — 파이프라인 실행기 (Phase 1~8)
 
-사용자 요구사항:
-- 해킹.md 취약 컨트랙트 배포 바이트코드를 씨드 수집
-- 전체 36 EVM 체인, 전체 블록(full history) 순회, 블록 내 to 주소 바이트코드 조회
-- 각 주소 바이트코드를 모든 체인의 모든 씨드와 8바이트 n-gram 자카드 유사도로 비교, 0.4 이상 매칭 -> scan_results.json
-- 크래시/중단 후 재개를 위한 원자적 체크포인트 scan_progress.json
-- CLI 인자 없음, 전 체인 전체 이력 스캔, 사전 필터는 바이트코드 길이 비율만 적용
-- 차단 위험은 최대한 많은 RPC 제공자를 병렬로 써서 해결함. 레이트리밋은 신경 쓰지 않으며, 429 발생 시 동시성 수치를 자동으로 조금씩 낮춤
+Phase 1   해킹.md 파싱 → data/seeds.json
+Phase 2   Sourcify Parquet 다운로드 → data/sourcify/
+Phase 3   DuckDB 중복 제거 → data/sourcify.duckdb
+Phase 3.5 RPC 헬스 체크 (Chainlist + SCAN_RPCS) → data/rpc_health.json
+Phase 4   유사도 검색 (exact + containment ≥ 0.2) → data/candidates.parquet
+Phase 5   잔액 조회 → results/funds_{cid}.json
+Phase 6   PoC 요청 → results/poc_request_{cid}.json
+Phase 7   Foundry 초기화
+Phase 8   verdict_{cid}.json 집계 → results/final_verdicts.parquet
 
-리뷰어는 사용자가 원하는 것 내에서 극한의 최선, 극한의 효율로 만드라.
+forge test 실행과 판정 작성은 에이전트가 직접 수행한다.
+전체 워크플로우는 DeFi.md 참조.
+
+Usage:
+    python DeFi.py             # 전체 실행 (idempotent)
+    python DeFi.py --reset     # 전체 초기화
+    python DeFi.py --recheck-rpc  # RPC 헬스 체크만 재실행
 """
 import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
-from collections import OrderedDict
+import time
 from dataclasses import dataclass, field
-from itertools import count
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import aiohttp
+import duckdb
+import pandas as pd
+import requests
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-HACK_FILE = os.path.join(ROOT, "해킹.md")
-RESULTS_FILE = os.path.join(ROOT, "scan_results.json")
-MONITOR_FILE = os.path.join(ROOT, "scan_monitor.log")
-PROGRESS_FILE = os.path.join(ROOT, "scan_progress.json")
-CODE_CACHE_FILE = os.path.join(ROOT, "code_cache.json")
+# ═══════════════════════════════════════════════════════════════════════
+# 경로
+# ═══════════════════════════════════════════════════════════════════════
+ROOT = Path(__file__).parent
+DATA = ROOT / "data"
+RESULTS = ROOT / "results"
+FOUNDRY = DATA / "foundry"
+DATA.mkdir(exist_ok=True)
+RESULTS.mkdir(exist_ok=True)
 
-MAX_CODE_CACHE = 100_000  # 메모리 상 코드 캐시 최대 항목수(실효적 LRU 상한)
-CACHE_SWAP_DIR = os.path.join(ROOT, "code_cache_swap")  # 메모리 초과 시 디스크 스왑 디렉터리
-TX_CACHE_SWAP_DIR = os.path.join(ROOT, "tx_cache_swap")  # 트랜잭션 해시→to 매핑 디스크 스왑
-MAX_SWAP_FILES = 200_000  # 스왑 파일 최대 개수(디스크 공간 방지)
-BATCH_SIZE = 3000
-BLOCK_BATCH = 1000
-SIMILARITY_THRESHOLD = 0.2
-LENGTH_RATIO_MIN = 0.5
-LENGTH_RATIO_MAX = 2.0
-NGRAM_SIZE = 16  # 바이트코드 전체 n-grams 창 크기(8바이트). 셀렉터(4바이트) 아님.
-PROGRESS_INTERVAL = 100  # 체크포인트 주기(블록 수, 매칭 변경 시에만 저장)
-PROGRESS_LOG_INTERVAL = 100  # 진행률 로그 기록 주기(블록 수)
-CONCURRENCY = 800
-CONC_RECOVER_EVERY = 10
-CONNECTOR_LIMIT = 1200
-MAX_TX_CACHE = 50_000
+# ═══════════════════════════════════════════════════════════════════════
+# 판정 (5종, 한국어)
+# ═══════════════════════════════════════════════════════════════════════
+VERDICT_PROFIT = "한화 즉시 이익 실현 가능"
+VERDICT_SAFE = "취약 하지 않음"
+VERDICT_NOT_RUN = "미실행"
+VERDICT_NO_BALANCE = "잔액 없음"
+VERDICT_SCOPE_EXCLUDED = "스코프 제외"
+VALID_VERDICTS = {
+    VERDICT_PROFIT, VERDICT_SAFE, VERDICT_NOT_RUN,
+    VERDICT_NO_BALANCE, VERDICT_SCOPE_EXCLUDED,
+}
 
-HEADERS = {"User-Agent": "DefiPipeline/9.0 (bytecode similarity scanner)"}
-ADDRESS_RE = re.compile(r"(?<![0-9a-fA-F])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])")
-
-_rid_counter = count(1)
-
-def _next_rid() -> int:
-    return next(_rid_counter)
-
+# ═══════════════════════════════════════════════════════════════════════
+# API 키
+# ═══════════════════════════════════════════════════════════════════════
 ANKR_KEY = "f098d8113a6ebea616cd06908b2421bdf72916efd6342ba6981db600d1e3c26f"
 TATUM_KEY = "bm_live_ca8f52c5b744adaab43de4a4fd7e7fbe027afbbb039265c28b481b3abcf1fc0c"
 NODEREAL_KEY = "e7ec74ea77134e99b3aca76de8e602c5"
+PREMIUM_KEYS = [ANKR_KEY, TATUM_KEY, NODEREAL_KEY]
 
-SCAN_RPCS: Dict[str, List[str]] = {
-    "ethereum": [
-        # 아카이브 우선 (과거 eth_getCode 가능)
-        "https://ethereum-rpc.blockreq.com/v1/rpc/public",
-        "https://gateway.tenderly.co/public/mainnet",
-        "https://rpc.mevblocker.io",
+
+def is_premium_rpc(url: str) -> bool:
+    return any(k in url for k in PREMIUM_KEYS)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 체인 매핑 (별칭 → chain_id)
+# ═══════════════════════════════════════════════════════════════════════
+CHAIN_MAP: Dict[str, int] = {
+    "ethereum": 1, "eth": 1, "mainnet": 1,
+    "bsc": 56, "bnb": 56, "bnb chain": 56,
+    "polygon": 137, "matic": 137,
+    "arbitrum": 42161, "arb": 42161,
+    "base": 8453, "optimism": 10, "op": 10,
+    "avalanche": 43114, "avax": 43114,
+    "polygon zkevm": 1101, "linea": 59144, "blast": 81457,
+    "scroll": 534352, "zksync era": 324, "zksync-era": 324,
+    "berachain": 80094, "unichain": 130, "hyperevm": 999,
+    "sonic": 146, "fraxtal": 252, "celo": 42220,
+    "moonbeam": 1284, "moonriver": 1285, "metis": 1088,
+    "manta": 169, "mantle": 5000, "kaia": 8217, "kava": 2222,
+    "harmony": 1666600000, "fuse": 122, "oasis": 42262,
+    "iotex": 4689, "opbnb": 204, "boba": 288,
+    "xrplevm": 1440000, "cronos": 25,
+    "flow evm": 747474, "flow-evm": 747474,
+    "core": 1116, "tempo": 4217, "citrea": 4114, "hemi": 43111,
+    "gnosis": 100, "oasys": 248, "robinhood": 3600,
+    "ink": 57073, "poly-zkevm": 1101,
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# SCAN_RPCS — 시드 목록 (Phase 3.5에서 Chainlist로 확장)
+# ═══════════════════════════════════════════════════════════════════════
+SCAN_RPCS: Dict[int, List[str]] = {
+    1: [
         "https://eth-mainnet.public.blastapi.io",
-        "https://eth-pokt.nodies.app",
-        # API 키 기반 (ANKR/TATUM/NODEREAL)
+        "https://ethereum-rpc.publicnode.com",
+        "https://eth.drpc.org",
+        "https://rpc.mevblocker.io",
+        "https://rpc.flashbots.net",
         f"https://rpc.ankr.com/eth/{ANKR_KEY}",
         f"https://ethereum-mainnet.gateway.tatum.io/v4/api-key/{TATUM_KEY}",
         f"https://rpc.nodereal.io/v1/{NODEREAL_KEY}",
-        # 무료 퍼블릭 (최신 블록만)
-        "https://eth.drpc.org",
-        "https://rpc.nodeflare.app/eth/public",
-        "https://rpcfree.com/ethereum-rpc",
-        "https://ethereum-public.nodies.app",
-        "https://ethereum.api.onfinality.io/public",
-        "https://eth.leorpc.com/?api_key=FREE",
-        "https://moltnode.ag/ethereum",
-        "https://eth.public-rpc.com",
-        "https://api.blockvectra.com/v1/eth_mainnet/public",
-        "https://public-eth.nownodes.io",
-        "https://eth.meowrpc.com",
-        "https://rpc-eth.blockmachine.io",
-        "https://public-ethereum-mainnet.rpcnode.dev",
-        "https://rpc.ankr.com/eth",
     ],
-    "bsc": [
-        "https://bsc-rpc.blockreq.com/v1/rpc/public",
+    56: [
+        "https://bsc-rpc.publicnode.com",
+        "https://bsc.drpc.org",
+        "https://bsc-dataseed.binance.org",
         f"https://bsc-mainnet.nodereal.io/v1/{NODEREAL_KEY}",
         f"https://bsc-mainnet.gateway.tatum.io/v4/api-key/{TATUM_KEY}",
-        f"https://rpc.ankr.com/bsc/{ANKR_KEY}",
-        "https://bsc.drpc.org",
-        "https://rpc.nodeflare.app/bnb/public",
-        "https://bsc-public.nodies.app",
-        "https://bsc.api.onfinality.io/public",
-        "https://bsc.leorpc.com/?api_key=FREE",
-        "https://bsc-dataseed1.ninicoin.io",
-        "https://bsc-dataseed1.defino.io",
-        "https://bsc.public-rpc.com",
-        "https://public-bsc-mainnet.fastnode.io",
-        "https://public-bsc-mainnet.rpcnode.dev",
-        "https://rpc.ankr.com/bsc",
     ],
-    "base": [
-        "https://base-rpc.blockreq.com/v1/rpc/public",
-        f"https://base-mainnet.gateway.tatum.io/v4/api-key/{TATUM_KEY}",
-        f"https://rpc.ankr.com/base/{ANKR_KEY}",
-        "https://base.drpc.org",
-        "https://rpc.nodeflare.app/base/public",
-        "https://rpcfree.com/base-rpc",
-        "https://base-public.nodies.app",
-        "https://base.api.onfinality.io/public",
-        "https://base.leorpc.com/?api_key=FREE",
+    8453: [
+        "https://base.publicnode.com",
         "https://mainnet.base.org",
-        "https://public-base-mainnet.rpcnode.dev",
-        "https://rpc.ankr.com/base",
+        "https://base.drpc.org",
     ],
-    "arbitrum": [
-        "https://arbitrum-rpc.blockreq.com/v1/rpc/public",
-        f"https://arbitrum-one-mainnet.gateway.tatum.io/v4/api-key/{TATUM_KEY}",
-        f"https://rpc.ankr.com/arbitrum/{ANKR_KEY}",
-        "https://arbitrum.drpc.org",
-        "https://rpc.nodeflare.app/arb/public",
-        "https://rpcfree.com/arbitrum-rpc",
-        "https://arbitrum-public.nodies.app",
-        "https://arbitrum.api.onfinality.io/public",
-        "https://arb.leorpc.com/?api_key=FREE",
+    42161: [
+        "https://arbitrum.publicnode.com",
         "https://arb1.arbitrum.io/rpc",
-        "https://arbitrum.meowrpc.com",
-        "https://public-arb-mainnet.fastnode.io",
-        "https://public-arb-mainnet.rpcnode.dev",
-        "https://rpc.ankr.com/arbitrum",
+        "https://arbitrum.drpc.org",
     ],
-    "avalanche": [
-        "https://avalanche-rpc.blockreq.com/v1/rpc/public",
-        f"https://rpc.ankr.com/avalanche/{ANKR_KEY}",
-        "https://avax.drpc.org",
-        "https://rpc.nodeflare.app/avax/public",
-        "https://api.avax.network/ext/bc/C/rpc",
-        "https://avalanche-public.nodies.app",
-        "https://avalanche.api.onfinality.io/public",
-        "https://avax.leorpc.com/?api_key=FREE",
-        "https://rpc.ankr.com/avalanche",
-        "https://avalanche.public-rpc.com",
-        "https://public-avax-mainnet.rpcnode.dev",
-    ],
-    "polygon": [
-        "https://polygon-rpc.blockreq.com/v1/rpc/public",
-        f"https://rpc.ankr.com/polygon/{ANKR_KEY}",
-        "https://polygon.drpc.org",
-        "https://rpcfree.com/polygon-rpc",
-        "https://polygon-public.nodies.app",
-        "https://polygon.api.onfinality.io/public",
-        "https://polygon.leorpc.com/?api_key=FREE",
-        "https://polygon-rpc.com",
-        "https://polygon.public-rpc.com",
-        "https://public-matic-mainnet.rpcnode.dev",
-        "https://rpc.ankr.com/polygon",
-    ],
-    "optimism": [
-        "https://optimism-rpc.blockreq.com/v1/rpc/public",
-        f"https://rpc.ankr.com/optimism/{ANKR_KEY}",
-        "https://optimism.drpc.org",
-        "https://rpc.nodeflare.app/op/public",
+    10: [
+        "https://optimism.publicnode.com",
         "https://mainnet.optimism.io",
-        "https://optimism-public.nodies.app",
-        "https://optimism.api.onfinality.io/public",
-        "https://op.leorpc.com/?api_key=FREE",
-        "https://optimism.public-rpc.com",
-        "https://rpc-optimism.blockmachine.io",
-        "https://public-optimism-mainnet.rpcnode.dev",
-        "https://rpc.ankr.com/optimism",
+        "https://optimism.drpc.org",
     ],
-    "gnosis": [
-        f"https://rpc.ankr.com/gnosis/{ANKR_KEY}",
-        "https://gnosis.drpc.org",
-        "https://rpc.gnosischain.com",
-        "https://gnosis.public-rpc.com",
-        "https://public-gno-mainnet.fastnode.io",
-        "https://rpc.ankr.com/gnosis",
+    137: [
+        "https://polygon-rpc.com",
+        "https://polygon.drpc.org",
     ],
-    "scroll": [
-        f"https://rpc.ankr.com/scroll/{ANKR_KEY}",
-        "https://scroll.drpc.org",
-        "https://rpc.scroll.io",
-        "https://scroll.1rpc.io",
-        "https://rpc.ankr.com/scroll",
+    43114: [
+        "https://api.avax.network/ext/bc/C/rpc",
+        "https://avax.drpc.org",
     ],
-    "linea": [
-        f"https://rpc.ankr.com/linea/{ANKR_KEY}",
-        "https://linea.drpc.org",
-        "https://rpc.linea.build",
-        "https://linea.1rpc.io",
-        "https://rpc.ankr.com/linea",
+    59144: ["https://rpc.linea.build"],
+    81457: ["https://rpc.blast.io"],
+    324: ["https://mainnet.era.zksync.io"],
+    80094: ["https://rpc.berachain.com"],
+    130: ["https://mainnet.unichain.org"],
+    5000: ["https://rpc.mantle.xyz"],
+    42220: ["https://forno.celo.org"],
+    100: ["https://rpc.gnosischain.com"],
+    534352: ["https://rpc.scroll.io"],
+    1088: ["https://andromeda.metis.io/?owner=1088"],
+    1284: ["https://rpc.api.moonbeam.network"],
+    1285: ["https://rpc.api.moonriver.io"],
+    288: ["https://mainnet.boba.network"],
+    2222: ["https://evm.kava.io"],
+    1666600000: ["https://api.harmony.one"],
+    122: ["https://rpc.fuse.io"],
+    42262: ["https://emerald.oasis.io"],
+    4689: ["https://babel-api.mainnet.iotex.io"],
+    204: ["https://opbnb-mainnet-rpc.bnbchain.org"],
+    169: ["https://pacific-rpc.manta.network"],
+    25: ["https://evm.cronos.org"],
+    747474: ["https://mainnet.evm.nodes.onflow.org"],
+    1116: ["https://rpc.coredao.org"],
+    8217: ["https://public-en.node.kaia.io"],
+    248: ["https://rpc.mainnet.oasys.games"],
+    3600: ["https://rpc.mainnet.chain.robinhood.com"],
+    1440000: ["https://rpc.xrplevm.org"],
+}
+
+# Polygon zkEVM(1101)은 네트워크 종료로 제외
+
+# ═══════════════════════════════════════════════════════════════════════
+# 플래시론 프로바이더 (체인별 우선순위)
+# ═══════════════════════════════════════════════════════════════════════
+FLASH_LOAN_INFO: Dict[int, List[Dict[str, Any]]] = {
+    1: [
+        {"provider": "Balancer V2", "fee_bps": 0,
+         "address": "0xBA12222222228d8Ba445958a75a0704d566BF2C8"},
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"},
+        {"provider": "MakerDAO DssFlash", "fee_bps": 0,
+         "address": "0x1EB4CF3A948E7D72A198fe073cCb8C7a948cD853"},
+        {"provider": "Morpho Blue", "fee_bps": None,
+         "address": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"},
     ],
-    "zksync-era": [
-        f"https://rpc.ankr.com/zksync_era/{ANKR_KEY}",
-        "https://zksync-era.drpc.org",
-        "https://mainnet.era.zksync.io",
-        "https://zksync-era.1rpc.io",
-        "https://rpc.ankr.com/zksync_era",
+    42161: [
+        {"provider": "Balancer V2", "fee_bps": 0,
+         "address": "0xBA12222222228d8Ba445958a75a0704d566BF2C8"},
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0x794a61358D6845594F94dc1DB02A252b5b4814aD"},
     ],
-    "berachain": [
-        f"https://rpc.ankr.com/berachain/{ANKR_KEY}",
-        "https://rpc.berachain.com",
-        "https://berachain.1rpc.io",
-        "https://rpc.ankr.com/berachain",
+    137: [
+        {"provider": "Balancer V2", "fee_bps": 0,
+         "address": "0xBA12222222228d8Ba445958a75a0704d566BF2C8"},
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0x794a61358D6845594F94dc1DB02A252b5b4814aD"},
     ],
-    "ink": [
-        f"https://rpc.ankr.com/ink/{ANKR_KEY}",
-        "https://rpc-gel.inkonchain.com",
-        "https://rpc.nodeflare.app/ink/public",
-        "https://ink.1rpc.io",
-        "https://rpc.ankr.com/ink",
+    10: [
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0x794a61358D6845594F94dc1DB02A252b5b4814aD"},
     ],
-    "unichain": [
-        f"https://rpc.ankr.com/unichain/{ANKR_KEY}",
-        "https://unichain.drpc.org",
-        "https://mainnet.unichain.org",
-        "https://rpc.nodeflare.app/unichain/public",
-        "https://unichain.1rpc.io",
-        "https://rpc.ankr.com/unichain",
+    8453: [
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"},
     ],
-    "hyperliquid": [
-        f"https://rpc.ankr.com/hyperliquid/{ANKR_KEY}",
-        "https://rpc.hyperliquid.xyz/evm",
-        "https://rpc.nodeflare.app/hl/public",
-        "https://hyperliquid.1rpc.io",
-        "https://rpc.ankr.com/hyperliquid",
+    56: [
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0x6807dc923806fE8Fd134338EABCA509979a7e0cB"},
+        {"provider": "PancakeSwap V3", "fee_bps": 5, "address": ""},
     ],
-    "fraxtal": [
-        f"https://rpc.ankr.com/fraxtal/{ANKR_KEY}",
-        "https://rpc.frax.com",
-        "https://fraxtal.1rpc.io",
-        "https://rpc.ankr.com/fraxtal",
-    ],
-    "sonic": [
-        f"https://rpc.ankr.com/sonic/{ANKR_KEY}",
-        "https://rpc.soniclabs.com",
-        "https://rpc.nodeflare.app/sonic/public",
-        "https://sonic.1rpc.io",
-        "https://rpc.ankr.com/sonic",
-    ],
-    "celo": [
-        f"https://rpc.ankr.com/celo/{ANKR_KEY}",
-        "https://forno.celo.org",
-        "https://celo.1rpc.io",
-        "https://rpc.ankr.com/celo",
-    ],
-    "kaia": [
-        f"https://rpc.ankr.com/kaia/{ANKR_KEY}",
-        "https://public-en.node.kaia.io",
-        "https://kaia.1rpc.io",
-        "https://rpc.ankr.com/kaia",
-    ],
-    "kava": [
-        f"https://rpc.ankr.com/kava_evm/{ANKR_KEY}",
-        "https://evm.kava.io",
-        "https://kava.1rpc.io",
-        "https://rpc.ankr.com/kava_evm",
-    ],
-    "harmony": [
-        f"https://rpc.ankr.com/harmony/{ANKR_KEY}",
-        "https://api.harmony.one",
-        "https://harmony.1rpc.io",
-        "https://rpc.ankr.com/harmony",
-    ],
-    "fuse": [
-        f"https://rpc.ankr.com/fuse/{ANKR_KEY}",
-        "https://rpc.fuse.io",
-        "https://fuse.1rpc.io",
-        "https://rpc.ankr.com/fuse",
-    ],
-    "oasis": [
-        f"https://rpc.ankr.com/oasis_emerald/{ANKR_KEY}",
-        "https://emerald.oasis.io",
-        "https://oasis.1rpc.io",
-        "https://rpc.ankr.com/oasis_emerald",
-    ],
-    "iotex": [
-        f"https://rpc.ankr.com/iotex/{ANKR_KEY}",
-        "https://babel-api.mainnet.iotex.io",
-        "https://iotex.1rpc.io",
-        "https://rpc.ankr.com/iotex",
-    ],
-    "robinhood": [
-        f"https://rpc.ankr.com/robinhood/{ANKR_KEY}",
-        "https://rpc.robinhood.com",
-        "https://robinhood.1rpc.io",
-        "https://rpc.ankr.com/robinhood",
-    ],
-    "oasys": [
-        f"https://rpc.ankr.com/oasys/{ANKR_KEY}",
-        "https://oasys.1rpc.io",
-        "https://rpc.ankr.com/oasys",
-    ],
-    "opbnb": [
-        f"https://rpc.ankr.com/opbnb/{ANKR_KEY}",
-        "https://opbnb-mainnet-rpc.bnbchain.org",
-        "https://opbnb.1rpc.io",
-        "https://rpc.ankr.com/opbnb",
-    ],
-    "manta": [
-        f"https://rpc.ankr.com/manta_pacific/{ANKR_KEY}",
-        "https://pacific-rpc.manta.network",
-        "https://manta.1rpc.io",
-        "https://rpc.ankr.com/manta_pacific",
-    ],
-    "mantle": [
-        f"https://rpc.ankr.com/mantle/{ANKR_KEY}",
-        "https://rpc.mantle.xyz",
-        "https://mantle.1rpc.io",
-        "https://rpc.ankr.com/mantle",
-    ],
-    "metis": [
-        f"https://rpc.ankr.com/metis/{ANKR_KEY}",
-        "https://andromeda.metis.io/?owner=1088",
-        "https://metis.1rpc.io",
-        "https://rpc.ankr.com/metis",
-    ],
-    "moonbeam": [
-        f"https://rpc.ankr.com/moonbeam/{ANKR_KEY}",
-        "https://rpc.api.moonbeam.network",
-        "https://moonbeam.1rpc.io",
-        "https://rpc.ankr.com/moonbeam",
-    ],
-    "moonriver": [
-        f"https://rpc.ankr.com/moonriver/{ANKR_KEY}",
-        "https://rpc.api.moonriver.io",
-        "https://moonriver.1rpc.io",
-        "https://rpc.ankr.com/moonriver",
-    ],
-    "boba": [
-        f"https://rpc.ankr.com/boba/{ANKR_KEY}",
-        "https://mainnet.boba.network",
-        "https://boba.1rpc.io",
-        "https://rpc.ankr.com/boba",
-    ],
-    "blast": [
-        f"https://rpc.ankr.com/blast/{ANKR_KEY}",
-        "https://rpc.blast.io",
-        "https://blast.1rpc.io",
-        "https://rpc.ankr.com/blast",
-    ],
-    "poly-zkevm": [
-        f"https://rpc.ankr.com/polygon_zkevm/{ANKR_KEY}",
-        "https://polygon-zkevm.1rpc.io",
-        "https://rpc.ankr.com/polygon_zkevm",
-    ],
-    "xrplevm": [
-        f"https://rpc.ankr.com/xrplevm/{ANKR_KEY}",
-        "https://xrplevm.1rpc.io",
-        "https://rpc.ankr.com/xrplevm",
-    ],
-    "cronos": [
-        "https://evm.cronos.org",
-        "https://cronos-evm-rpc.publicnode.com",
-        "https://cronos.drpc.org",
-        "https://cronos-mainnet-rpcaas.blockdaemon.tech/eth_rpc",
-        "https://1rpc.io/cro",
-    ],
-    "flow-evm": [
-        "https://mainnet.evm.nodes.onflow.org",
-        "https://flow-evm.1rpc.io",
-    ],
-    "core": [
-        "https://rpc.coredao.org",
-        "https://core.drpc.org",
-        "https://core.leorpc.com/?api_key=FREE",
-        "https://api.zan.top/core-mainnet",
+    43114: [
+        {"provider": "Aave V3", "fee_bps": 5,
+         "address": "0x794a61358D6845594F94dc1DB02A252b5b4814aD"},
     ],
 }
 
-CHAIN_ALIASES: Dict[str, str] = {
-    "base": "base",
-    "ethereum": "ethereum",
-    "bsc": "bsc",
-    "bnb chain": "bsc",
-    "bnb": "bsc",
-    "polygon": "polygon",
-    "optimism": "optimism",
-    "arbitrum": "arbitrum",
-    "linea": "linea",
-    "polygon zkevm": "poly-zkevm",
-    "avalanche": "avalanche",
-    "bera": "berachain",
-    "berachain": "berachain",
-    "blast": "blast",
-    "gnosis": "gnosis",
-    "scroll": "scroll",
-    "zk era": "zksync-era",
-    "zksync": "zksync-era",
-    "metis": "metis",
-    "moonbeam": "moonbeam",
-    "moonriver": "moonriver",
-    "sonic": "sonic",
-    "fraxtal": "fraxtal",
-    "hyperliquid": "hyperliquid",
-    "ink": "ink",
-    "celo": "celo",
-    "oasys": "oasys",
-    "opbnb": "opbnb",
-    "unichain": "unichain",
-    "xrplevm": "xrplevm",
-    "boba": "boba",
-    "mantle": "mantle",
-    "manta": "manta",
-    "kaia": "kaia",
-    "kava": "kava",
-    "harmony": "harmony",
-    "fuse": "fuse",
-    "oasis": "oasis",
-    "iotex": "iotex",
-    "robinhood": "robinhood",
-    "cronos": "cronos",
-    "flow-evm": "flow-evm",
-    "core": "core",
+# ═══════════════════════════════════════════════════════════════════════
+# 체인별 기본 가스 가격 (gwei)
+# ═══════════════════════════════════════════════════════════════════════
+GAS_PRICE_GWEI: Dict[int, float] = {
+    1: 20.0, 42161: 0.01, 8453: 0.005, 10: 0.001,
+    137: 30.0, 56: 1.0, 43114: 25.0, 59144: 0.05,
+    81457: 0.1, 324: 0.25, 80094: 1.0, 130: 0.001,
+    5000: 0.02, 42220: 5.0, 100: 2.0, 534352: 0.05,
 }
 
-def _norm(raw: str) -> Optional[str]:
-    k = raw.strip().lower()
-    return CHAIN_ALIASES.get(k) or (k if k in SCAN_RPCS else None)
+# ═══════════════════════════════════════════════════════════════════════
+# 토큰 및 네이티브 가격 (USD 근사치)
+# ═══════════════════════════════════════════════════════════════════════
+TOKENS: Dict[int, List[Tuple[str, str, int, float]]] = {
+    1: [
+        ("USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6, 1.0),
+        ("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7", 6, 1.0),
+        ("DAI", "0x6B175474E89094C44Da98b954EedeAC495271d0F", 18, 1.0),
+        ("WETH", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18, 3000.0),
+    ],
+    56: [
+        ("USDT", "0x55d398326f99059fF775485246999027B3197955", 18, 1.0),
+        ("USDC", "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", 18, 1.0),
+        ("WBNB", "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", 18, 600.0),
+    ],
+    8453: [
+        ("USDC", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6, 1.0),
+        ("WETH", "0x4200000000000000000000000000000000000006", 18, 3000.0),
+    ],
+    42161: [
+        ("USDC", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", 6, 1.0),
+        ("USDT", "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", 6, 1.0),
+        ("WETH", "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", 18, 3000.0),
+    ],
+}
 
-def _extract_chain_from_context(context: str) -> Optional[str]:
-    cm = re.search(r"\(([^)]*)\)", context)
-    if not cm:
-        return None
-    inner = cm.group(1).strip()
-    parts = [p.strip() for p in inner.split(",")]
-    for part in reversed(parts):
-        c = _norm(part)
-        if c:
-            return c
+NATIVE_PRICE: Dict[int, float] = {
+    1: 3000.0, 56: 600.0, 137: 0.5, 42161: 3000.0,
+    8453: 3000.0, 10: 3000.0, 43114: 30.0, 59144: 3000.0,
+    81457: 3000.0, 324: 3000.0, 80094: 5.0, 130: 3000.0,
+    5000: 0.6, 42220: 0.5, 100: 1.0, 534352: 1.0,
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# 임계값
+# ═══════════════════════════════════════════════════════════════════════
+FUND_THRESHOLD_USD = 100
+CONTAINMENT_MIN = 0.2
+MIN_SIZE_RATIO = 0.3
+NGRAM_SIZES = [4, 8, 16, 32]
+MAX_CANDIDATES_PER_SEED = 500
+RPC_HEALTH_TTL = 86400  # 24h
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 유틸
+# ═══════════════════════════════════════════════════════════════════════
+def ngrams(hex_str: str, n: int) -> Set[str]:
+    if hex_str.startswith("0x"):
+        hex_str = hex_str[2:]
+    hex_str = hex_str.lower()
+    if len(hex_str) < n:
+        return set()
+    return {hex_str[i:i + n] for i in range(0, len(hex_str) - n + 1, 2)}
+
+
+def strip_cbor(bytecode_hex: str) -> str:
+    if not bytecode_hex or not bytecode_hex.startswith("0x"):
+        return bytecode_hex or ""
+    try:
+        b = bytes.fromhex(bytecode_hex[2:])
+    except ValueError:
+        return bytecode_hex
+    if len(b) < 4:
+        return bytecode_hex
+    meta_len = int.from_bytes(b[-2:], "big")
+    if meta_len + 2 > len(b) or meta_len == 0:
+        return bytecode_hex
+    cb = b[-2 - meta_len:-2]
+    if not cb or cb[0] not in (0xa1, 0xa2, 0xa3):
+        return bytecode_hex
+    return "0x" + b[:-2 - meta_len].hex()
+
+
+def load_rpc_health() -> Dict[int, List[Dict[str, Any]]]:
+    """data/rpc_health.json 로드. 없으면 SCAN_RPCS로 폴백."""
+    health_file = DATA / "rpc_health.json"
+    if health_file.exists():
+        try:
+            data = json.loads(health_file.read_text())
+            return {int(k): v for k, v in data.get("chains", {}).items()}
+        except Exception:
+            pass
+    # 폴백: SCAN_RPCS
+    return {cid: [{"url": u, "p50_ms": None, "head_lag": None, "score": 0.5}]
+            for cid, urls in SCAN_RPCS.items() for u in urls}
+
+
+def best_rpc(chain_id: int) -> Optional[str]:
+    """체인에서 가장 좋은 RPC 1개"""
+    health = load_rpc_health()
+    endpoints = health.get(chain_id, [])
+    if endpoints:
+        sorted_eps = sorted(endpoints, key=lambda e: e.get("score", 0), reverse=True)
+        return sorted_eps[0]["url"]
+    # 환경변수 override
+    env = os.environ.get(f"RPC_{chain_id}")
+    if env:
+        return env
+    # SCAN_RPCS 폴백
+    if SCAN_RPCS.get(chain_id):
+        return SCAN_RPCS[chain_id][0]
     return None
 
-def parse_hack_md(path: str) -> Dict[str, List[Tuple[str, str, int, str]]]:
-    res: Dict[str, List[Tuple[str, str, int, str]]] = {}
-    if not os.path.exists(path):
-        return res
-    with open(path, encoding="utf-8") as f:
-        lines = f.readlines()
-    cur_chain: Optional[str] = None
-    cur_num = 0
-    cur_principle_parts: List[str] = []
-    hdr = re.compile(r"\*\*(\d+)\.\s+[\d/~]+—\s+.*?\((.*?)\)")
-    prin = re.compile(r"\*\*해킹 원리\*\*:\s*(.*)")
-    for line in lines:
-        h = hdr.search(line)
-        if h:
-            cur_num = int(h.group(1))
-            cur_chain = _norm(h.group(2))
-            cur_principle_parts = []
-            continue
-        p = prin.search(line)
-        if p:
-            cur_principle_parts.append(p.group(1).strip())
-            continue
-        if "**취약 컨트랙트**:" not in line:
-            continue
-        cur_principle = " ".join(cur_principle_parts)
-        for m in ADDRESS_RE.finditer(line):
-            a = m.group(0).lower()
-            if "..." in a or len(a) < 42:
-                continue
-            st = m.end()
-            nm = ADDRESS_RE.search(line, st)
-            en = nm.start() if nm else len(line)
-            ctx = line[st:en]
-            chain = _extract_chain_from_context(ctx) or cur_chain
-            if not chain:
-                continue
-            lbl = ""
-            lm = re.search(r"`" + re.escape(a) + r"`\s*\(([^)]*)\)", line)
-            if lm:
-                parts = [x.strip() for x in lm.group(1).split(",")]
-                if parts:
-                    lbl = parts[0]
-            res.setdefault(chain, []).append((a, lbl, cur_num, cur_principle))
-    for ch in res:
-        seen: Set[str] = set()
-        uq = []
-        for a, l, n, p in res[ch]:
-            if a not in seen:
-                seen.add(a)
-                uq.append((a, l, n, p))
-        res[ch] = uq
-    return res
 
-def ngrams(code_hex: str, n: int = NGRAM_SIZE) -> Set[str]:
-    if code_hex.startswith("0x"):
-        code_hex = code_hex[2:]
-    code_hex = code_hex.lower()
-    if len(code_hex) < n:
-        return set()
-    return {code_hex[i:i+n] for i in range(0, len(code_hex)-n+1, 2)}
+def rpc_call(chain_id: int, method: str, params: List[Any], timeout: int = 15) -> Any:
+    url = best_rpc(chain_id)
+    if not url:
+        return None
+    try:
+        r = requests.post(
+            url,
+            json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1},
+            timeout=timeout,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if "result" in data:
+                return data["result"]
+    except Exception:
+        pass
+    return None
 
-def jaccard(a: Set[str], b: Set[str]) -> float:
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
+
+def erc20_balance(chain_id: int, token: str, holder: str) -> int:
+    data = "0x70a08231" + holder.lower().replace("0x", "").rjust(64, "0")
+    result = rpc_call(chain_id, "eth_call", [{"to": token, "data": data}, "latest"])
+    if result and result != "0x":
+        try:
+            return int(result, 16)
+        except ValueError:
+            return 0
+    return 0
+
 
 def _awj(path, data, indent=None):
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=indent)
+            json.dump(data, f, indent=indent, ensure_ascii=False)
             f.flush()
         os.replace(tmp, path)
     finally:
@@ -519,765 +380,816 @@ def _awj(path, data, indent=None):
             except OSError:
                 pass
 
-@dataclass
-class Seed:
-    chain: str
-    address: str
-    label: str
-    incident: int
-    principle: str
-    code_hex: str = ""
-    ngrams: Set[str] = field(default_factory=set)
-    length: int = 0
 
-class Scanner:
-    def __init__(self, seeds_by_chain: Dict[str, List[Seed]]):
-        self.seeds_by_chain = seeds_by_chain
-        seen_addr: Set[str] = set()
-        all_seeds: List[Seed] = []
-        for seeds in seeds_by_chain.values():
-            for s in seeds:
-                if s.address not in seen_addr:
-                    seen_addr.add(s.address)
-                    all_seeds.append(s)
-        self.all_seeds: List[Seed] = all_seeds
-        self.code_cache: OrderedDict = OrderedDict()
-        self.ngram_cache: OrderedDict[str, Set[str]] = OrderedDict()
-        self._tx_cache: Dict[str, str] = {}
-        self.ccl = asyncio.Lock()
-        self.matches: List[Dict[str, Any]] = []
-        self._pe: Dict[str, asyncio.Event] = {}
-        self._conc = CONCURRENCY
-        self._conc_lock = asyncio.Lock()
-        self._active = 0
-        self._active_lock = asyncio.Lock()
-        self._conc_successes = 0
-        self._ngram_index: Dict[str, Set[int]] = {}
-        self._dead_urls: Dict[str, Set[str]] = {}
-        self._current_chain: Optional[str] = None
-        self._seen_addresses: Set[str] = set()
-        self._total_blocks_scanned = 0
-        self._total_lock = asyncio.Lock()
-        self._load_disk_cache()
-        try:
-            os.makedirs(CACHE_SWAP_DIR, exist_ok=True)
-            os.makedirs(TX_CACHE_SWAP_DIR, exist_ok=True)
-        except Exception:
-            pass
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 1: 해킹.md 파싱
+# ═══════════════════════════════════════════════════════════════════════
+def phase_init():
+    md_path = ROOT / "해킹.md"
+    if not md_path.exists():
+        print(f"  [FATAL] {md_path} 없음")
+        sys.exit(1)
 
-    def _swap_path(self, k: Tuple[str, str]) -> str:
-        ch, a = k
-        safe = f"{ch}_{a.lower()}.json"
-        return os.path.join(CACHE_SWAP_DIR, safe)
+    text = md_path.read_text(encoding="utf-8")
+    blocks = re.split(r"\n\*\*(?=\d{2}/\d{2})", text)
+    seeds, incident_no = [], 0
 
-    def _save_to_swap(self, k: Tuple[str, str], v: str) -> None:
-        try:
-            self._enforce_swap_limit(CACHE_SWAP_DIR)
-            path = self._swap_path(k)
-            _awj(path, v, None)
-        except Exception:
-            pass
+    for block in blocks:
+        h = re.match(r"(\d{2}/\d{2})\s*[—–-]\s*([^(\n]+)\(([^)]+)\)", block)
+        if not h:
+            continue
+        incident_no += 1
+        date, project, chain_raw = h.group(1), h.group(2).strip(), h.group(3)
 
-    def _enforce_swap_limit(self, swap_dir: str) -> None:
-        try:
-            files = [f for f in os.listdir(swap_dir) if f.endswith(".json")]
-            if len(files) <= MAX_SWAP_FILES:
-                return
-            files.sort(key=lambda f: os.path.getmtime(os.path.join(swap_dir, f)))
-            for f in files[: len(files) - MAX_SWAP_FILES]:
-                try:
-                    os.remove(os.path.join(swap_dir, f))
-                except OSError:
-                    pass
-        except Exception:
-            pass
+        chains = [CHAIN_MAP.get(c.strip().lower())
+                  for c in re.split(r"[/,]", chain_raw)]
+        chains = [c for c in chains if c]
+        if not chains:
+            continue
+        chain_id = chains[0]
 
-    def _load_from_swap(self, k: Tuple[str, str]) -> Optional[str]:
-        try:
-            path = self._swap_path(k)
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return None
+        pm = re.search(r"해킹 원리\*\*:\s*(.+?)(?:\n-|\Z)", block, re.S)
+        principle = pm.group(1).strip().replace("\n", " ") if pm else ""
 
-    def _tx_swap_path(self, h: str) -> str:
-        safe = h.lower().replace("0x", "") + ".json"
-        return os.path.join(TX_CACHE_SWAP_DIR, safe)
+        cm = re.search(r"취약 컨트랙트\*\*:\s*(.+?)(?:\n-|\Z)", block, re.S)
+        if not cm:
+            continue
 
-    def _save_tx_to_swap(self, h: str, v: str) -> None:
-        try:
-            self._enforce_swap_limit(TX_CACHE_SWAP_DIR)
-            path = self._tx_swap_path(h)
-            _awj(path, v, None)
-        except Exception:
-            pass
-
-    def _load_tx_from_swap(self, h: str) -> Optional[str]:
-        try:
-            path = self._tx_swap_path(h)
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return None
-
-    def _load_disk_cache(self):
-        if not os.path.exists(CODE_CACHE_FILE):
-            return
-        try:
-            with open(CODE_CACHE_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    parts = k.split("|", 1)
-                    if len(parts) == 2:
-                        chain, addr = parts
-                        self.code_cache[(chain, addr.lower())] = v
-        except Exception:
-            pass
-
-    def _save_disk_cache(self):
-        try:
-            data = {f"{ch}|{a}": c for (ch, a), c in self.code_cache.items() if c}
-            _awj(CODE_CACHE_FILE, data, None)
-        except Exception:
-            pass
-
-    def _build_ngram_index(self, seeds: List[Seed]) -> None:
-        self._ngram_index.clear()
-        for i, s in enumerate(seeds):
-            if not s.ngrams:
-                continue
-            for g in s.ngrams:
-                self._ngram_index.setdefault(g, set()).add(i)
-
-    async def _maybe_recover_conc(self) -> None:
-        async with self._conc_lock:
-            self._conc_successes += 1
-            if self._conc_successes >= CONC_RECOVER_EVERY:
-                self._conc = min(CONCURRENCY, self._conc + 1)
-                self._conc_successes = 0
-
-    async def _bad(self, u, ul, uo, uf):
-        async with ul:
-            uf[u] = uf.get(u, 0) + 1
-            if uf[u] >= 3 and u in uo:
-                uo.remove(u)
-                ch = self._current_chain
-                if ch:
-                    self._dead_urls.setdefault(ch, set()).add(u)
-
-    async def _rl_sleep(self, r):
-        ra = r.headers.get("Retry-After")
-        if ra:
-            try:
-                await asyncio.sleep(min(int(ra), 60))
-            except Exception:
-                await asyncio.sleep(1.0)
-        else:
-            await asyncio.sleep(1.0)
-
-    async def _try_one_url(self, sess, method, params, u, fs, rt):
-        try:
-            async with self._active_lock:
-                self._active += 1
-                active = self._active
-            if active > self._conc:
-                await asyncio.sleep(0.25 * (active - self._conc))
-            async with fs:
-                async with sess.post(u, json={"jsonrpc":"2.0","method":method,"params":params,"id":_next_rid()}, headers=HEADERS, timeout=rt) as r:
-                    if r.status == 200:
-                        d = await r.json(content_type=None)
-                        if isinstance(d, dict) and "result" in d:
-                            await self._maybe_recover_conc()
-                            return u, d["result"], True
-                    if r.status == 429:
-                        await self._rl_sleep(r)
-                        async with self._conc_lock:
-                            self._conc = max(1, self._conc - 1)
-                    return u, None, False
-        except Exception:
-            return u, None, False
-        finally:
-            async with self._active_lock:
-                self._active -= 1
-
-    async def _one(self, sess, method, params, fs, ul, uo, uf, rt):
-        async with ul:
-            snap = [u for u in uo if u not in self._dead_urls.get(self._current_chain or "", set())]
-        if not snap:
-            return None
-        results = await asyncio.gather(*[self._try_one_url(sess, method, params, u, fs, rt) for u in snap], return_exceptions=True)
-        for res in results:
-            if isinstance(res, Exception):
-                continue
-            u, result, ok = res
-            if ok:
-                async with ul:
-                    if u in uo:
-                        uo.remove(u)
-                        uo.insert(0, u)
-                    ch = self._current_chain
-                    if ch and self._dead_urls.get(ch):
-                        recovered = self._dead_urls[ch].pop()
-                        uo.insert(0, recovered)
-                        uf.pop(recovered, None)
-                return result
-            await self._bad(u, ul, uo, uf)
-        return None
-
-    async def _try_batch_url(self, sess, method, pl, u, fs, rt):
-        try:
-            body = [{"jsonrpc":"2.0","method":method,"params":p,"id":ix} for ix, p in enumerate(pl)]
-            async with self._active_lock:
-                self._active += 1
-                active = self._active
-            if active > self._conc:
-                await asyncio.sleep(0.25 * (active - self._conc))
-            async with fs:
-                async with sess.post(u, json=body, headers=HEADERS, timeout=rt) as r:
-                    if r.status == 200:
-                        d = await r.json(content_type=None)
-                        if isinstance(d, list):
-                            n = len(pl)
-                            rl = [None] * n
-                            for it in d:
-                                if isinstance(it, dict) and "id" in it:
-                                    try:
-                                        ix = int(it["id"])
-                                    except Exception:
-                                        continue
-                                    if 0 <= ix < n:
-                                        rl[ix] = it.get("result") if "result" in it else None
-                            if all(x is None for x in rl):
-                                return u, None, False
-                            await self._maybe_recover_conc()
-                            return u, rl, True
-                    if r.status == 429:
-                        await self._rl_sleep(r)
-                        async with self._conc_lock:
-                            self._conc = max(1, self._conc - 1)
-                    return u, None, False
-        except Exception:
-            return u, None, False
-        finally:
-            async with self._active_lock:
-                self._active -= 1
-
-    async def _batch(self, sess, method, pl, fs, ul, uo, uf, rt):
-        if not pl:
-            return []
-        n = len(pl)
-        async with ul:
-            snap = [u for u in uo if u not in self._dead_urls.get(self._current_chain or "", set())]
-        if not snap:
-            return [None] * n
-        results = await asyncio.gather(*[self._try_batch_url(sess, method, pl, u, fs, rt) for u in snap], return_exceptions=True)
-        for res in results:
-            if isinstance(res, Exception):
-                continue
-            u, rl, ok = res
-            if ok:
-                async with ul:
-                    if u in uo:
-                        uo.remove(u)
-                        uo.insert(0, u)
-                    ch = self._current_chain
-                    if ch and self._dead_urls.get(ch):
-                        recovered = self._dead_urls[ch].pop()
-                        uo.insert(0, recovered)
-                        uf.pop(recovered, None)
-                return rl
-            await self._bad(u, ul, uo, uf)
-        return [None] * n
-
-    async def get_codes(self, sess, chain, addrs, blk, fs, ul, uo, uf, rt):
-        wait: List[Tuple[str, asyncio.Event]] = []
-        miss: List[str] = []
-        seen: Set[str] = set()
-        async with self.ccl:
-            for a in addrs:
-                k = (chain, a)
-                if k in self.code_cache:
+        for line in cm.group(1).split("\n"):
+            for m in re.finditer(r"(0x[a-fA-F0-9]{40})\s*(?:\(([^)]*)\))?", line):
+                addr = m.group(1).lower()
+                label_raw = (m.group(2) or "").lower()
+                if any(p in label_raw for p in
+                       ["attacker", "helper", "exploiter", "poisoner",
+                        "fake spawner", "attack contract"]):
                     continue
-                if k in self._pe:
-                    if a not in seen:
-                        wait.append((k, self._pe[k]))
-                        seen.add(a)
-                else:
-                    ev = asyncio.Event()
-                    self._pe[k] = ev
-                    miss.append(a)
-                    seen.add(a)
-        upd: Dict[str, str] = {}
-        inv: Set[str] = set()
-        try:
-            if miss:
-                got = []
-                for i in range(0, len(miss), BATCH_SIZE):
-                    chunk = miss[i:i+BATCH_SIZE]
-                    got.extend(await self._batch(sess, "eth_getCode", [[a, hex(blk)] for a in chunk], fs, ul, uo, uf, rt))
-                for a, c in zip(miss, got):
-                    k = (chain, a)
-                    if isinstance(c, str):
-                        c = c.lower()
-                        if c in ("", "0x"):
-                            inv.add(a)
-                        else:
-                            hp = c[2:] if c.startswith("0x") else c
-                            if not hp.strip("0"):
-                                inv.add(a)
-                            else:
-                                upd[a] = c
-        finally:
-            async with self.ccl:
-                for a, c in upd.items():
-                    k = (chain, a)
-                    self.code_cache[k] = c
-                    self.code_cache.move_to_end(k)
-                for a in inv:
-                    k = (chain, a)
-                    if k not in self.code_cache:
-                        self.code_cache[k] = ""
-                    self.code_cache.move_to_end(k)
-                while len(self.code_cache) > MAX_CODE_CACHE:
-                    k_evict, v_evict = self.code_cache.popitem(last=False)
-                    if v_evict:
-                        self._save_to_swap(k_evict, v_evict)
-                if upd:
-                    self._cc_dirty = True
-                for a in miss:
-                    k = (chain, a)
-                    ev = self._pe.pop(k, None)
-                    if ev is not None:
-                        ev.set()
-        out: List[Optional[str]] = []
-        for a in addrs:
-            k = (chain, a)
-            c = self.code_cache.get(k)
-            if c is None:
-                c = self._load_from_swap(k)
-                if c is not None:
-                    self.code_cache[k] = c
-                    self.code_cache.move_to_end(k)
-            if isinstance(c, str) and c and c != "0x":
-                self.code_cache.move_to_end(k)
-                out.append(c)
-            else:
-                out.append(None)
-        for _, ev in wait:
-            await ev.wait()
-        return out
+                if addr == "0x" + "0" * 38 + "0802":
+                    continue
 
-    async def fetch_seed_codes(self, sess, chain, seeds, fs):
-        uo = list(SCAN_RPCS.get(chain, []))
-        if not uo:
-            print(f"[{chain}] no rpc for seed fetch")
-            return
-        ul = asyncio.Lock()
-        uf: Dict[str, int] = {}
-        rt = aiohttp.ClientTimeout(total=15)
-        pending_all = [s for s in seeds if not s.code_hex]
-        if not pending_all:
-            return
-        for attempt in range(3):
-            pending = [s for s in pending_all if not s.code_hex]
-            if not pending:
-                break
-            for i in range(0, len(pending), BATCH_SIZE):
-                chunk = pending[i:i+BATCH_SIZE]
-                pl_ = [[s.address, "latest"] for s in chunk]
-                got = await self._batch(sess, "eth_getCode", pl_, fs, ul, uo, uf, rt)
-                for s, c in zip(chunk, got):
-                    if isinstance(c, str) and c and c != "0x":
-                        s.code_hex = c.lower()
-                        s.ngrams = ngrams(c[2:])
-                        s.length = len(c[2:])
-            if all(s.code_hex for s in pending_all):
-                break
-            await asyncio.sleep(2.0)
-        remaining = [s for s in seeds if not s.code_hex]
-        if remaining:
-            print(f"[{chain}] seed code fetch failed for {len(remaining)} seeds")
+                label = m.group(2) or ""
+                display = f"{date} — {project} ({chain_raw})"
+                if label:
+                    display += f" [{label}]"
 
-    def _similarity(self, hp: str, seed: Seed) -> float:
-        if seed.code_hex and hp == seed.code_hex[2:].lower():
-            return 1.0
-        if seed.length > 0:
-            ratio = len(hp) / seed.length
-            if ratio < LENGTH_RATIO_MIN or ratio > LENGTH_RATIO_MAX:
-                return 0.0
-        # n-gram 재계산 제거: 동일한 코드 해시는 캐시에서 재사용
-        ng = self.ngram_cache.get(hp)
-        if ng is None:
-            ng = ngrams(hp)
-            if len(self.ngram_cache) >= MAX_CODE_CACHE:
-                self.ngram_cache.popitem(last=False)
-            self.ngram_cache[hp] = ng
-        else:
-            self.ngram_cache.move_to_end(hp)
-        return jaccard(ng, seed.ngrams)
+                seeds.append({
+                    "incident_no": incident_no,
+                    "date": date,
+                    "project": project,
+                    "chain_label": chain_raw,
+                    "chain": chain_id,
+                    "address": addr,
+                    "label": label,
+                    "display": display,
+                    "principle": principle,
+                })
 
-    async def scan_chain(self, chain, sess, resume=None, fs=None, pl=None, sp=None):
-        self._current_chain = chain
-        self._dead_urls[chain] = set()
-        uo = list(SCAN_RPCS.get(chain, []))
-        if not uo:
-            print(f"[{chain}] no rpc")
-            return []
-        if resume is not None and resume < 0:
-            resume = None
-        if fs is None:
-            fs = asyncio.Semaphore(CONCURRENCY)
-        if pl is None:
-            pl = asyncio.Lock()
-        if not isinstance(sp, dict):
-            sp = {}
-        ul = asyncio.Lock()
-        uf: Dict[str, int] = {}
-        rt = aiohttp.ClientTimeout(total=15)
-        cm: List[Dict[str, Any]] = []
-        addr_best: Dict[str, Dict[str, Any]] = {}
-        blocks_since_checkpoint = 0
-        last_checkpoint_len = 0
+    seen, uniq = set(), []
+    for s in seeds:
+        k = (s["incident_no"], s["address"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(s)
 
-        if resume is not None:
-            pg = None
-            if isinstance(sp, dict):
-                pg = sp.get(chain)
-            if not isinstance(pg, dict):
-                try:
-                    with open(PROGRESS_FILE, encoding="utf-8") as f:
-                        allp = json.load(f)
-                    if isinstance(allp, dict):
-                        pg = allp.get(chain)
-                except Exception as e:
-                    print(f"[{chain}] progress read error: {e}")
-            if isinstance(pg, dict):
-                st = set()
-                uq = []
-                for m in pg.get("matches", []) or []:
-                    k = (m.get("chain"), m.get("address"))
-                    if k in st:
-                        continue
-                    st.add(k)
-                    uq.append(m)
-                cm[:] = uq
-                self.matches.extend(uq)
-                for m in uq:
-                    addr_best[m.get("address")] = {
-                        "similarity": m.get("similarity", 0.0),
-                        "seed_address": m.get("seed_address", ""),
-                        "seed_label": m.get("seed_label", ""),
-                        "seed_incident": m.get("seed_incident", 0),
-                        "seed_principle": m.get("seed_principle", ""),
-                    }
+    (DATA / "seeds.json").write_text(
+        json.dumps(uniq, ensure_ascii=False, indent=2))
+    print(f"  [OK] 씨드 {len(uniq)}개")
 
-        async def one(m, p):
-            return await self._one(sess, m, p, fs, ul, uo, uf, rt)
 
-        async def bat(m, pl_):
-            return await self._batch(sess, m, pl_, fs, ul, uo, uf, rt)
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 2: Sourcify 다운로드
+# ═══════════════════════════════════════════════════════════════════════
+def phase_download():
+    dl = DATA / "sourcify"
+    dl.mkdir(exist_ok=True)
+    try:
+        r = requests.get("https://export.sourcify.dev/?prefix=v2/", timeout=120)
+    except Exception as e:
+        print(f"  [FATAL] 목록 조회 실패: {e}")
+        sys.exit(1)
 
-        latest = None
-        r = await one("eth_blockNumber", [])
-        if r is not None:
+    keys = re.findall(r"<Key>([^<]+)</Key>", r.text)
+    print(f"  [INFO] {len(keys)}개 파일 (~136GB)")
+
+    for i, key in enumerate(keys, 1):
+        local = dl / Path(key).name
+        if local.exists() and local.stat().st_size > 0:
+            continue
+        url = f"https://export.sourcify.dev/{quote(key)}"
+        subprocess.run(["curl", "-L", "-C", "-", "-sS", "-o", str(local), url],
+                       check=False)
+        if i % 100 == 0:
+            print(f"  {i}/{len(keys)} 다운로드 완료")
+    print(f"  [OK] {dl}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 3: Dedup
+# ═══════════════════════════════════════════════════════════════════════
+def phase_dedup():
+    db_path = DATA / "sourcify.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    files = sorted((DATA / "sourcify").glob("*.parquet"))
+    if not files:
+        print("  [FATAL] parquet 파일 없음")
+        sys.exit(1)
+
+    tables: Dict[str, List[str]] = {}
+    for f in files:
+        name = re.match(r"([a-z_]+?)(?:_\d+)?\.parquet", f.name)
+        if name:
+            tables.setdefault(name.group(1), []).append(str(f))
+
+    print(f"  [INFO] 테이블: {list(tables.keys())}")
+
+    cc = tables.get("compiled_contracts", [])
+    cd = tables.get("contract_deployments", [])
+    vc = tables.get("verified_contracts", [])
+    if not (cc and cd and vc):
+        print("  [FATAL] 필수 테이블 누락")
+        sys.exit(1)
+
+    print("  [INFO] unique_bytecodes 생성 중...")
+    try:
+        conn.execute(f"""
+        CREATE OR REPLACE TABLE unique_bytecodes AS
+        SELECT
+          c.runtime_bytecode_hash AS bytecode_hash,
+          c.runtime_bytecode AS bytecode,
+          list(d.address) AS addresses,
+          list(d.chain_id) AS chains,
+          min(d.created_at) AS created_at
+        FROM read_parquet({cc!r}) c
+        JOIN read_parquet({vc!r}) v ON v.compilation_id = c.id
+        JOIN read_parquet({cd!r}) d ON d.id = v.deployment_id
+        WHERE c.runtime_bytecode IS NOT NULL AND c.runtime_bytecode != '0x'
+        GROUP BY c.runtime_bytecode_hash, c.runtime_bytecode
+        """)
+        n = conn.execute("SELECT count(*) FROM unique_bytecodes").fetchone()[0]
+        print(f"  [OK] unique_bytecodes: {n:,} rows")
+    except Exception as e:
+        print(f"  [FATAL] dedup 실패: {e}")
+        sys.exit(1)
+
+    try:
+        conn.execute(f"""
+        CREATE OR REPLACE TABLE compiled_source AS
+        SELECT id, runtime_bytecode_hash, sources
+        FROM read_parquet({cc!r})
+        WHERE runtime_bytecode IS NOT NULL
+        """)
+        print("  [OK] compiled_source")
+    except Exception as e:
+        print(f"  [WARN] compiled_source: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 3.5: RPC 헬스 체크
+# ═══════════════════════════════════════════════════════════════════════
+async def _rpc_post_json(session, url, method, params, timeout=5):
+    try:
+        async with session.post(
+            url,
+            json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1},
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as r:
+            if r.status == 200:
+                data = await r.json(content_type=None)
+                if isinstance(data, dict) and "result" in data:
+                    return data["result"]
+    except Exception:
+        pass
+    return None
+
+
+async def _check_endpoint(session, url, expected_chain_id, semaphore):
+    async with semaphore:
+        result = {
+            "url": url,
+            "chain_id_match": False,
+            "block_number": None,
+            "latency_samples": [],
+        }
+
+        # eth_chainId
+        cid_hex = await _rpc_post_json(session, url, "eth_chainId", [])
+        if cid_hex:
             try:
-                latest = int(r, 16) if isinstance(r, str) else int(r)
+                if int(cid_hex, 16) == expected_chain_id:
+                    result["chain_id_match"] = True
             except Exception:
                 pass
-        if latest is None:
-            print(f"[{chain}] block fail")
-            return []
 
-        if resume is not None and resume >= latest:
-            print(f"[{chain}] done")
-            return cm
-
-        if resume is not None and 0 <= resume < latest:
-            sb = resume + 1
-        else:
-            sb = 0
-        sr = latest - sb + 1
-        if sr <= 0:
-            print(f"[{chain}] done")
-            return cm
-        if resume is not None:
-            print(f"[{chain}] res {sb} scan {sr}")
-            with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
-                mf.write(f"[{chain}] res {sb} scan {sr}\n")
-                mf.flush()
-        else:
-            print(f"[{chain}] latest {latest} scan {sr} (full history)")
-            with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
-                mf.write(f"[{chain}] latest {latest} scan {sr} (full history)\n")
-                mf.flush()
-
-        # [CRITICAL DESIGN - NEVER CHANGE] 모든 씨드를 모든 체인에서 비교함.
-        # 이더리움 취약 컨트랙트와 동일한 바이트코드가 BSC/아비트럼 등 타 체인에 클론 배포된 경우를
-        # 잡기 위해 체인별 씨드 분리는 금지함. self.all_seeds(전 체인 모든 씨드)와 비교하는 것이 의도된 설계임.
-        seed_map: Dict[str, Seed] = {}
-        for s in self.all_seeds:
-            if s.code_hex not in seed_map:
-                seed_map[s.code_hex] = s
-        seeds = list(seed_map.values())
-        sinfo = [(s.address, s.label, s.incident, s.principle) for s in seeds]
-        self._build_ngram_index(seeds)
-
-        async def collect_addrs(blk):
-            addrs: Set[str] = set()
-            bd = await one("eth_getBlockByNumber", [hex(blk), True])
-            if not isinstance(bd, dict):
-                return addrs
-            txs = bd.get("transactions")
-            if not txs:
-                return addrs
-            # 일부 RPC는 full=True를 무시하고 tx 해시 문자열만 반환함.
-            # 해시만 있으면 to 주소를 알 수 없으므로 eth_getTransactionByHash로 조회.
-            if txs and isinstance(txs[0], str):
-                # 병렬 시도(_batch 재사용): 모든 URL 동시 호출, 첫 성공 반환.
-                miss_hashes = [h for h in txs if h not in self._tx_cache and self._load_tx_from_swap(h) is None]
-                for i in range(0, len(miss_hashes), BATCH_SIZE):
-                    hash_batch = miss_hashes[i:i+BATCH_SIZE]
-                    pl_ = [[h] for h in hash_batch]
-                    got = await self._batch(sess, "eth_getTransactionByHash", pl_, fs, ul, uo, uf, rt)
-                    for h, c in zip(hash_batch, got):
-                        if isinstance(c, dict):
-                            to = c.get("to")
-                            if isinstance(to, str) and ADDRESS_RE.fullmatch(to):
-                                if len(self._tx_cache) >= MAX_TX_CACHE:
-                                    oldest = next(iter(self._tx_cache))
-                                    oldest_v = self._tx_cache.pop(oldest, None)
-                                    if oldest_v:
-                                        self._save_tx_to_swap(oldest, oldest_v)
-                                self._tx_cache[h] = to.lower()
-                                addrs.add(to.lower())
-                                self._save_tx_to_swap(h, to.lower())
-                for h in txs:
-                    if h in self._tx_cache:
-                        addrs.add(self._tx_cache[h])
-                    else:
-                        v = self._load_tx_from_swap(h)
-                        if v is not None:
-                            self._tx_cache[h] = v
-                            addrs.add(v)
-                return addrs
-            for tx in txs:
-                if not isinstance(tx, dict):
-                    continue
-                # 계약 생성(tx.to=None) 및 내부 트랜잭션은 스캔 범위에서 제외함.
-                # 전체 스캔에 이미 신규 배포 주소가 포함되므로 별도 신규 배포 추적은 불필요함.
-                to = tx.get("to")
-                if isinstance(to, str) and ADDRESS_RE.fullmatch(to):
-                    addrs.add(to.lower())
-            return addrs
-
-        async def process_block(blk):
-            addrs = await collect_addrs(blk)
-            if not addrs:
-                return 0
-            addr_list = list(addrs)
-            codes = await self.get_codes(sess, chain, addr_list, blk, fs, ul, uo, uf, rt)
-            new_matches = 0
-            for a, c in zip(addr_list, codes):
-                if not c or c == "0x" or len(c) < 10:
-                    continue
-                hp = c[2:] if c.startswith("0x") else c
-                hp_len = len(hp)
-                hp_ng = ngrams(hp)
-                cand: Set[int] = set()
-                for g in hp_ng:
-                    cand.update(self._ngram_index.get(g, ()))
-                if not cand:
-                    continue
-                best_sim = 0.0
-                best_ix = -1
-                for i in cand:
-                    s = seeds[i]
-                    if s.length > 0:
-                        ratio = hp_len / s.length
-                        if ratio < LENGTH_RATIO_MIN or ratio > LENGTH_RATIO_MAX:
-                            continue
-                    sc = self._similarity(hp, s)
-                    if sc == 1.0:
-                        best_sim = 1.0
-                        best_ix = i
-                        break
-                    if sc > best_sim:
-                        best_sim = sc
-                        best_ix = i
-                if best_sim >= SIMILARITY_THRESHOLD:
-                    if a in self._seen_addresses:
-                        continue
-                    a0, l0, n0, p0 = sinfo[best_ix]
-                    m = {
-                        "chain": chain,
-                        "block": blk,
-                        "address": a,
-                        "seed_address": a0,
-                        "seed_label": l0,
-                        "seed_incident": n0,
-                        "seed_principle": p0,
-                        "similarity": best_sim,
-                    }
-                    prev = addr_best.get(a)
-                    if prev and prev["similarity"] >= best_sim:
-                        continue
-                    addr_best[a] = {
-                        "similarity": best_sim,
-                        "seed_address": a0,
-                        "seed_label": l0,
-                        "seed_incident": n0,
-                        "seed_principle": p0,
-                    }
-                    cm.append(m)
-                    self.matches.append(m)
-                    self._seen_addresses.add(a)
-                    new_matches += 1
-                    print(f"  [{chain}] b{blk} MATCH {a} <- {a0} sim={best_sim:.4f}", flush=True)
-                    with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
-                        mf.write(f"  [{chain}] b{blk} MATCH {a} <- {a0} sim={best_sim:.4f}\n")
-                        mf.flush()
-            return new_matches
-
-        blk = sb
-        cumulative_blocks = 0
-        last_log_blocks = 0
-        matches_since_save = 0
-        total_blocks = latest - sb + 1
-        try:
-            while blk <= latest:
-                ed = min(blk + BLOCK_BATCH, latest + 1)
-                batch_blks = list(range(blk, ed))
-                rs = await asyncio.gather(*[process_block(b) for b in batch_blks], return_exceptions=True)
-                for b, x in zip(batch_blks, rs):
-                    if isinstance(x, Exception):
-                        print(f"  [{chain}] b{b} {x}")
-                cumulative_blocks += len(batch_blks)
-                matches_since_save += sum(r for r in rs if not isinstance(r, Exception))
-                now = asyncio.get_event_loop().time()
-                if cumulative_blocks - last_log_blocks >= PROGRESS_LOG_INTERVAL:
-                    prog = f"  [{chain}] b{ed-1} {cumulative_blocks}/{total_blocks} blocks ({cumulative_blocks / total_blocks * 100:.1f}%)\n"
-                    with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
-                        mf.write(prog)
-                        mf.flush()
-                    last_log_blocks = cumulative_blocks
-                blocks_since_checkpoint += len(batch_blks)
-                if matches_since_save >= 1:
-                    async with pl:
-                        seen = {}
-                        uniq = []
-                        for mm in self.matches:
-                            k = (mm.get("chain"), mm.get("address"))
-                            sim = mm.get("similarity", 0.0)
-                            if k not in seen or sim > seen[k][0]:
-                                seen[k] = (sim, mm)
-                        uniq = [v[1] for v in seen.values()]
-                        uniq.sort(key=lambda m: m.get("similarity", 0.0), reverse=True)
-                        await asyncio.get_running_loop().run_in_executor(None, _awj, RESULTS_FILE, uniq, 2)
-                    matches_since_save = 0
-                if (blocks_since_checkpoint >= PROGRESS_INTERVAL or ed - 1 == latest) and len(cm) != last_checkpoint_len:
-                    async with pl:
-                        sp[chain] = {"chain": chain, "last_block": ed - 1, "matches": cm}
-                        progress_path = os.path.join(ROOT, f"scan_progress_{chain}.json")
-                        await asyncio.get_running_loop().run_in_executor(None, _awj, progress_path, sp[chain], None, False)
-                    blocks_since_checkpoint = 0
-                    last_checkpoint_len = len(cm)
-                    print(f"  [{chain}] checkpoint b{ed-1} {len(cm)} matches", flush=True)
-                    with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
-                        mf.write(f"  [{chain}] checkpoint b{ed-1} {len(cm)} matches\n")
-                        mf.flush()
-                blk = ed
-        except Exception as e:
-            print(f"  [{chain}] FATAL loop error: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-        print(f"[{chain}] complete {len(cm)} matches", flush=True)
-        with open(MONITOR_FILE, "a", encoding="utf-8") as mf:
-            mf.write(f"[{chain}] complete {len(cm)} matches\n")
-            mf.flush()
-        return cm
-
-async def main_async():
-    try:
-        raw = parse_hack_md(HACK_FILE)
-        sbc: Dict[str, List[Seed]] = {}
-        for ch, en in raw.items():
-            sbc[ch] = [Seed(chain=ch, address=a, label=l, incident=n, principle=p) for a, l, n, p in en]
-        # seed 코드가 없는 체인도 전체 블록을 스캔함(의도적).
-        # 해당 체인에 매칭할 seed가 없으면 유사도 비교는 수행하지 않지만,
-        # 전체 체인 커버리지를 우선하며 seed가 나중에 추가될 경우를 대비함.
-        chains = list(SCAN_RPCS.keys())
-        if not chains:
-            print("no chains")
-            return
-        conn = aiohttp.TCPConnector(limit=CONNECTOR_LIMIT, ttl_dns_cache=3600)
-        fs_map: Dict[str, asyncio.Semaphore] = {ch: asyncio.Semaphore(CONCURRENCY) for ch in chains}
-        pl = asyncio.Lock()
-        sp: Dict[str, Any] = {}
-        sc = Scanner(sbc)
-        for fname in os.listdir(ROOT):
-            if fname.startswith("scan_progress_") and fname.endswith(".json"):
-                ch = fname[len("scan_progress_"):-len(".json")]
+        # eth_blockNumber × 2
+        for _ in range(2):
+            t0 = time.time()
+            bn = await _rpc_post_json(session, url, "eth_blockNumber", [])
+            if bn:
                 try:
-                    with open(os.path.join(ROOT, fname), encoding="utf-8") as f:
-                        data = json.load(f)
-                    if isinstance(data, dict):
-                        sp[ch] = data
+                    result["latency_samples"].append((time.time() - t0) * 1000)
+                    result["block_number"] = int(bn, 16)
                 except Exception:
                     pass
-        if not sp and os.path.exists(PROGRESS_FILE):
-            try:
-                with open(PROGRESS_FILE, encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    sp = data
-            except Exception:
-                sp = {}
-        async with aiohttp.ClientSession(connector=conn) as sess:
-            tasks = []
-            for ch in chains:
-                if sbc.get(ch):
-                    tasks.append(sc.fetch_seed_codes(sess, ch, sbc[ch], fs_map[ch]))
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            print(f"Seeds: {sum(len(v) for v in sbc.values())} across {len(sbc)} chains", flush=True)
-            print(f"Scanning {len(chains)} chains: {', '.join(chains)}", flush=True)
-            stasks = []
-            for ch in chains:
-                pg = sp.get(ch) if isinstance(sp, dict) else None
-                rf = pg.get("last_block") if isinstance(pg, dict) else None
-                stasks.append(sc.scan_chain(ch, sess, rf, fs_map[ch], pl, sp))
-            gs = await asyncio.gather(*stasks, return_exceptions=True)
-            for ch, x in zip(chains, gs):
-                if isinstance(x, Exception):
-                    print(f"  [{ch}] scan task failed: {x!r}", flush=True)
-        sc._save_disk_cache()
-        seen = {}
-        uniq = []
-        for m in sc.matches:
-            k = (m.get("chain"), m.get("address"))
-            sim = m.get("similarity", 0.0)
-            if k not in seen or sim > seen[k][0]:
-                seen[k] = (sim, m)
-        uniq = [v[1] for v in seen.values()]
-        uniq.sort(key=lambda m: m.get("similarity", 0.0), reverse=True)
-        await asyncio.get_running_loop().run_in_executor(None, _awj, RESULTS_FILE, uniq, 2)
-        print(f"\nTotal matches: {len(uniq)}", flush=True)
-        print(f"Results written to {RESULTS_FILE}", flush=True)
-        for m in uniq[:20]:
-            print(f"  [{m.get('chain')}] {m.get('address')} <- {m.get('seed_address')} {m.get('seed_principle','')[:50]} sim={m.get('similarity')}", flush=True)
-    except Exception as e:
-        print(f"FATAL main_async error: {type(e).__name__}: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        raise
 
+        if result["latency_samples"]:
+            result["p50_ms"] = sorted(result["latency_samples"])[
+                len(result["latency_samples"]) // 2]
+        else:
+            result["p50_ms"] = None
+
+        return result
+
+
+async def _check_chain(session, chain_id, urls, semaphore):
+    tasks = [_check_endpoint(session, u, chain_id, semaphore) for u in urls]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    valid = [r for r in results
+             if isinstance(r, dict) and r.get("chain_id_match")]
+
+    if not valid:
+        return chain_id, []
+
+    best_head = max(r["block_number"] for r in valid if r.get("block_number"))
+    for r in valid:
+        r["head_lag"] = best_head - r["block_number"] if r.get("block_number") else None
+
+    # 필터: p50 ≤ 2000ms AND head_lag ≤ 100
+    filtered = [
+        r for r in valid
+        if r.get("p50_ms") is not None and r["p50_ms"] <= 2000
+        and r.get("head_lag") is not None and r["head_lag"] <= 100
+    ]
+
+    # 점수: p50 낮을수록, head_lag 낮을수록 높음
+    for r in filtered:
+        r["score"] = 1.0 / (1.0 + r["p50_ms"] / 100.0) * (1.0 - min(r["head_lag"], 100) / 200.0)
+
+    filtered.sort(key=lambda r: r["score"], reverse=True)
+    return chain_id, filtered
+
+
+async def _phase_rpc_health_async():
+    # 1. Chainlist 로드
+    try:
+        r = requests.get("https://chainid.network/chains.json", timeout=60)
+        chainlist = r.json()
+        print(f"  [INFO] Chainlist: {len(chainlist)}개 체인")
+    except Exception as e:
+        print(f"  [WARN] Chainlist 조회 실패: {e}")
+        chainlist = []
+
+    # 2. 후보 수집 (Chainlist + SCAN_RPCS)
+    candidates: Dict[int, Set[str]] = {}
+
+    for chain in chainlist:
+        cid = chain.get("chainId")
+        if not cid:
+            continue
+        for rpc in chain.get("rpc", []):
+            if not isinstance(rpc, str):
+                continue
+            if not rpc.startswith("https://"):
+                continue
+            if "${" in rpc or "}" in rpc:
+                continue
+            candidates.setdefault(cid, set()).add(rpc)
+
+    for cid, urls in SCAN_RPCS.items():
+        for u in urls:
+            if not is_premium_rpc(u):
+                candidates.setdefault(cid, set()).add(u)
+
+    # 3. 헬스 체크
+    total_eps = sum(len(v) for v in candidates.values())
+    print(f"  [INFO] {len(candidates)}개 체인 / {total_eps}개 엔드포인트 검사 시작")
+
+    semaphore = asyncio.Semaphore(50)
+    health: Dict[int, List[Dict[str, Any]]] = {}
+
+    connector = aiohttp.TCPConnector(limit=200, ttl_dns_cache=3600)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [
+            _check_chain(session, cid, list(urls), semaphore)
+            for cid, urls in candidates.items()
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for res in results:
+        if isinstance(res, Exception):
+            continue
+        cid, endpoints = res
+        if endpoints:
+            health[cid] = endpoints
+
+    # 4. 프리미엄 RPC 추가 (헬스 체크 생략, 최상위 점수로)
+    for cid, urls in SCAN_RPCS.items():
+        premium = [u for u in urls if is_premium_rpc(u)]
+        if premium:
+            health.setdefault(cid, [])
+            for u in premium:
+                health[cid].append({
+                    "url": u, "p50_ms": None, "head_lag": 0,
+                    "score": 1.0, "premium": True,
+                })
+
+    # 5. 저장
+    payload = {
+        "generated_at": time.time(),
+        "chains": {str(k): v for k, v in health.items()},
+    }
+    _awj(str(DATA / "rpc_health.json"), payload, indent=2)
+
+    live_chains = len(health)
+    live_eps = sum(len(v) for v in health.values())
+    print(f"  [OK] 생존 체인 {live_chains}개 / 생존 엔드포인트 {live_eps}개")
+
+
+def phase_rpc_health(force: bool = False):
+    health_file = DATA / "rpc_health.json"
+    if health_file.exists() and not force:
+        try:
+            data = json.loads(health_file.read_text())
+            age = time.time() - data.get("generated_at", 0)
+            if age < RPC_HEALTH_TTL:
+                chains = data.get("chains", {})
+                print(f"  SKIP (캐시, {age/3600:.1f}h 경과, {len(chains)}개 체인)")
+                return
+        except Exception:
+            pass
+    asyncio.run(_phase_rpc_health_async())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 4: 유사도 검색
+# ═══════════════════════════════════════════════════════════════════════
+def phase_search():
+    db = duckdb.connect(str(DATA / "sourcify.duckdb"))
+    seeds = json.loads((DATA / "seeds.json").read_text())
+    print(f"  [INFO] 씨드 {len(seeds)}개")
+
+    for s in seeds:
+        try:
+            row = db.execute(
+                "SELECT bytecode_hash, bytecode FROM unique_bytecodes "
+                "WHERE list_contains(addresses, ?) LIMIT 1",
+                [s["address"]],
+            ).fetchone()
+            s["bytecode_hash"] = row[0] if row else None
+            s["bytecode"] = row[1] if row else None
+        except Exception:
+            s["bytecode_hash"] = None
+            s["bytecode"] = None
+
+    seeds_ok = [s for s in seeds if s.get("bytecode")]
+    print(f"  [INFO] 바이트코드 보유 씨드 {len(seeds_ok)}개")
+
+    results = []
+    seed_hashes = [s["bytecode_hash"] for s in seeds_ok if s.get("bytecode_hash")]
+
+    # ── Exact hash fast path ──
+    if seed_hashes:
+        print(f"  [INFO] exact hash lookup ({len(seed_hashes)} hashes)...")
+        try:
+            exact_df = db.execute(
+                "SELECT bytecode_hash, addresses, chains FROM unique_bytecodes "
+                "WHERE bytecode_hash IN (SELECT unnest(?))",
+                [seed_hashes],
+            ).fetchdf()
+            hash_to_seeds = {}
+            for s in seeds_ok:
+                h = s.get("bytecode_hash")
+                if h:
+                    hash_to_seeds.setdefault(h, []).append(s)
+            for _, row in exact_df.iterrows():
+                for seed in hash_to_seeds.get(row["bytecode_hash"], []):
+                    for addr, chain in zip(row["addresses"], row["chains"]):
+                        results.append({
+                            "seed_incident_no": seed["incident_no"],
+                            "seed_date": seed["date"],
+                            "seed_project": seed["project"],
+                            "seed_chain_label": seed["chain_label"],
+                            "seed_label": seed["label"],
+                            "seed_display": seed["display"],
+                            "seed_address": seed["address"],
+                            "seed_principle": seed["principle"],
+                            "candidate_chain": int(chain),
+                            "candidate_address": addr,
+                            "candidate_bytecode_hash": row["bytecode_hash"],
+                            "similarity": 1.0,
+                            "match_type": "exact",
+                        })
+            print(f"  [OK] exact 매치: {len(results)}")
+        except Exception as e:
+            print(f"  [WARN] exact fast path 실패: {e}")
+
+    # ── Containment 매칭 ──
+    print(f"  [INFO] containment 매칭 중...")
+    for idx, seed in enumerate(seeds_ok, 1):
+        seed_ng = set()
+        seed_norm = strip_cbor(seed["bytecode"])
+        for n in NGRAM_SIZES:
+            seed_ng |= ngrams(seed_norm, n)
+        if not seed_ng:
+            continue
+
+        L = len(seed["bytecode"])
+        try:
+            cands = db.execute(
+                "SELECT bytecode_hash, bytecode, addresses, chains "
+                "FROM unique_bytecodes "
+                "WHERE length(bytecode) BETWEEN ? AND ? LIMIT ?",
+                [int(L * MIN_SIZE_RATIO), int(L * 2.0),
+                 MAX_CANDIDATES_PER_SEED * 10],
+            ).fetchdf()
+        except Exception:
+            continue
+
+        seed_hits = []
+        for _, row in cands.iterrows():
+            if row["bytecode_hash"] == seed.get("bytecode_hash"):
+                continue
+            cand_ng = set()
+            cand_norm = strip_cbor(row["bytecode"])
+            for n in NGRAM_SIZES:
+                cand_ng |= ngrams(cand_norm, n)
+            if not cand_ng:
+                continue
+            containment = len(seed_ng & cand_ng) / len(seed_ng)
+            if containment >= CONTAINMENT_MIN:
+                seed_hits.append((row, containment))
+
+        seed_hits.sort(key=lambda x: -x[1])
+        for row, c in seed_hits[:MAX_CANDIDATES_PER_SEED]:
+            for addr, chain in zip(row["addresses"], row["chains"]):
+                results.append({
+                    "seed_incident_no": seed["incident_no"],
+                    "seed_date": seed["date"],
+                    "seed_project": seed["project"],
+                    "seed_chain_label": seed["chain_label"],
+                    "seed_label": seed["label"],
+                    "seed_display": seed["display"],
+                    "seed_address": seed["address"],
+                    "seed_principle": seed["principle"],
+                    "candidate_chain": int(chain),
+                    "candidate_address": addr,
+                    "candidate_bytecode_hash": row["bytecode_hash"],
+                    "similarity": float(c),
+                    "match_type": "containment",
+                })
+
+        if idx % 10 == 0:
+            print(f"  씨드 {idx}/{len(seeds_ok)} | 후보: {len(results)}")
+
+    df = pd.DataFrame(results).drop_duplicates(
+        subset=["seed_incident_no", "candidate_address", "candidate_chain",
+                "match_type"]
+    )
+    df = df.sort_values("similarity", ascending=False).reset_index(drop=True)
+    df["candidate_id"] = df.index
+    df.to_parquet(DATA / "candidates.parquet")
+    print(f"  [OK] 후보: {len(df)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 5: 잔액 조회
+# ═══════════════════════════════════════════════════════════════════════
+def phase_check_funds(candidate_id: int):
+    df = pd.read_parquet(DATA / "candidates.parquet")
+    row = df[df["candidate_id"] == candidate_id]
+    if row.empty:
+        return None
+    r = row.iloc[0]
+    chain = int(r["candidate_chain"])
+    addr = r["candidate_address"]
+
+    bal_hex = rpc_call(chain, "eth_getBalance", [addr, "latest"])
+    native_wei = int(bal_hex, 16) if bal_hex else 0
+    native_price = NATIVE_PRICE.get(chain, 0)
+    native_usd = native_wei / 1e18 * native_price
+
+    erc20_holdings, erc20_usd = [], 0.0
+    for symbol, token, decimals, price in TOKENS.get(chain, []):
+        b = erc20_balance(chain, token, addr)
+        if b > 0:
+            usd = b / (10 ** decimals) * price
+            erc20_holdings.append({
+                "symbol": symbol, "token": token,
+                "balance": str(b), "usd": usd,
+            })
+            erc20_usd += usd
+
+    total_usd = native_usd + erc20_usd
+    decision = "IN_SCOPE" if total_usd >= FUND_THRESHOLD_USD else "PASS"
+
+    result = {
+        "candidate_id": candidate_id,
+        "candidate_chain": chain,
+        "candidate_address": addr,
+        "native_balance_wei": str(native_wei),
+        "native_usd_approx": native_usd,
+        "erc20_holdings": erc20_holdings,
+        "erc20_usd_approx": erc20_usd,
+        "reachable_usd_approx": total_usd,
+        "decision": decision,
+    }
+    _awj(str(RESULTS / f"funds_{candidate_id}.json"), result, indent=2)
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 6: PoC 요청 생성
+# ═══════════════════════════════════════════════════════════════════════
+def phase_poc_request(candidate_id: int):
+    df = pd.read_parquet(DATA / "candidates.parquet")
+    row = df[df["candidate_id"] == candidate_id]
+    if row.empty:
+        return None
+    r = row.iloc[0]
+
+    funds_file = RESULTS / f"funds_{candidate_id}.json"
+    if not funds_file.exists():
+        return None
+    funds = json.loads(funds_file.read_text())
+    if funds["decision"] != "IN_SCOPE":
+        return None
+
+    source = "(소스 미확인 — 에이전트가 Etherscan 등에서 조회)"
+    try:
+        db = duckdb.connect(str(DATA / "sourcify.duckdb"), read_only=True)
+        row_src = db.execute(
+            "SELECT sources FROM compiled_source WHERE runtime_bytecode_hash = ? LIMIT 1",
+            [r["candidate_bytecode_hash"]],
+        ).fetchone()
+        if row_src and row_src[0]:
+            try:
+                src_obj = json.loads(row_src[0]) if isinstance(row_src[0], str) else row_src[0]
+                files = src_obj.get("files", src_obj) if isinstance(src_obj, dict) else {}
+                if isinstance(files, dict) and files:
+                    parts = []
+                    for path, content in list(files.items())[:5]:
+                        c = content.get("content", content) if isinstance(content, dict) else content
+                        parts.append(f"// {path}\n{c}")
+                    source = "\n\n".join(parts)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    chain = int(r["candidate_chain"])
+    flash_loans = FLASH_LOAN_INFO.get(chain, [])
+    gas_price = GAS_PRICE_GWEI.get(chain, 1.0)
+    rpc_url = best_rpc(chain) or ""
+
+    # 같은 사건의 다른 seed들 (다중 컨트랙트 의존성 참고용)
+    related_seeds = []
+    same_incident = df[df["seed_incident_no"] == int(r["seed_incident_no"])]
+    for _, sr in same_incident.iterrows():
+        if sr["seed_address"] != r["seed_address"]:
+            related_seeds.append({
+                "address": sr["seed_address"],
+                "label": sr["seed_label"],
+                "display": sr["seed_display"],
+            })
+
+    request = {
+        "candidate_id": candidate_id,
+        "candidate_chain": chain,
+        "candidate_address": r["candidate_address"],
+        "seed_incident_no": int(r["seed_incident_no"]),
+        "seed_date": r["seed_date"],
+        "seed_project": r["seed_project"],
+        "seed_chain_label": r["seed_chain_label"],
+        "seed_label": r["seed_label"],
+        "seed_display": r["seed_display"],
+        "seed_address": r["seed_address"],
+        "seed_principle": r["seed_principle"],
+        "related_seeds": related_seeds,
+        "similarity": float(r["similarity"]),
+        "match_type": r["match_type"],
+        "source": source,
+        "funds": funds,
+        "rpc_url": rpc_url,
+        "flash_loan_options": flash_loans,
+        "gas_price_gwei": gas_price,
+        "test_file_target": f"data/foundry/test/test_{candidate_id}.sol",
+        "verdict_file_target": f"results/verdict_{candidate_id}.json",
+    }
+    _awj(str(RESULTS / f"poc_request_{candidate_id}.json"), request, indent=2)
+    return request
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 7: Foundry 초기화
+# ═══════════════════════════════════════════════════════════════════════
+def phase_foundry_init():
+    if not (FOUNDRY / "foundry.toml").exists():
+        FOUNDRY.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["forge", "init", "--force", "--no-git"],
+                       cwd=FOUNDRY, check=False, capture_output=True)
+    if not (FOUNDRY / "lib" / "forge-std").exists():
+        subprocess.run(["forge", "install", "foundry-rs/forge-std"],
+                       cwd=FOUNDRY, check=False, capture_output=True)
+    (FOUNDRY / "test").mkdir(exist_ok=True)
+
+    toml = FOUNDRY / "foundry.toml"
+    if toml.exists():
+        content = toml.read_text()
+        if "optimizer" not in content:
+            content += "\noptimizer = true\noptimizer_runs = 200\n"
+            toml.write_text(content)
+    print(f"  [OK] {FOUNDRY}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 8: 집계
+# ═══════════════════════════════════════════════════════════════════════
+def phase_report():
+    df = pd.read_parquet(DATA / "candidates.parquet")
+    verdicts = []
+    for _, r in df.iterrows():
+        cid = int(r["candidate_id"])
+        funds_f = RESULTS / f"funds_{cid}.json"
+        verdict_f = RESULTS / f"verdict_{cid}.json"
+
+        net_profit_krw = None
+        profit_native_unit = None
+        notes = None
+
+        if not funds_f.exists():
+            verdict, evidence = VERDICT_NOT_RUN, "funds_not_computed"
+        else:
+            funds = json.loads(funds_f.read_text())
+            if funds["decision"] != "IN_SCOPE":
+                verdict, evidence = VERDICT_NO_BALANCE, "scope_pass"
+            elif not verdict_f.exists():
+                verdict, evidence = VERDICT_NOT_RUN, "verdict_not_written"
+            else:
+                try:
+                    v = json.loads(verdict_f.read_text())
+                except Exception:
+                    v = {}
+                verdict = v.get("verdict", VERDICT_NOT_RUN)
+                if verdict not in VALID_VERDICTS:
+                    evidence = f"invalid_verdict:{verdict}"
+                    verdict = VERDICT_NOT_RUN
+                else:
+                    evidence = "manual"
+                net_profit_krw = v.get("net_profit_krw") or v.get("profit_krw")
+                profit_native_unit = v.get("profit_native_unit")
+                notes = v.get("notes")
+
+        verdicts.append({
+            "candidate_id": cid,
+            "seed_incident_no": int(r["seed_incident_no"]),
+            "seed_date": r["seed_date"],
+            "seed_project": r["seed_project"],
+            "seed_chain_label": r["seed_chain_label"],
+            "seed_label": r["seed_label"],
+            "seed_display": r["seed_display"],
+            "seed_address": r["seed_address"],
+            "seed_principle": r["seed_principle"],
+            "candidate_chain": int(r["candidate_chain"]),
+            "candidate_address": r["candidate_address"],
+            "candidate_bytecode_hash": r["candidate_bytecode_hash"],
+            "similarity": float(r["similarity"]),
+            "match_type": r["match_type"],
+            "verdict": verdict,
+            "net_profit_krw": net_profit_krw,
+            "profit_native_unit": profit_native_unit,
+            "notes": notes,
+            "evidence_source": evidence,
+        })
+
+    out_df = pd.DataFrame(verdicts)
+    out_df.to_parquet(RESULTS / "final_verdicts.parquet")
+    print(out_df["verdict"].value_counts().to_string())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 메인
+# ═══════════════════════════════════════════════════════════════════════
 def main():
-    asyncio.run(main_async())
+    print("=" * 70)
+    print("DeFi.py — EVM 취약 컨트랙트 유사본 탐색 파이프라인")
+    print("=" * 70)
+
+    print("\n[Phase 1/8] 해킹.md 파싱")
+    if not (DATA / "seeds.json").exists():
+        phase_init()
+    else:
+        print("  SKIP (이미 완료)")
+
+    print("\n[Phase 2/8] Sourcify 다운로드")
+    if not (DATA / "sourcify").exists() or not any(
+            (DATA / "sourcify").glob("*.parquet")):
+        phase_download()
+    else:
+        print("  SKIP (이미 완료)")
+
+    print("\n[Phase 3/8] Dedup")
+    if not (DATA / "sourcify.duckdb").exists():
+        phase_dedup()
+    else:
+        print("  SKIP (이미 완료)")
+
+    print("\n[Phase 3.5/8] RPC 헬스 체크 (100+ 체인)")
+    phase_rpc_health()
+
+    print("\n[Phase 4/8] 유사 컨트랙트 검색")
+    if not (DATA / "candidates.parquet").exists():
+        phase_search()
+    else:
+        print("  SKIP (이미 완료)")
+
+    print("\n[Phase 5/8] 잔액 조회")
+    df = pd.read_parquet(DATA / "candidates.parquet")
+    pending = [int(c) for c in df["candidate_id"]
+               if not (RESULTS / f"funds_{c}.json").exists()]
+    if pending:
+        print(f"  {len(pending)}개 후보 조회")
+        for i, cid in enumerate(pending, 1):
+            phase_check_funds(cid)
+            if i % 50 == 0:
+                print(f"    {i}/{len(pending)}")
+    else:
+        print("  SKIP (이미 완료)")
+
+    print("\n[Phase 6/8] PoC 요청 생성")
+    in_scope = []
+    for cid in df["candidate_id"]:
+        f = RESULTS / f"funds_{cid}.json"
+        if f.exists():
+            funds = json.loads(f.read_text())
+            if funds["decision"] == "IN_SCOPE":
+                in_scope.append(int(cid))
+
+    print(f"  IN_SCOPE: {len(in_scope)}개")
+    pending_req = [cid for cid in in_scope
+                   if not (RESULTS / f"poc_request_{cid}.json").exists()]
+    for cid in pending_req:
+        phase_poc_request(cid)
+    if pending_req:
+        print(f"  [OK] {len(pending_req)}개 PoC 요청 생성")
+    else:
+        print("  SKIP (이미 완료)")
+
+    print("\n[Phase 7/8] Foundry 초기화")
+    phase_foundry_init()
+
+    print("\n[Phase 8/8] 집계")
+    phase_report()
+
+    pending_pocs = [cid for cid in in_scope
+                    if not (FOUNDRY / "test" / f"test_{cid}.sol").exists()]
+    pending_verdicts = [cid for cid in in_scope
+                        if (FOUNDRY / "test" / f"test_{cid}.sol").exists()
+                        and not (RESULTS / f"verdict_{cid}.json").exists()]
+
+    print("\n" + "=" * 70)
+    if pending_pocs or pending_verdicts:
+        print(f"PENDING_POCS: {len(pending_pocs)} candidates need PoC")
+        print(f"PENDING_VERDICTS: {len(pending_verdicts)} candidates need verdict")
+        print("=" * 70)
+        print("\n에이전트 수행 작업 (DeFi.md 8-2 참조):")
+        print("  1. results/poc_request_*.json 읽기")
+        print("  2. Solidity PoC 작성 → data/foundry/test/test_{cid}.sol")
+        print("  3. forge test 실행")
+        print("  4. 결과 확인, 실패 시 PoC 수정 반복")
+        print("  5. results/verdict_{cid}.json 작성")
+        print("  6. python DeFi.py 재실행")
+        if pending_pocs[:5]:
+            for cid in pending_pocs[:5]:
+                req = json.loads(
+                    (RESULTS / f"poc_request_{cid}.json").read_text())
+                print(f"  - [{req.get('seed_display', '?')}] 후보 {cid}")
+            if len(pending_pocs) > 5:
+                print(f"  ... 외 {len(pending_pocs) - 5}개")
+    else:
+        print("COMPLETE — 모든 후보 처리 완료")
+        print("=" * 70)
+        final = pd.read_parquet(RESULTS / "final_verdicts.parquet")
+        print("\n최종 판정 분포:")
+        print(final["verdict"].value_counts().to_string())
+
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--reset", action="store_true", help="전체 초기화")
+    parser.add_argument("--recheck-rpc", action="store_true",
+                        help="RPC 헬스 체크만 재실행")
+    args = parser.parse_args()
+
+    if args.reset:
+        for p in [DATA, RESULTS]:
+            if p.exists():
+                shutil.rmtree(p)
+        print("초기화 완료")
+        sys.exit(0)
+
+    if args.recheck_rpc:
+        phase_rpc_health(force=True)
+        sys.exit(0)
+
     main()
