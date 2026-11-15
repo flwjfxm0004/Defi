@@ -929,9 +929,13 @@ def _read_json(path: Path, default: Any = None) -> Any:
         return default
 
 
-def _write_json_atomic(path: Path, data: Any) -> None:
+def _write_json_atomic(path: Path, data: Any, *, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    payload = (
+        json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        if compact
+        else json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
+    ).encode("utf-8")
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     tmp.write_bytes(payload)
     backoff = 0.015
@@ -948,6 +952,9 @@ def _write_json_atomic(path: Path, data: Any) -> None:
                 raise
             time.sleep(backoff)
             backoff *= 1.8
+
+
+AGENT_WAIT_STATUSES: Tuple[str, str, str] = ("awaiting_addresses", "awaiting_poc", "awaiting_verdict")
 
 
 # ── 공유 SQLite 캐시 (`audit_artifacts/_cache/engine_cache.sqlite`) ──
@@ -1063,6 +1070,7 @@ class SQLiteStore:
         net_krw             REAL NOT NULL DEFAULT 0.0,
         updated_at          REAL NOT NULL DEFAULT 0.0
     );
+    CREATE INDEX IF NOT EXISTS idx_audit_queue_claim ON audit_queue(status, priority, sort_rank DESC, tvl_usd DESC);
     CREATE TABLE IF NOT EXISTS audit_sessions (
         session_id          TEXT PRIMARY KEY,
         active_slug         TEXT NOT NULL DEFAULT '',
@@ -1111,10 +1119,10 @@ class SQLiteStore:
                     q_cnt_row = self._conn.execute("SELECT COUNT(*) FROM audit_queue").fetchone()
                     if q_cnt_row and int(q_cnt_row[0] or 0) > 0:
                         self._conn.execute(
-                            "UPDATE audit_queue SET priority=2 WHERE mode='A' AND priority=1 AND status IN ('pending','awaiting_poc','awaiting_verdict','claimed')"
+                            "UPDATE audit_queue SET priority=2 WHERE mode='A' AND priority=1 AND status IN ('pending','awaiting_addresses','awaiting_poc','awaiting_verdict','claimed')"
                         )
                         self._conn.execute(
-                            "UPDATE audit_queue SET priority=1 WHERE mode='B' AND priority>1 AND status IN ('pending','awaiting_poc','awaiting_verdict','claimed')"
+                            "UPDATE audit_queue SET priority=1 WHERE mode='B' AND priority>1 AND status IN ('pending','awaiting_addresses','awaiting_poc','awaiting_verdict','claimed')"
                         )
                     self._conn.execute(
                         "INSERT OR REPLACE INTO engine_meta(meta_key, meta_val, updated_at) VALUES('modeb_prio_v1', '1', ?)",
@@ -1935,12 +1943,12 @@ class SQLiteStore:
         with self._read_conn() as rc:
             if sid:
                 rows = rc.execute(
-                    "SELECT * FROM audit_queue WHERE session_id=? AND status IN ('awaiting_poc', 'awaiting_verdict') ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC",
+                    "SELECT * FROM audit_queue WHERE session_id=? AND status IN ('awaiting_addresses', 'awaiting_poc', 'awaiting_verdict') ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC",
                     (sid,),
                 ).fetchall()
             else:
                 rows = rc.execute(
-                    "SELECT * FROM audit_queue WHERE status IN ('awaiting_poc', 'awaiting_verdict') ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC"
+                    "SELECT * FROM audit_queue WHERE status IN ('awaiting_addresses', 'awaiting_poc', 'awaiting_verdict') ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC"
                 ).fetchall()
         return [self._row_to_queue_dict(r) for r in rows]
 
@@ -2109,7 +2117,7 @@ class SQLiteStore:
             wait_rows = self._conn.execute(
                 "SELECT q.slug, q.session_id, q.updated_at, COALESCE(s.heartbeat_at, q.updated_at) AS hb "
                 "FROM audit_queue q LEFT JOIN audit_sessions s ON q.session_id = s.session_id "
-                "WHERE q.status IN ('awaiting_poc', 'awaiting_verdict') AND q.session_id != ''"
+                "WHERE q.status IN ('awaiting_addresses', 'awaiting_poc', 'awaiting_verdict') AND q.session_id != ''"
             ).fetchall()
             for wr in wait_rows:
                 w_slug = str(wr["slug"])
@@ -2145,7 +2153,7 @@ class SQLiteStore:
             if s_row is None or str(s_row["active_slug"] or "") or str(s_row["profit_slug"] or ""):
                 return None
             r = self._conn.execute(
-                "SELECT slug FROM audit_queue WHERE status IN ('awaiting_poc', 'awaiting_verdict') AND session_id='' "
+                "SELECT slug FROM audit_queue WHERE status IN ('awaiting_addresses', 'awaiting_poc', 'awaiting_verdict') AND session_id='' "
                 "ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC LIMIT 1"
             ).fetchone()
             if r is None:
@@ -2205,7 +2213,7 @@ class SQLiteStore:
                     )
 
     def queue_counts(self) -> Dict[str, int]:
-        counts = {"pending": 0, "claimed": 0, "awaiting_poc": 0, "awaiting_verdict": 0, "done": 0}
+        counts = {"pending": 0, "claimed": 0, "awaiting_addresses": 0, "awaiting_poc": 0, "awaiting_verdict": 0, "done": 0}
         with self._read_conn() as rc:
             rows = rc.execute("SELECT status, COUNT(*) AS cnt FROM audit_queue GROUP BY status").fetchall()
         for r in rows:
@@ -2219,6 +2227,7 @@ class SQLiteStore:
             "done": 0,
             "pending": 0,
             "claimed": 0,
+            "awaiting_addresses": 0,
             "awaiting_poc": 0,
             "awaiting_verdict": 0,
             "profit": 0,
@@ -4483,8 +4492,10 @@ def _run_duckdb_cli_json(
     pid_tag = f"p_{os.getpid()}_{threading.get_ident()}"
     home_dir = eff_scratch / "duckdb_home" / pid_tag
     tmp_dir = eff_scratch / "duckdb_tmp" / pid_tag
+    subproc_dir = eff_scratch / "duckdb_env" / pid_tag
     home_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    subproc_dir.mkdir(parents=True, exist_ok=True)
     stmts: List[str] = [
         "SET memory_limit = '1536MB';",
         "SET threads = 2;",
@@ -4522,7 +4533,7 @@ def _run_duckdb_cli_json(
             timeout=max(5.0, float(timeout_sec)),
             check=False,
             cwd=str(eff_scratch.resolve()),
-            env=_isolated_subproc_env(eff_scratch),
+            env=_isolated_subproc_env(subproc_dir),
         )
         if cp.returncode != 0:
             return None
@@ -4536,12 +4547,18 @@ def _run_duckdb_cli_json(
     except Exception:
         return None
     finally:
-        shutil.rmtree(home_dir, ignore_errors=True)
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        for _pdir in (home_dir.parent, tmp_dir.parent):
+        for _rm_d in (home_dir, tmp_dir, subproc_dir):
+            shutil.rmtree(_rm_d, ignore_errors=True)
+        for _pdir in (home_dir.parent, tmp_dir.parent, subproc_dir.parent):
             try:
                 if _pdir.is_dir() and not any(_pdir.iterdir()):
                     _pdir.rmdir()
+            except OSError:
+                pass
+        if eff_scratch.name == "_ddb_scratch":
+            try:
+                if eff_scratch.is_dir() and not any(eff_scratch.iterdir()):
+                    eff_scratch.rmdir()
             except OSError:
                 pass
 
@@ -5316,6 +5333,111 @@ def _compute_clone_hash_to_impl_map(impl_hex_list: Sequence[str]) -> Tuple[Set[s
     return hashes, hash_to_impl
 
 
+_CLONE_HASH_PROXY_CACHE_LOCK = threading.Lock()
+_CLONE_HASH_PROXY_CACHE: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
+
+
+def _query_parquet_clone_hash_proxies(
+    chunk_im: Sequence[str],
+    p_root: Path,
+    f_counts: Dict[str, int],
+    ct_cols: Dict[str, str],
+    chain_id: Optional[int],
+    chain_filter: str,
+    addr_proj: str,
+    limit_rows: int = 0,
+    timeout_sec: float = 20.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """`contracts.runtime_code_hash` 기반 EIP-1167 / EIP-7702 결정론적 클론 프록시 공통 역추적 (동일 Parquet 스냅샷 중복 조회 캐싱)."""
+    clone_hashes, h2i = _compute_clone_hash_to_impl_map(chunk_im)
+    if (
+        not clone_hashes
+        or int(f_counts.get("contracts", 0)) <= 0
+        or int(f_counts.get("contract_deployments", 0)) <= 0
+        or not DUCKDB_BIN.is_file()
+    ):
+        return [], h2i
+    ct_mtime = 0
+    dp_mtime = 0
+    try:
+        ct_dir = p_root / "contracts"
+        dp_dir = p_root / "contract_deployments"
+        ct_mtime = ct_dir.stat().st_mtime_ns if ct_dir.is_dir() else 0
+        dp_mtime = dp_dir.stat().st_mtime_ns if dp_dir.is_dir() else 0
+    except OSError:
+        pass
+    base_sig = (
+        tuple(chunk_im),
+        str(p_root.resolve()),
+        int(f_counts.get("contracts", 0)),
+        int(f_counts.get("contract_deployments", 0)),
+        ct_mtime,
+        dp_mtime,
+        int(chain_id) if chain_id is not None else -1,
+    )
+    eff_lim = max(0, int(limit_rows or 0))
+    cache_key = (*base_sig, eff_lim)
+    unlim_key = (*base_sig, 0)
+    with _CLONE_HASH_PROXY_CACHE_LOCK:
+        if unlim_key in _CLONE_HASH_PROXY_CACHE:
+            cached_all = _CLONE_HASH_PROXY_CACHE[unlim_key]
+            return (cached_all[:eff_lim] if eff_lim > 0 else list(cached_all)), h2i
+        if cache_key in _CLONE_HASH_PROXY_CACHE:
+            return list(_CLONE_HASH_PROXY_CACHE[cache_key]), h2i
+    rch_type = ct_cols.get("runtime_code_hash", "")
+    rch_hex_proj = (
+        "lower(hex(ct.runtime_code_hash))"
+        if "BLOB" in rch_type
+        else "lower(replace(CAST(ct.runtime_code_hash AS VARCHAR), '0x', ''))"
+    )
+    rch_pred = (
+        f"ct.runtime_code_hash IN ({', '.join(f'unhex({_sql_quote_str(h)})' for h in sorted(clone_hashes))})"
+        if "BLOB" in rch_type
+        else f"lower(replace(CAST(ct.runtime_code_hash AS VARCHAR), '0x', '')) IN ({', '.join(_sql_quote_str(h) for h in sorted(clone_hashes))})"
+    )
+    lim_sql = f"LIMIT {eff_lim}" if eff_lim > 0 else ""
+    rows = _run_duckdb_cli_json(
+        f"""
+        SELECT CAST(d.chain_id AS BIGINT) AS cid, {addr_proj} AS addr_hex, {rch_hex_proj} AS rch_hex
+        FROM contracts ct
+        JOIN contract_deployments d ON d.contract_id = ct.id
+        WHERE {rch_pred}
+          {chain_filter}
+        {lim_sql}
+        """,
+        parquet_root=p_root,
+        timeout_sec=timeout_sec,
+    )
+    if rows is None:
+        return [], h2i
+    with _CLONE_HASH_PROXY_CACHE_LOCK:
+        if len(_CLONE_HASH_PROXY_CACHE) >= 256:
+            _CLONE_HASH_PROXY_CACHE.clear()
+        _CLONE_HASH_PROXY_CACHE[cache_key] = list(rows)
+        if eff_lim > 0 and len(rows) < eff_lim:
+            _CLONE_HASH_PROXY_CACHE[unlim_key] = list(rows)
+    return rows, h2i
+
+
+def _scan_sidecar_impl_proxies(
+    p_root: Path,
+    chain_id: Optional[int],
+    norm_impls: Sequence[str],
+    try_record_fn: Any,
+    reached_cap_fn: Any,
+    proxy_source: str,
+) -> None:
+    """로컬 Sourcify 사이드카 JSONL에서 구현체 주소를 내장한 단문 프록시/클론 바이트코드를 공통 스캔."""
+    for cid, item in _iter_sourcify_sidecar_items(p_root, chain_id):
+        if reached_cap_fn():
+            break
+        chex = str(item.get("runtime_code_hex") or item.get("code_hex") or "").lower().replace("0x", "")
+        if 46 <= len(chex) <= 8192:
+            matched_ih = next((ih for ih in norm_impls if ih in chex), "")
+            if matched_ih and try_record_fn(cid, item.get("address"), impl_addr="0x" + matched_ih, proxy_source=proxy_source) and reached_cap_fn():
+                break
+
+
 def _find_fast_clone_proxies_by_impl(
     impl_addrs: Sequence[str],
     parquet_root: Optional[Path] = None,
@@ -5334,53 +5456,35 @@ def _find_fast_clone_proxies_by_impl(
     out, _seen, _try_record_fast = _make_sourcify_proxy_accumulator()
     cap = max(1, int(limit or 64))
 
-    def _record_fast(cid: int, raw_addr: Any, impl_addr: str) -> None:
-        if len(out) < cap:
-            _try_record_fast(cid, raw_addr, impl_addr=impl_addr, proxy_source="clone_hash")
-
-    if int(f_counts.get("contracts", 0)) > 0 and int(f_counts.get("contract_deployments", 0)) > 0 and DUCKDB_BIN.is_file():
-        rch_type = ct_cols.get("runtime_code_hash", "")
-        rch_hex_proj = (
-            "lower(hex(ct.runtime_code_hash))"
-            if "BLOB" in rch_type
-            else "lower(replace(CAST(ct.runtime_code_hash AS VARCHAR), '0x', ''))"
+    for chunk_im in (norm_impls[i : i + 64] for i in range(0, len(norm_impls), 64)):
+        if len(out) >= cap:
+            break
+        rows, h2i = _query_parquet_clone_hash_proxies(
+            chunk_im,
+            p_root,
+            f_counts,
+            ct_cols,
+            chain_id,
+            chain_filter,
+            addr_proj,
+            limit_rows=max(1, cap - len(out)),
+            timeout_sec=6.0,
         )
-        for chunk_im in (norm_impls[i : i + 64] for i in range(0, len(norm_impls), 64)):
+        for r in rows:
             if len(out) >= cap:
                 break
-            clone_hashes, h2i = _compute_clone_hash_to_impl_map(chunk_im)
-            if not clone_hashes:
-                continue
-            rch_pred = (
-                f"ct.runtime_code_hash IN ({', '.join(f'unhex({_sql_quote_str(h)})' for h in sorted(clone_hashes))})"
-                if "BLOB" in rch_type
-                else f"lower(replace(CAST(ct.runtime_code_hash AS VARCHAR), '0x', '')) IN ({', '.join(_sql_quote_str(h) for h in sorted(clone_hashes))})"
-            )
-            rows = _run_duckdb_cli_json(
-                f"""
-                SELECT CAST(d.chain_id AS BIGINT) AS cid, {addr_proj} AS addr_hex, {rch_hex_proj} AS rch_hex
-                FROM contracts ct
-                JOIN contract_deployments d ON d.contract_id = ct.id
-                WHERE {rch_pred}
-                  {chain_filter}
-                LIMIT {max(1, cap - len(out))}
-                """,
-                parquet_root=p_root,
-                timeout_sec=6.0,
-            )
-            for r in rows or ():
-                rh = str(r.get("rch_hex") or "").lower().removeprefix("0x")
-                _record_fast(int(r.get("cid") or 0), r.get("addr_hex"), h2i.get(rh, ""))
+            rh = str(r.get("rch_hex") or "").lower().removeprefix("0x")
+            _try_record_fast(int(r.get("cid") or 0), r.get("addr_hex"), impl_addr=h2i.get(rh, ""), proxy_source="clone_hash")
 
     if len(out) < cap:
-        for cid, item in _iter_sourcify_sidecar_items(p_root, chain_id):
-            chex = str(item.get("runtime_code_hex") or item.get("code_hex") or "").lower().replace("0x", "")
-            if 46 <= len(chex) <= 8192:
-                matched_ih = next((ih for ih in norm_impls if ih in chex), "")
-                if matched_ih:
-                    _record_fast(cid, item.get("address"), "0x" + matched_ih)
-                    if len(out) >= cap:
-                        break
+        _scan_sidecar_impl_proxies(
+            p_root,
+            chain_id,
+            norm_impls,
+            _try_record_fast,
+            lambda: len(out) >= cap,
+            "clone_hash",
+        )
     return out
 
 
@@ -5426,36 +5530,21 @@ def search_sourcify_v2_proxies_for_impls(
 
     impl_chunks = [norm_impls[i : i + 64] for i in range(0, len(norm_impls), 64)]
 
-    if int(f_counts.get("contracts", 0)) > 0 and int(f_counts.get("contract_deployments", 0)) > 0 and DUCKDB_BIN.is_file():
-        rch_type = ct_cols.get("runtime_code_hash", "")
-        rch_hex_proj = (
-            "lower(hex(ct.runtime_code_hash))"
-            if "BLOB" in rch_type
-            else "lower(replace(CAST(ct.runtime_code_hash AS VARCHAR), '0x', ''))"
+    for chunk_im in impl_chunks:
+        if _reached_cap():
+            return out
+        cl_rows, h2i = _query_parquet_clone_hash_proxies(
+            chunk_im,
+            p_root,
+            f_counts,
+            ct_cols,
+            chain_id,
+            chain_filter,
+            addr_proj,
+            limit_rows=(max(1, eff_cap - len(out)) if eff_cap > 0 else 0),
+            timeout_sec=20.0,
         )
-        for chunk_im in impl_chunks:
-            if _reached_cap():
-                return out
-            clone_hashes, h2i = _compute_clone_hash_to_impl_map(chunk_im)
-            if clone_hashes:
-                rch_pred = (
-                    f"ct.runtime_code_hash IN ({', '.join(f'unhex({_sql_quote_str(h)})' for h in sorted(clone_hashes))})"
-                    if "BLOB" in rch_type
-                    else f"lower(replace(CAST(ct.runtime_code_hash AS VARCHAR), '0x', '')) IN ({', '.join(_sql_quote_str(h) for h in sorted(clone_hashes))})"
-                )
-                cl_rows = _run_duckdb_cli_json(
-                    f"""
-                    SELECT CAST(d.chain_id AS BIGINT) AS cid, {addr_proj} AS addr_hex, {rch_hex_proj} AS rch_hex
-                    FROM contracts ct
-                    JOIN contract_deployments d ON d.contract_id = ct.id
-                    WHERE {rch_pred}
-                      {chain_filter}
-                    {_sql_limit_clause()}
-                    """,
-                    parquet_root=p_root,
-                    timeout_sec=20.0,
-                )
-                _collect_proxy_rows(cl_rows, h2i=h2i, default_src="clone_hash")
+        _collect_proxy_rows(cl_rows, h2i=h2i, default_src="clone_hash")
 
     if 0 < code_file_cnt <= 32 and int(f_counts.get("contracts", 0)) > 0 and int(f_counts.get("contract_deployments", 0)) > 0 and DUCKDB_BIN.is_file() and not _reached_cap():
         for chunk_im in impl_chunks:
@@ -5527,12 +5616,14 @@ def search_sourcify_v2_proxies_for_impls(
             return out
 
     if not _reached_cap():
-        for cid, item in _iter_sourcify_sidecar_items(p_root, chain_id):
-            chex = str(item.get("runtime_code_hex") or item.get("code_hex") or "").lower().replace("0x", "")
-            if 46 <= len(chex) <= 8192:
-                matched_ih = next((ih for ih in norm_impls if ih in chex), "")
-                if matched_ih and _try_record_proxy(cid, item.get("address"), impl_addr="0x" + matched_ih, proxy_source="sidecar") and _reached_cap():
-                    break
+        _scan_sidecar_impl_proxies(
+            p_root,
+            chain_id,
+            norm_impls,
+            _try_record_proxy,
+            _reached_cap,
+            "sidecar",
+        )
     return out
 
 
@@ -8180,15 +8271,6 @@ def _recover_historical_proxy_impl_bytecodes(
     zero_slot = "0x" + ("00" * 32)
     chk_addr = _checksum(addr)
 
-    def _word_to_valid_addr(raw_hex: Any) -> str:
-        if not isinstance(raw_hex, str):
-            return ""
-        wb = _hex_to_word32(raw_hex)
-        if wb[:12] != b"\x00" * 12:
-            return ""
-        cand = _norm_addr("0x" + wb[12:32].hex())
-        return cand if _is_non_precompile_addr(cand) else ""
-
     upgrade_t0s = [
         _keccak256_hex(b"Upgraded(address)"),
         _keccak256_hex(b"BeaconUpgraded(address)"),
@@ -8246,7 +8328,7 @@ def _recover_historical_proxy_impl_bytecodes(
                                 log_cands.append(init_a)
                         except Exception:
                             pass
-                    cand_u = _word_to_valid_addr(tops[1]) if len(tops) >= 2 else _word_to_valid_addr(lg.get("data"))
+                    cand_u = _extract_word32_address(tops[1]) if len(tops) >= 2 else _extract_word32_address(lg.get("data"))
                     if cand_u:
                         log_cands.append(cand_u)
                     for cu_item in dict.fromkeys(log_cands):
@@ -8275,10 +8357,10 @@ def _recover_historical_proxy_impl_bytecodes(
             proxy_hist_code = _hex_to_bytes(res_list[5]) if isinstance(res_list[5], str) else b""
             cand_impls: List[str] = []
             for raw_s in res_list[:3]:
-                ia = _word_to_valid_addr(raw_s)
+                ia = _extract_word32_address(raw_s)
                 if ia:
                     cand_impls.append(ia)
-            beacon_a = _word_to_valid_addr(res_list[3])
+            beacon_a = _extract_word32_address(res_list[3])
             if beacon_a:
                 try:
                     b_ret = router.call(
@@ -8289,13 +8371,13 @@ def _recover_historical_proxy_impl_bytecodes(
                         need_archive=True,
                         timeout=5.0,
                     )
-                    b_ia = _word_to_valid_addr(b_ret)
+                    b_ia = _extract_word32_address(b_ret)
                     if b_ia:
                         cand_impls.append(b_ia)
                 except Exception:
                     pass
             if _slot0_safe_proxy_shape(proxy_hist_code):
-                s0_a = _word_to_valid_addr(res_list[4])
+                s0_a = _extract_word32_address(res_list[4])
                 if s0_a:
                     cand_impls.append(s0_a)
             d1167 = _eip1167_impl(proxy_hist_code)
@@ -11759,10 +11841,7 @@ def slice_four_channel_causal_chains(
             if has_ext_call_in_ep and (has_state_write_in_ep or len(writers) > 0):
                 midframe_sels.append(sk.selector)
     for msel in sorted(set(midframe_sels))[:4]:
-        msel_low = msel.lower()
-        has_verified_msel = bool(abi_map) and (msel_low in abi_map) and (msel_low != "fallback")
-        in_t = abi_map.get(msel_low, [])
-        complex_abi = (not has_verified_msel) or _abi_requires_agent_reasoning(in_t)
+        has_verified_msel, in_t, complex_abi = _sel_abi_flags(msel)
         slices.append(
             CausalSlice(
                 slice_id=f"ch_midframe_{t_norm[-6:]}_{msel}",
@@ -12801,33 +12880,12 @@ def _build_harness_liquidation_routes(
                 "dex_kind": dex_kind,
             }
             und = entry.get("underlying_exit")
-            if isinstance(und, dict) and quote not in benchmark_set:
+            if isinstance(und, dict) and not bool(und.get("paused")) and quote not in benchmark_set:
                 u_pool = _norm_addr(und.get("pool") or "")
                 u_quote = _norm_addr(und.get("quote_token") or "")
-                u_kind = str(und.get("dex_kind") or "").strip().lower()
-                u_ci = int(und.get("curve_i") or 0)
-                u_cj = int(und.get("curve_j") or 0)
-                u_crv_ok = u_kind != "curve" or (u_ci != u_cj and 0 <= u_ci < 8 and 0 <= u_cj < 8)
-                if (
-                    u_pool
-                    and u_quote
-                    and u_pool != u_quote
-                    and u_quote != quote
-                    and u_quote in slot_by_addr
-                    and u_kind in _SUPPORTED_HARNESS_DEX_KINDS
-                    and u_crv_ok
-                ):
-                    route_rec["hop2"] = {
-                        "token": _checksum(quote),
-                        "token_slot": slot_by_addr[quote],
-                        "pool": _checksum(u_pool),
-                        "quote": _checksum(u_quote),
-                        "quote_slot": slot_by_addr[u_quote],
-                        "dex_kind": u_kind,
-                        "curve_i": u_ci,
-                        "curve_j": u_cj,
-                        "curve_underlying": bool(und.get("curve_underlying")),
-                    }
+                hop2_step = _make_dex_route_step(quote, u_quote, u_pool, und, slot_by_addr)
+                if hop2_step is not None:
+                    route_rec["hop2"] = hop2_step
             routes.append(route_rec)
         if len(routes) >= max_routes:
             break
@@ -14954,7 +15012,10 @@ def verify_counterfactual_target_causality(
         _append_unique(stub_addrs, seen_stubs, repl_addr)
         repl_map[addr_item.lower()] = repl_addr
     if repl_map:
-        target_alt_re = re.compile("|".join(re.escape(k) for k in repl_map), re.IGNORECASE)
+        target_alt_re = re.compile(
+            "(?:" + "|".join(re.escape(k) for k in repl_map) + r")(?![0-9a-fA-F])",
+            re.IGNORECASE,
+        )
         mutated = target_alt_re.sub(lambda m_a: repl_map[m_a.group(0).lower()], mutated)
     mutated = _CF_CONST_ADDR_RE.sub(rf"\g<1>{noop_chk}", mutated)
     mutated = _CF_CODE_LEN_RE.sub("uint256(1)", mutated)
@@ -15289,7 +15350,7 @@ def execute_forge_test_file(
         if not trace_sum:
             trace_sum = dict(cur_sum)
         else:
-            trace_sum["replay_executed"] = bool(trace_sum.get("replay_executed", False) and cur_sum.get("replay_executed", False))
+            trace_sum["replay_executed"] = bool(trace_sum.get("replay_executed", False) or cur_sum.get("replay_executed", False))
             trace_sum["target_called_in_trace"] = bool(trace_sum.get("target_called_in_trace", False) or cur_sum.get("target_called_in_trace", False))
             trace_sum["disallowed_cheatcode_in_trace"] = bool(
                 trace_sum.get("disallowed_cheatcode_in_trace", False) or cur_sum.get("disallowed_cheatcode_in_trace", False)
@@ -15404,6 +15465,7 @@ def generate_and_run_forge_suites(
     total_failed: int = int((ckpt_data or {}).get("partial_failed") or 0)
     all_gains: List[Dict[str, Any]] = list((ckpt_data or {}).get("partial_gains") or [])
     merged_trace: Dict[str, Any] = dict((ckpt_data or {}).get("partial_trace_summary") or {})
+    base_chunk_idx: int = int((ckpt_data or {}).get("completed_chunks") or 0)
     gain_chunk_called_target = bool(all_gains and merged_trace.get("target_called_in_trace", False))
 
     remaining = [s for s in slices if s.slice_id not in completed_set]
@@ -15437,8 +15499,9 @@ def generate_and_run_forge_suites(
     pin_gas_wei = int(gas_price_wei) if gas_price_wei > 0 else (fetch_gas_price_wei(router, c, block_pin) if block_pin > 0 else 0)
 
     for chunk_idx, chunk in enumerate(chunks):
-        chunk_slug = slug if chunk_idx == 0 else f"{slug}_{chunk_idx}"
-        rel_path = f"test/Verify_{safe_slug}.t.sol" if chunk_idx == 0 else f"test/Verify_{safe_slug}_{chunk_idx}.t.sol"
+        abs_idx = base_chunk_idx + chunk_idx
+        chunk_slug = slug if abs_idx == 0 else f"{slug}_{abs_idx}"
+        rel_path = f"test/Verify_{safe_slug}.t.sol" if abs_idx == 0 else f"test/Verify_{safe_slug}_{abs_idx}.t.sol"
         sol_code = _render_minimal_solidity_harness(
             slug=chunk_slug,
             chain=c,
@@ -15451,8 +15514,10 @@ def generate_and_run_forge_suites(
             exit_routes=exit_routes,
         )
         chunk_outcome: Optional[ForgeRunOutcome] = None
+        last_ws: Optional[Path] = None
         for rpc_url in urls[:3]:
             ws = ensure_clean_forge_workspace({c: rpc_url}, slug=slug, offline=(block_pin <= 0))
+            last_ws = ws
             test_file = ws / rel_path
             test_file.write_text(sol_code, encoding="utf-8")
             outcome = execute_forge_test_file(
@@ -15482,6 +15547,12 @@ def generate_and_run_forge_suites(
                 return chunk_outcome  # type: ignore[return-value]
             break
 
+        if abs_idx > 0 and last_ws is not None and not chunk_outcome.conservation_gains:
+            try:
+                (last_ws / rel_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
         total_passed += chunk_outcome.passed_tests
         total_failed += chunk_outcome.failed_tests
         for g_entry in chunk_outcome.conservation_gains:
@@ -15503,9 +15574,9 @@ def generate_and_run_forge_suites(
                     merged_trace["target_called_in_trace"] = True
                 if ts_c.get("conservation_event_verified"):
                     merged_trace["conservation_event_verified"] = True
-                if ts_c.get("replay_executed") and "replay_executed" not in merged_trace:
+                if ts_c.get("replay_executed"):
                     merged_trace["replay_executed"] = True
-                elif "replay_executed" in ts_c and not ts_c.get("replay_executed"):
+                elif "replay_executed" in ts_c and not ts_c.get("replay_executed") and not all_gains:
                     merged_trace["replay_executed"] = False
                 if ts_c.get("trace_nodes_observed"):
                     merged_trace["trace_nodes_observed"] = int(merged_trace.get("trace_nodes_observed") or 0) + int(
@@ -15529,6 +15600,7 @@ def generate_and_run_forge_suites(
                 {
                     "stage": "S4_FORGE_PARTIAL",
                     "completed_slice_ids": completed_ids,
+                    "completed_chunks": abs_idx + 1,
                     "partial_passed": total_passed,
                     "partial_failed": total_failed,
                     "partial_gains": all_gains,
@@ -16328,7 +16400,7 @@ def judge_conservation_accounting(
     gross_usd_dec = _DEC_ZERO
     swap_fee_usd_dec = _DEC_ZERO
     slippage_usd_dec = _DEC_ZERO
-    dec_lookup = decimals_map or {}
+    dec_lookup: Dict[str, int] = dict(decimals_map or {})
     price_lookup = prices_map or {}
     wnative = wnative_c
     stables_norm = _norm_chain_stables_set(c)
@@ -16383,7 +16455,34 @@ def judge_conservation_accounting(
                 )
             if p_usd_d <= _DEC_ZERO and offline_mode and norm_a in stables_norm:
                 p_usd_d = Decimal("1")
-            dec = dec_lookup.get(norm_a, 6 if (norm_a in stables_norm and conserved_amt < 10**15) else 18)
+            if norm_a in dec_lookup:
+                dec = int(dec_lookup[norm_a])
+            else:
+                probed_dec: Optional[int] = None
+                if not offline_mode and router is not None and block_pin > 0 and norm_a:
+                    try:
+                        raw_dec = router.call(
+                            c,
+                            "eth_call",
+                            [{"to": _checksum(norm_a), "data": DECIMALS_SEL}, hex(int(block_pin))],
+                            block_pin=block_pin,
+                            need_archive=True,
+                        )
+                        rb_dec = _hex_to_bytes(raw_dec) if isinstance(raw_dec, str) else b""
+                        if len(rb_dec) >= 32:
+                            dv_onchain = int.from_bytes(rb_dec[:32], "big")
+                            if 0 <= dv_onchain <= 36:
+                                probed_dec = dv_onchain
+                                dec_lookup[norm_a] = dv_onchain
+                    except Exception:
+                        probed_dec = None
+                if probed_dec is not None:
+                    dec = probed_dec
+                elif not offline_mode and block_pin > 0 and _is_live_real_router(router):
+                    has_unconfirmed_gain_valuation = True
+                    continue
+                else:
+                    dec = 6 if (norm_a in stables_norm and conserved_amt < 10**15) else 18
             is_benchmark_asset = bool(norm_a in stables_norm or (wnative and norm_a == wnative))
             if not offline_mode and not is_benchmark_asset:
                 has_unconfirmed_gain_valuation = True
@@ -16781,37 +16880,103 @@ def emit_poc_requests_for_slug(
             dedup_agent_slices.append(sl_cand)
     agent_slices = dedup_agent_slices
 
+    def _emit_single_poc_req(
+        cid_val: int,
+        target_raw: str,
+        leg_targets_cs: List[str],
+        legs_val: List[str],
+        undecided_txt: str,
+        channels_val: List[str],
+        seeds_val: List[str],
+        vault_addrs_val: List[str],
+        src_cap: int,
+        cand_slices_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> Path:
+        src_info = verified_sources.get(target_raw) or next(iter(verified_sources.values()), {})
+        src_files = src_info.get("sources") or {}
+        snippet_list = [f"// {fn}\n" + str(content)[:1200] for fn, content in list(src_files.items())[:src_cap]]
+        rel_sol = f"audit_artifacts/{slug}/forge/test/test_{cid_val}.t.sol"
+        rel_verdict = f"audit_artifacts/{slug}/verdicts/verdict_{cid_val}.json"
+        rel_req = f"audit_artifacts/{slug}/poc_requests/poc_request_{cid_val}.json"
+        sol_disk_path = ws / "test" / f"test_{cid_val}.t.sol"
+        if not sol_disk_path.exists():
+            sol_disk_path.write_text(
+                _render_agent_poc_skeleton(
+                    slug,
+                    cid_val,
+                    c,
+                    block_pin,
+                    caller,
+                    target_raw,
+                    token_addrs=skel_tokens,
+                    vault_addresses=vault_addrs_val,
+                    exit_routes=skel_exit_routes,
+                ),
+                encoding="utf-8",
+            )
+        cs_target = _checksum(target_raw)
+        req_payload: Dict[str, Any] = {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "candidate_id": cid_val,
+            "session_id": sid_clean,
+            "slug": slug,
+            "chain": c,
+            "audit_block": block_pin,
+            "zero_state_caller": _checksum(caller),
+            "target_address": cs_target,
+            "leg_targets": leg_targets_cs or [cs_target],
+            "legs": legs_val,
+            "undecided_reason": undecided_txt,
+            "state_channels": channels_val,
+            "discontinuity_seeds": seeds_val,
+            "connected_vaults": connected_vaults,
+            "verified_exit_pools": exit_pool_summary,
+            "flash_loan_options": flash_opts,
+            "principle_summary": principle_summary,
+            "editable_files": [rel_sol, rel_verdict],
+            "readable_files": [rel_req, rel_sol, *exported_source_rels],
+            "isolated_commands": {
+                "preverify_forge_test": _wrap_self_isolated_cmd(
+                    ws_env_json,
+                    f'"{FORGE_BIN}" test --offline --no-storage-caching --root "{ws}" --match-path "test/test_{cid_val}.t.sol"{fork_cli_suffix} -vvv',
+                ),
+                "readonly_cast_call_template": _wrap_self_isolated_cmd(
+                    ws_env_json,
+                    f'"{CAST_BIN}" call --rpc-url "{eff_rpc_u}"{cast_blk_suffix} {cs_target} 0x18160ddd',
+                ),
+                "resume_engine": resume_cmd,
+                "isolated_env_hint": dict(ws_env_hint),
+            },
+            "submission_schema": {
+                "verdict_file": rel_verdict,
+                "note": skel_note,
+                "allowed_status_values": ["PROVEN_BY_FORGE", VERDICT_SAFE, VERDICT_BLOCKED],
+                "example_verdict_json": {
+                    "candidate_id": cid_val,
+                    "verdict": VERDICT_SAFE,
+                    "notes": "Verified on-chain invariant holds across all reachable state transitions",
+                    "remediation_exhausted": {k: True for k in REMEDIATION_KEYS},
+                },
+            },
+            "optional_conservation_event": skel_event_hint,
+            "relevant_source_slices": snippet_list,
+        }
+        if cand_slices_list is not None:
+            req_payload["candidate_slices"] = cand_slices_list
+        if source_inc_meta:
+            req_payload["source_incident"] = source_inc_meta
+        rpath = req_dir / f"poc_request_{cid_val}.json"
+        _write_json_atomic(rpath, req_payload)
+        return rpath
+
     if compact_single_bundle and len(agent_slices) >= 1:
         primary_sl = agent_slices[0]
-        src_info = verified_sources.get(primary_sl.target_address) or next(iter(verified_sources.values()), {})
-        src_files = src_info.get("sources") or {}
-        snippet_list: List[str] = [f"// {fn}\n" + str(content)[:1200] for fn, content in list(src_files.items())[:3]]
-        rel_sol = f"audit_artifacts/{slug}/forge/test/test_1.t.sol"
-        rel_verdict = f"audit_artifacts/{slug}/verdicts/verdict_1.json"
-        rel_req = f"audit_artifacts/{slug}/poc_requests/poc_request_1.json"
         bundle_vaults = [
             x
             for s_i in agent_slices
             for x in ([s_i.target_address] + list(s_i.leg_targets or []))
             if _norm_addr(x)
         ] + base_vaults
-        sol_disk_path = ws / "test" / "test_1.t.sol"
-        if not sol_disk_path.exists():
-            sol_disk_path.write_text(
-                _render_agent_poc_skeleton(
-                    slug,
-                    1,
-                    c,
-                    block_pin,
-                    caller,
-                    primary_sl.target_address,
-                    token_addrs=skel_tokens,
-                    vault_addresses=bundle_vaults,
-                    exit_routes=skel_exit_routes,
-                ),
-                encoding="utf-8",
-            )
-        cs_target = _checksum(primary_sl.target_address)
         all_leg_targets = list(
             dict.fromkeys(
                 _checksum(x)
@@ -16823,68 +16988,30 @@ def emit_poc_requests_for_slug(
         all_witnesses = list(
             dict.fromkeys(str(w) for s_i in agent_slices for w in s_i.witness_candidates)
         )[:24]
-        req_payload: Dict[str, Any] = {
-            "schema_version": ARTIFACT_SCHEMA_VERSION,
-            "candidate_id": 1,
-            "session_id": sid_clean,
-            "slug": slug,
-            "chain": c,
-            "audit_block": block_pin,
-            "zero_state_caller": _checksum(caller),
-            "target_address": cs_target,
-            "leg_targets": all_leg_targets or [cs_target],
-            "legs": primary_sl.legs,
-            "undecided_reason": primary_sl.undecided_reason or primary_sl.rationale,
-            "state_channels": list(dict.fromkeys(str(s_i.channel) for s_i in agent_slices)),
-            "discontinuity_seeds": all_witnesses,
-            "candidate_slices": [
-                {
-                    "candidate_id": idx_c,
-                    "target_address": _checksum(s_i.target_address),
-                    "leg_targets": [_checksum(x) for x in (s_i.leg_targets or [s_i.target_address]) if _norm_addr(x)],
-                    "legs": list(s_i.legs),
-                    "channel": str(s_i.channel),
-                    "undecided_reason": s_i.undecided_reason or s_i.rationale,
-                    "witness_candidates": [str(w) for w in s_i.witness_candidates[:8]],
-                }
-                for idx_c, s_i in enumerate(agent_slices, start=1)
-            ],
-            "connected_vaults": connected_vaults,
-            "verified_exit_pools": exit_pool_summary,
-            "flash_loan_options": flash_opts,
-            "principle_summary": principle_summary,
-            "editable_files": [rel_sol, rel_verdict],
-            "readable_files": [rel_req, rel_sol, *exported_source_rels],
-            "isolated_commands": {
-                "preverify_forge_test": _wrap_self_isolated_cmd(
-                    ws_env_json,
-                    f'"{FORGE_BIN}" test --offline --no-storage-caching --root "{ws}" --match-path "test/test_1.t.sol"{fork_cli_suffix} -vvv',
-                ),
-                "readonly_cast_call_template": _wrap_self_isolated_cmd(
-                    ws_env_json,
-                    f'"{CAST_BIN}" call --rpc-url "{eff_rpc_u}"{cast_blk_suffix} {cs_target} 0x18160ddd',
-                ),
-                "resume_engine": resume_cmd,
-                "isolated_env_hint": dict(ws_env_hint),
-            },
-            "submission_schema": {
-                "verdict_file": rel_verdict,
-                "note": skel_note,
-                "allowed_status_values": ["PROVEN_BY_FORGE", VERDICT_SAFE, VERDICT_BLOCKED],
-                "example_verdict_json": {
-                    "candidate_id": 1,
-                    "verdict": VERDICT_SAFE,
-                    "notes": "Verified on-chain invariant holds across all reachable state transitions",
-                    "remediation_exhausted": {k: True for k in REMEDIATION_KEYS},
-                },
-            },
-            "optional_conservation_event": skel_event_hint,
-            "relevant_source_slices": snippet_list,
-        }
-        if source_inc_meta:
-            req_payload["source_incident"] = source_inc_meta
-        rpath = req_dir / "poc_request_1.json"
-        _write_json_atomic(rpath, req_payload)
+        cand_slices_doc = [
+            {
+                "candidate_id": idx_c,
+                "target_address": _checksum(s_i.target_address),
+                "leg_targets": [_checksum(x) for x in (s_i.leg_targets or [s_i.target_address]) if _norm_addr(x)],
+                "legs": list(s_i.legs),
+                "channel": str(s_i.channel),
+                "undecided_reason": s_i.undecided_reason or s_i.rationale,
+                "witness_candidates": [str(w) for w in s_i.witness_candidates[:8]],
+            }
+            for idx_c, s_i in enumerate(agent_slices, start=1)
+        ]
+        rpath = _emit_single_poc_req(
+            1,
+            primary_sl.target_address,
+            all_leg_targets,
+            list(primary_sl.legs),
+            primary_sl.undecided_reason or primary_sl.rationale,
+            list(dict.fromkeys(str(s_i.channel) for s_i in agent_slices)),
+            all_witnesses,
+            bundle_vaults,
+            3,
+            cand_slices_list=cand_slices_doc,
+        )
         for old_rf in req_dir.glob("poc_request_*.json"):
             if old_rf.name != "poc_request_1.json":
                 try:
@@ -16894,87 +17021,24 @@ def emit_poc_requests_for_slug(
         return [rpath]
 
     for cid, sl in enumerate(agent_slices, start=1):
-        src_info = verified_sources.get(sl.target_address) or next(iter(verified_sources.values()), {})
-        src_files = src_info.get("sources") or {}
-        snippet_list = []
-        for fn, content in list(src_files.items())[:2]:
-            snippet_list.append(f"// {fn}\n" + str(content)[:1200])
-        rel_sol = f"audit_artifacts/{slug}/forge/test/test_{cid}.t.sol"
-        rel_verdict = f"audit_artifacts/{slug}/verdicts/verdict_{cid}.json"
-        rel_req = f"audit_artifacts/{slug}/poc_requests/poc_request_{cid}.json"
         sl_vaults = [
             x
             for x in ([sl.target_address] + list(sl.leg_targets or []))
             if _norm_addr(x)
         ] + base_vaults
-        sol_disk_path = ws / "test" / f"test_{cid}.t.sol"
-        if not sol_disk_path.exists():
-            sol_disk_path.write_text(
-                _render_agent_poc_skeleton(
-                    slug,
-                    cid,
-                    c,
-                    block_pin,
-                    caller,
-                    sl.target_address,
-                    token_addrs=skel_tokens,
-                    vault_addresses=sl_vaults,
-                    exit_routes=skel_exit_routes,
-                ),
-                encoding="utf-8",
+        written.append(
+            _emit_single_poc_req(
+                cid,
+                sl.target_address,
+                [_checksum(x) for x in (sl.leg_targets or [sl.target_address]) if _norm_addr(x)],
+                list(sl.legs),
+                sl.undecided_reason or sl.rationale,
+                [str(sl.channel)],
+                [str(w) for w in sl.witness_candidates],
+                sl_vaults,
+                2,
             )
-        cs_target = _checksum(sl.target_address)
-        req_payload = {
-            "schema_version": ARTIFACT_SCHEMA_VERSION,
-            "candidate_id": cid,
-            "session_id": sid_clean,
-            "slug": slug,
-            "chain": c,
-            "audit_block": block_pin,
-            "zero_state_caller": _checksum(caller),
-            "target_address": cs_target,
-            "leg_targets": [_checksum(x) for x in (sl.leg_targets or [sl.target_address]) if _norm_addr(x)],
-            "legs": sl.legs,
-            "undecided_reason": sl.undecided_reason or sl.rationale,
-            "state_channels": [sl.channel],
-            "discontinuity_seeds": [str(w) for w in sl.witness_candidates],
-            "connected_vaults": connected_vaults,
-            "verified_exit_pools": exit_pool_summary,
-            "flash_loan_options": flash_opts,
-            "principle_summary": principle_summary,
-            "editable_files": [rel_sol, rel_verdict],
-            "readable_files": [rel_req, rel_sol, *exported_source_rels],
-            "isolated_commands": {
-                "preverify_forge_test": _wrap_self_isolated_cmd(
-                    ws_env_json,
-                    f'"{FORGE_BIN}" test --offline --no-storage-caching --root "{ws}" --match-path "test/test_{cid}.t.sol"{fork_cli_suffix} -vvv',
-                ),
-                "readonly_cast_call_template": _wrap_self_isolated_cmd(
-                    ws_env_json,
-                    f'"{CAST_BIN}" call --rpc-url "{eff_rpc_u}"{cast_blk_suffix} {cs_target} 0x18160ddd',
-                ),
-                "resume_engine": resume_cmd,
-                "isolated_env_hint": dict(ws_env_hint),
-            },
-            "submission_schema": {
-                "verdict_file": rel_verdict,
-                "note": skel_note,
-                "allowed_status_values": ["PROVEN_BY_FORGE", VERDICT_SAFE, VERDICT_BLOCKED],
-                "example_verdict_json": {
-                    "candidate_id": cid,
-                    "verdict": VERDICT_SAFE,
-                    "notes": "Verified on-chain invariant holds across all reachable state transitions",
-                    "remediation_exhausted": {k: True for k in REMEDIATION_KEYS},
-                },
-            },
-            "optional_conservation_event": skel_event_hint,
-            "relevant_source_slices": snippet_list,
-        }
-        if source_inc_meta:
-            req_payload["source_incident"] = source_inc_meta
-        rpath = req_dir / f"poc_request_{cid}.json"
-        _write_json_atomic(rpath, req_payload)
-        written.append(rpath)
+        )
     return written
 
 
@@ -17198,19 +17262,29 @@ def write_protocol_artifacts(
             if forge_ws.is_dir():
                 for f_sub in ("out", "cache", "broadcast", "_subproc_tmp", "_subproc_home"):
                     shutil.rmtree(forge_ws / f_sub, ignore_errors=True)
-            for transient_fn in ("checkpoint.json", "address_request.json", "discovered_addresses.json"):
+            for transient_fn in ("checkpoint.json", "address_request.json", "discovered_addresses.json", "poc_request.json"):
                 try:
                     (pdir / transient_fn).unlink(missing_ok=True)
                 except OSError:
                     pass
-            for cand_fo in pdir.glob("forge_output_*.json"):
+            for cand_fo in [*pdir.glob("forge_output_*.json"), *pdir.glob("execution_trace_summary_*.json")]:
                 try:
                     cand_fo.unlink()
                 except OSError:
                     pass
-            if not any(verdicts_dir.glob("verdict_*.json")):
+            existing_vfiles = sorted(verdicts_dir.glob("verdict_*.json"))
+            has_profit_vfile = False
+            for vf_chk in existing_vfiles:
+                vd_chk = _read_json(vf_chk, default={})
+                if isinstance(vd_chk, dict):
+                    rv_chk = str(vd_chk.get("verdict") or "")
+                    if _is_profit_verdict(rv_chk) or rv_chk == "PROVEN_BY_FORGE":
+                        has_profit_vfile = True
+                        break
+            if not existing_vfiles or not has_profit_vfile:
+                target_vfile = verdicts_dir / ("verdict_1.json" if not existing_vfiles else "verdict_0.json")
                 v1_doc_p: Dict[str, Any] = {
-                    "candidate_id": 1,
+                    "candidate_id": 1 if not existing_vfiles else 0,
                     "verdict": verdict_val,
                     "audit_block": int(payload_copy.get("audit_block") or 0),
                     "notes": str(payload_copy.get("reason") or "Mechanical engine determination"),
@@ -17221,7 +17295,7 @@ def write_protocol_artifacts(
                     "net_profit_usd": float(payload_copy.get("net_usd") or 0.0),
                     "net_profit_krw": int(payload_copy.get("net_krw") or 0),
                 }
-                _write_json_atomic(verdicts_dir / "verdict_1.json", v1_doc_p)
+                _write_json_atomic(target_vfile, v1_doc_p)
         else:
             for child in list(pdir.iterdir()):
                 if child == verdicts_dir:
@@ -17325,6 +17399,10 @@ def _verify_protocol_pins_loaded(
         if actual_hash != expected_hash:
             return False, f"SHA256_MISMATCH:{fn}", res, None
 
+    if pins.get("slug") and _norm_slug(str(pins.get("slug") or "")) != slug:
+        return False, "PINS_SLUG_MISMATCH", res, None
+    if res.get("slug") and _norm_slug(str(res.get("slug") or "")) != slug:
+        return False, "RESULT_SLUG_MISMATCH", res, None
     if str(pins.get("verdict") or "") != verdict:
         return False, "PINS_VERDICT_MISMATCH", res, None
     if int(pins.get("audit_block") or 0) != int(res.get("audit_block") or 0):
@@ -17411,6 +17489,16 @@ _CURSOR_PHASE_ORDER: Dict[str, int] = {
 }
 
 
+_RELAY_META_KEYS: Tuple[str, ...] = (
+    "corpus_md_total_headers",
+    "corpus_md_evm_cases",
+    "corpus_md_pure_non_evm_cases",
+    "corpus_md_partition_seal",
+    "mode_a_seed_ok",
+    "mode_a_seed_pending",
+)
+
+
 def _export_relay_state(store: SQLiteStore, artifact_root: Optional[Path] = None) -> None:
     """PC방 이동 이어달리기용 경량 진행도 스냅샷(audit_artifacts/_relay_state.json) 원자적 저장."""
     if store._is_memory:
@@ -17436,6 +17524,15 @@ def _export_relay_state(store: SQLiteStore, artifact_root: Optional[Path] = None
             pv_rows = rc.execute(
                 "SELECT chain_id, vault_addr, slug, net_krw, fully_exhausted FROM proven_vaults ORDER BY chain_id ASC, vault_addr ASC"
             ).fetchall()
+            sess_rows = rc.execute(
+                "SELECT session_id, active_slug, profit_slug, profit_verdict, profit_krw, completed_slugs, status, heartbeat_at, created_at "
+                "FROM audit_sessions ORDER BY session_id ASC"
+            ).fetchall()
+            meta_qm = ",".join("?" for _ in _RELAY_META_KEYS)
+            meta_rows = rc.execute(
+                f"SELECT meta_key, meta_val FROM engine_meta WHERE meta_key IN ({meta_qm})",
+                _RELAY_META_KEYS,
+            ).fetchall()
         cur_raw = store.get_engine_meta("mode_b_sourcify_cursor_v1", "")
         cur_doc: Dict[str, Any] = {}
         if cur_raw:
@@ -17447,11 +17544,13 @@ def _export_relay_state(store: SQLiteStore, artifact_root: Optional[Path] = None
                     cur_doc["code_inflight"] = {}
             except Exception:
                 cur_doc = {}
-        if not done_rows and not dyn_rows and not pv_rows and not cur_doc:
+        meta_snapshot = {str(r["meta_key"]): str(r["meta_val"]) for r in meta_rows if r["meta_val"] != ""}
+        if not done_rows and not dyn_rows and not pv_rows and not cur_doc and not sess_rows:
             return
         relay_doc: Dict[str, Any] = {
             "schema_version": 1,
             "mode_b_sourcify_cursor_v1": cur_doc,
+            "engine_meta": meta_snapshot,
             "done_items": [
                 {
                     "slug": str(r["slug"]),
@@ -17491,8 +17590,22 @@ def _export_relay_state(store: SQLiteStore, artifact_root: Optional[Path] = None
                 }
                 for r in pv_rows
             ],
+            "audit_sessions": [
+                {
+                    "session_id": str(r["session_id"]),
+                    "active_slug": str(r["active_slug"] or ""),
+                    "profit_slug": str(r["profit_slug"] or ""),
+                    "profit_verdict": str(r["profit_verdict"] or ""),
+                    "profit_krw": float(r["profit_krw"] or 0.0),
+                    "completed_slugs": json.loads(r["completed_slugs"] or "[]"),
+                    "status": str(r["status"] or "active"),
+                    "heartbeat_at": float(r["heartbeat_at"] or 0.0),
+                    "created_at": float(r["created_at"] or 0.0),
+                }
+                for r in sess_rows
+            ],
         }
-        _write_json_atomic(eff_root / "_relay_state.json", relay_doc)
+        _write_json_atomic(eff_root / "_relay_state.json", relay_doc, compact=True)
     except Exception:
         pass
 
@@ -17513,6 +17626,13 @@ def _import_relay_state(
     relay_doc = _read_json(relay_path, default=None) if relay_path.is_file() else None
 
     if isinstance(relay_doc, dict):
+        rel_meta = relay_doc.get("engine_meta")
+        if isinstance(rel_meta, dict):
+            for mk in _RELAY_META_KEYS:
+                mv = str(rel_meta.get(mk) or "")
+                if mv and not store.get_engine_meta(mk, ""):
+                    store.put_engine_meta(mk, mv)
+
         dyn_list = relay_doc.get("pending_dynamic_items")
         if isinstance(dyn_list, list) and dyn_list:
             dyn_batch: List[Tuple[Any, ...]] = []
@@ -17644,10 +17764,43 @@ def _import_relay_state(
                             ),
                         )
 
-    # _relay_state.json 외에 디스크에 직접 존재하는 봉인 영수증(pins.json)도 누락 없이 복원하고,
+        sess_list = relay_doc.get("audit_sessions")
+        if isinstance(sess_list, list) and sess_list:
+            with store._write_tx():
+                for s_doc in sess_list:
+                    if not isinstance(s_doc, dict):
+                        continue
+                    sid_r = str(s_doc.get("session_id") or "").strip().lower()
+                    if not sid_r:
+                        continue
+                    comp_r = [
+                        ns
+                        for x in (s_doc.get("completed_slugs") or ())
+                        if x and (ns := _norm_slug(str(x)))
+                    ]
+                    store._conn.execute(
+                        "INSERT OR IGNORE INTO audit_sessions(session_id, active_slug, profit_slug, profit_verdict, profit_krw, completed_slugs, status, heartbeat_at, created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?)",
+                        (
+                            sid_r,
+                            _norm_slug(str(s_doc.get("active_slug") or "")) if s_doc.get("active_slug") else "",
+                            _norm_slug(str(s_doc.get("profit_slug") or "")) if s_doc.get("profit_slug") else "",
+                            str(s_doc.get("profit_verdict") or ""),
+                            float(s_doc.get("profit_krw") or 0.0),
+                            json.dumps(comp_r, ensure_ascii=True),
+                            str(s_doc.get("status") or "active"),
+                            float(s_doc.get("heartbeat_at") or 0.0),
+                            float(s_doc.get("created_at") or 0.0),
+                        ),
+                    )
+
+    # _relay_state.json 외에 디스크에 직접 존재하는 봉인 영수증(pins.json) 및 에이전트 대기 요청도 단일 배치 조회로 복원하고,
     # run 재개 시에는 핀·요청서·체크포인트 없이 반쪽만 남은 미완결 폴더를 정리하여 데드락을 예방한다.
+    with store._read_conn() as rc_st:
+        q_status_map = {str(r["slug"]): str(r["status"] or "") for r in rc_st.execute("SELECT slug, status FROM audit_queue").fetchall()}
     disk_batch: List[Tuple[Any, ...]] = []
     disk_complete: List[Tuple[str, str, float]] = []
+    relayed_agent_states: List[Tuple[str, str]] = []
     for d_ent in list(eff_root.iterdir()):
         if not d_ent.is_dir() or d_ent.name.startswith("_"):
             continue
@@ -17661,14 +17814,22 @@ def _import_relay_state(
                 disk_batch.append((ns_d, 1 if eff_m == "B" else 2, str(res_d.get("chain") or "ethereum"), 0.0, [], eff_m, "", 0.0))
                 disk_complete.append((ns_d, str(res_d.get("verdict") or ""), float(res_d.get("net_krw") or 0.0)))
             continue
+        q_st_d = q_status_map.get(ns_d, "")
+        req_sub = d_ent / "poc_requests"
+        has_addr_wait = (d_ent / "address_request.json").is_file() and not (d_ent / "discovered_addresses.json").is_file()
+        has_poc_wait = (d_ent / "poc_request.json").is_file() or (req_sub.is_dir() and any(req_sub.glob("poc_request_*.json")))
+        if q_st_d == "pending":
+            if has_addr_wait:
+                relayed_agent_states.append((ns_d, "awaiting_addresses"))
+            elif has_poc_wait:
+                test_sub = d_ent / "forge" / "test"
+                has_submitted_sol = test_sub.is_dir() and any(test_sub.glob("test_*.t.sol")) and any(d_ent.glob("forge_output_*.json"))
+                relayed_agent_states.append((ns_d, "awaiting_verdict" if has_submitted_sol else "awaiting_poc"))
         if prune_unsealed_orphans:
-            q_st_d = store.get_queue_status(ns_d)
-            req_sub = d_ent / "poc_requests"
             has_live_work = (
                 (d_ent / "checkpoint.json").is_file()
                 or (d_ent / "address_request.json").is_file()
-                or (d_ent / "poc_request.json").is_file()
-                or (req_sub.is_dir() and any(req_sub.glob("poc_request_*.json")))
+                or has_poc_wait
             )
             if q_st_d in ("", "pending") and not has_live_work:
                 can_prune = False
@@ -17676,6 +17837,14 @@ def _import_relay_state(
                     can_prune = bool(acq_orp and not (d_ent / "pins.json").is_file())
                 if can_prune:
                     shutil.rmtree(d_ent, ignore_errors=True)
+    if relayed_agent_states:
+        now_ag = time.time()
+        with store._write_tx():
+            for ag_slug, ag_st in relayed_agent_states:
+                store._conn.execute(
+                    "UPDATE audit_queue SET status=?, needs_agent=1, session_id='', updated_at=? WHERE slug=? AND status='pending'",
+                    (ag_st, now_ag, ag_slug),
+                )
     if disk_batch:
         store.upsert_queue_items_batch(disk_batch)
     for ns_d, v_d, krw_d in disk_complete:
@@ -17790,9 +17959,13 @@ def _probe_clone_liquid_balance_hints(
                 if (na := _norm_addr(s)) and na != wn
             ]
             native_usd_unit_d = (
-                Decimal("2500")
-                if c_nm in NATIVE_ETH_CHAINS
-                else _to_dec(_BALLPARK_NATIVE_USD_BY_CHAIN.get(c_nm, 1))
+                Decimal("85000")
+                if (c_nm in _BTC_NATIVE_CHAINS or c_nm in ("rsk", "bsquared", "bevm", "ailayer", "btr"))
+                else (
+                    Decimal("2500")
+                    if c_nm in NATIVE_ETH_CHAINS
+                    else _to_dec(_BALLPARK_NATIVE_USD_BY_CHAIN.get(c_nm, 1))
+                )
             )
             toks = ([wn] if wn else []) + stables
             dec_map: Dict[str, int] = {wn: 18} if wn else {}
@@ -18051,7 +18224,15 @@ def _claim_next_slice_range(
 ) -> Optional[Tuple[int, int]]:
     if total_cnt <= 0:
         return None
-    expired_keys = [k for k, exp_v in list(inflight_map.items()) if float(exp_v or 0.0) <= now_ts]
+
+    def _safe_exp_ts(val: Any) -> float:
+        try:
+            fv = float(val or 0.0)
+            return fv if math.isfinite(fv) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    expired_keys = [k for k, exp_v in list(inflight_map.items()) if _safe_exp_ts(exp_v) <= now_ts]
     for ek in expired_keys:
         inflight_map.pop(ek, None)
     inf_ranges: List[List[int]] = []
@@ -18076,16 +18257,34 @@ def _claim_next_slice_range(
     return pos, end_pos
 
 
+def _started_sourcify_cursor_phase_or_empty(raw_cursor: str) -> str:
+    if not raw_cursor:
+        return ""
+    try:
+        doc_c = json.loads(raw_cursor)
+        if not isinstance(doc_c, dict):
+            return ""
+        ph = str(doc_c.get("phase") or "")
+        if ph in ("exact_hash", "sig_slices", "code_slices"):
+            return ph
+        if ph == "seed_harvest" and int(doc_c.get("seed_cursor") or 0) > 0:
+            return ph
+    except Exception:
+        pass
+    return ""
+
+
 def _get_mode_b_sourcify_cursor_phase(
     store: SQLiteStore,
     parquet_root: Optional[Path] = None,
 ) -> str:
     p_root = parquet_root if parquet_root is not None else SOURCIFY_PARQUET_DIR
+    raw_c = store.get_engine_meta("mode_b_sourcify_cursor_v1")
     if not _has_sourcify_corpus_files(p_root):
-        return "exhausted"
+        started_ph = _started_sourcify_cursor_phase_or_empty(raw_c)
+        return started_ph if (started_ph and store.list_mode_b_primary_items()) else "exhausted"
     if not store.list_mode_b_primary_items():
         return "exhausted"
-    raw_c = store.get_engine_meta("mode_b_sourcify_cursor_v1")
     if raw_c:
         try:
             doc_c = json.loads(raw_c)
@@ -18177,7 +18376,16 @@ def _advance_mode_b_sourcify_cursor(
         _save_cursor_dict(cursor)
 
     if not _has_sourcify_corpus_files(p_root):
-        return {"phase": "exhausted", "enqueued": 0, "matched": 0, "timed_out": False}
+        started_cur_ph = (
+            str(cursor["phase"])
+            if (
+                cursor["phase"] in ("exact_hash", "sig_slices", "code_slices")
+                or (cursor["phase"] == "seed_harvest" and int(cursor.get("seed_cursor") or 0) > 0)
+            )
+            and bool(store.list_mode_b_primary_items())
+            else "exhausted"
+        )
+        return {"phase": started_cur_ph, "enqueued": 0, "matched": 0, "timed_out": False}
 
     def _load_seed_variants() -> List[Dict[str, Any]]:
         if not store._is_memory:
@@ -18206,9 +18414,9 @@ def _advance_mode_b_sourcify_cursor(
         payload = {"variants": variants_list}
         if not store._is_memory:
             cdir_s = _store_cache_dir(store)
-            _write_json_atomic(cdir_s / "mode_b_seed_index_v1.json", payload)
+            _write_json_atomic(cdir_s / "mode_b_seed_index_v1.json", payload, compact=True)
             if cdir_s.resolve() == CACHE_DIR.resolve():
-                _write_json_atomic(ARTIFACT_ROOT / "_relay_seed_index.json", payload)
+                _write_json_atomic(ARTIFACT_ROOT / "_relay_seed_index.json", payload, compact=True)
         else:
             store.put_engine_meta("mode_b_seed_index_v1", json.dumps(payload, ensure_ascii=True))
 
@@ -19227,25 +19435,10 @@ def _ensure_mode_a_seeded(store: SQLiteStore) -> int:
         return inserted
 
 
-def _seed_queue_from_existing_or_live(store: SQLiteStore, defer_mode_a: bool = False) -> int:
-    """Mode B(Priority 1: 컨트랙트.md 전 사건 헤더 무손실 분할 및 유사 컨트랙트 탐색 최우선) 및 Mode A(Priority 2: 지연 적재 지원) 일괄 큐 적재."""
-    counts = store.queue_counts()
-    if sum(counts.values()) > 0:
-        return sum(counts.values())
-
+def _build_and_seal_mode_b_corpus(store: SQLiteStore) -> Tuple[List[Tuple[Any, ...]], List[Tuple[str, Dict[str, Any]]]]:
+    """컨트랙트.md 역사적 사례 전수 파싱, 0-시드 EVM 사례 큐잉 데이터 생성 및 corpus_md_partition_seal 봉인."""
     batch_items: List[Tuple[Any, ...]] = []
     meta_items: List[Tuple[str, Dict[str, Any]]] = []
-
-    if defer_mode_a:
-        store.put_engine_meta("mode_a_seed_pending", "1")
-    else:
-        a_items, a_meta, any_mode_a_seeded = _collect_mode_a_seed_items()
-        batch_items.extend(a_items)
-        meta_items.extend(a_meta)
-        store.put_engine_meta("mode_a_seed_ok", "1" if any_mode_a_seeded else "0")
-        store.put_engine_meta("mode_a_seed_pending", "0")
-
-    # 3. Mode B (Priority 1): 컨트랙트.md 역사적 사례 전수 파싱 (전수 무손실 분할 + 0-시드 EVM 사례 주소 탐색 큐잉 + 분할 봉인)
     c_part = _parse_corpus_md_partition()
     evm_cases: List[HistoricalCaseSeed] = list(c_part.get("evm_cases") or [])
     pure_non_evm_cases: List[HistoricalCaseSeed] = list(c_part.get("pure_non_evm_cases") or [])
@@ -19320,6 +19513,30 @@ def _seed_queue_from_existing_or_live(store: SQLiteStore, defer_mode_a: bool = F
             ensure_ascii=False,
         ),
     )
+    return batch_items, meta_items
+
+
+def _seed_queue_from_existing_or_live(store: SQLiteStore, defer_mode_a: bool = False) -> int:
+    """Mode B(Priority 1: 컨트랙트.md 전 사건 헤더 무손실 분할 및 유사 컨트랙트 탐색 최우선) 및 Mode A(Priority 2: 지연 적재 지원) 일괄 큐 적재."""
+    counts = store.queue_counts()
+    if sum(counts.values()) > 0:
+        return sum(counts.values())
+
+    batch_items: List[Tuple[Any, ...]] = []
+    meta_items: List[Tuple[str, Dict[str, Any]]] = []
+
+    if defer_mode_a:
+        store.put_engine_meta("mode_a_seed_pending", "1")
+    else:
+        a_items, a_meta, any_mode_a_seeded = _collect_mode_a_seed_items()
+        batch_items.extend(a_items)
+        meta_items.extend(a_meta)
+        store.put_engine_meta("mode_a_seed_ok", "1" if any_mode_a_seeded else "0")
+        store.put_engine_meta("mode_a_seed_pending", "0")
+
+    b_items, b_meta = _build_and_seal_mode_b_corpus(store)
+    batch_items.extend(b_items)
+    meta_items.extend(b_meta)
 
     if meta_items:
         store.put_proto_meta_batch(meta_items)
@@ -19682,7 +19899,7 @@ def _resolve_protocol_addresses(
     else:
         final_addrs = ordered_candidates
 
-    if st is not None and fetch_text_fn is None and final_addrs:
+    if st is not None and fetch_text_fn is None and block_pin > 0 and final_addrs:
         meta[cache_key] = list(final_addrs)
         st.put_proto_meta_batch([(slug, meta)])
     return list(final_addrs)
@@ -20086,6 +20303,86 @@ def _replay_and_judge_at_live_head(
     return False, None, b_head, fail_reason, head_fresh
 
 
+def _confirm_profit_causality_and_live_head(
+    *,
+    ws: Path,
+    rel_test_path: str,
+    sol_code: str,
+    match_test: str,
+    target_addr: str,
+    closure_addrs: Sequence[str],
+    live_head_seed_addrs: Sequence[str],
+    allowed_caller: str,
+    calldata_len: int,
+    gas_price_wei: int,
+    acct_in: ConservationVerdict,
+    store: Optional[SQLiteStore],
+    router: RPCRouter,
+    chain: str,
+    block_pin: int,
+    decimals_map: Dict[str, int],
+    prices_map: Dict[str, float],
+    session_id: str = "",
+    default_fail_reason: str = "LIVE_HEAD_REPLAY_FAILED",
+) -> Tuple[bool, ConservationVerdict, int, Optional[Tuple[str, int, str]]]:
+    """
+    수익 후보에 대한 (1) 반사실적 TARGET 인과성 검증(RPC 실행 장애 시 다중 아카이브 엔드포인트 페일오버) 및
+    (2) 최신 확정 헤드 리플레이 + E1/E3 패치·고갈 안전 조기 종료 교차 판정을 단일 경로로 수행한다.
+    """
+    if block_pin <= 0:
+        return True, acct_in, block_pin, None
+    causal_ok = True
+    causal_reason = ""
+    if target_addr and sol_code:
+        cf_urls = router.candidate_urls(chain, need_archive=True, for_forge=True) or ["http://127.0.0.1:8545"]
+        for cf_u in cf_urls[:3]:
+            causal_ok, causal_reason = verify_counterfactual_target_causality(
+                ws=ws,
+                rel_test_path=rel_test_path,
+                sol_code=sol_code,
+                target_addr=target_addr,
+                fork_url=cf_u,
+                fork_block=block_pin,
+                match_test=match_test,
+                gas_price_wei=gas_price_wei,
+                offline=False,
+                closure_addrs=list(closure_addrs),
+            )
+            if causal_ok or "COUNTERFACTUAL_MUTANT_NOT_EXECUTED" not in str(causal_reason):
+                break
+    if causal_ok:
+        live_ok, live_acct, b_head, live_reason, head_fresh = _replay_and_judge_at_live_head(
+            ws=ws,
+            rel_test_path=rel_test_path,
+            match_test=match_test,
+            store=store,
+            router=router,
+            chain=chain,
+            block_pin=block_pin,
+            decimals_map=decimals_map,
+            prices_map=prices_map,
+            calldata_len=calldata_len,
+            default_fail_reason=default_fail_reason,
+            session_id=session_id,
+            target_addr=target_addr,
+            target_addrs=list(closure_addrs) or None,
+            allowed_caller=allowed_caller,
+        )
+        if live_ok and live_acct is not None:
+            return True, live_acct, b_head, None
+    else:
+        b_head = 0
+        head_fresh = False
+        live_reason = causal_reason
+
+    if head_fresh and b_head > block_pin:
+        dedup_seeds = list(dict.fromkeys(a for a in live_head_seed_addrs if _is_non_precompile_addr(str(a))))
+        lh_safe = _verify_live_head_patched_or_depleted(router, chain, b_head, dedup_seeds)
+        if lh_safe is not None:
+            return False, acct_in, b_head, (lh_safe[0], b_head, lh_safe[1])
+    return False, _blocked_from_acct_verdict(acct_in, live_reason), block_pin, None
+
+
 @_with_decimal_prec_100
 def process_agent_submissions(
     router: RPCRouter,
@@ -20109,12 +20406,22 @@ def process_agent_submissions(
     if not ARTIFACT_ROOT.exists():
         return 0
 
-    for d in sorted(ARTIFACT_ROOT.iterdir()):
-        if not d.is_dir() or d.name.startswith("_"):
-            continue
-        norm_dir_slug = _norm_slug(d.name)
-        if only_slugs is not None and norm_dir_slug not in only_slugs:
-            continue
+    if only_slugs is not None:
+        norm_only = {_norm_slug(s) for s in only_slugs if s}
+        if not norm_only:
+            return 0
+        direct_dirs = [ARTIFACT_ROOT / s for s in sorted(norm_only) if (ARTIFACT_ROOT / s).is_dir() and not s.startswith("_")]
+        if len(direct_dirs) == len(norm_only):
+            cand_dirs = direct_dirs
+        else:
+            cand_dirs = [
+                p for p in sorted(ARTIFACT_ROOT.iterdir())
+                if p.is_dir() and not p.name.startswith("_") and _norm_slug(p.name) in norm_only
+            ]
+    else:
+        cand_dirs = [p for p in sorted(ARTIFACT_ROOT.iterdir()) if p.is_dir() and not p.name.startswith("_")]
+
+    for d in cand_dirs:
         with _try_slug_lock(d) as acquired:
             if not acquired:
                 continue
@@ -20150,17 +20457,42 @@ def process_agent_submissions(
                     valid_disc_addrs, checked_disc_ok = _filter_onchain_contract_addrs(router, chain, valid_disc_addrs, block_pin)
                 if not disc_confirmed_none and not valid_disc_addrs:
                     req_addr_doc = _read_json(addr_req_file, default={}) if addr_req_file.is_file() else {}
+                    rej_cnt = 1
+                    rej_reason = (
+                        "Submitted discovered_addresses contained 0 on-chain contract addresses with runtime bytecode "
+                        f"(rpc_checked={checked_disc_ok}) and confirmed_no_contracts=false"
+                    )
                     if isinstance(req_addr_doc, dict) and req_addr_doc:
-                        req_addr_doc["rejection_count"] = int(req_addr_doc.get("rejection_count") or 0) + 1
-                        req_addr_doc["rejection_reason"] = (
-                            "Submitted discovered_addresses contained 0 on-chain contract addresses with runtime bytecode "
-                            f"(rpc_checked={checked_disc_ok}) and confirmed_no_contracts=false"
-                        )
+                        rej_cnt = int(req_addr_doc.get("rejection_count") or 0) + 1
+                        req_addr_doc["rejection_count"] = rej_cnt
+                        req_addr_doc["rejection_reason"] = rej_reason
                         _write_json_atomic(addr_req_file, req_addr_doc)
                     try:
                         disc_addr_file.unlink(missing_ok=True)
                     except OSError:
                         pass
+                    if rej_cnt >= 3:
+                        try:
+                            addr_req_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        blocked_addr_payload: Dict[str, Any] = {
+                            "slug": slug,
+                            "chain": chain,
+                            "audit_block": block_pin,
+                            "verdict": VERDICT_BLOCKED,
+                            "early_exit": "ADDRESS_DISCOVERY_EXHAUSTED",
+                            "net_usd": 0.0,
+                            "net_krw": 0,
+                            "needs_agent": False,
+                            "awaiting_address_discovery": False,
+                            "reason": f"ADDRESS_DISCOVERY_REJECTED_3X:{rej_reason}",
+                            "remediation_exhausted": {k: True for k in REMEDIATION_KEYS},
+                        }
+                        write_protocol_artifacts(slug, blocked_addr_payload)
+                        store.complete_queue_item(slug, VERDICT_BLOCKED, 0.0)
+                        handled += 1
+                        continue
                     store.set_queue_agent_state(slug, "awaiting_addresses")
                     continue
                 try:
@@ -20434,7 +20766,10 @@ def process_agent_submissions(
 
                     verdicts_by_cid[vcid] = vdoc
 
-                if verdicts_by_cid and not rejected_cids:
+                all_reqs_answered = (not req_cids) or req_cids.issubset(verdicts_by_cid.keys())
+                if verdicts_by_cid and not rejected_cids and not all_reqs_answered:
+                    store.set_queue_agent_state(slug, "awaiting_poc")
+                elif verdicts_by_cid and not rejected_cids and all_reqs_answered:
                     verified_profit_acct: Optional[ConservationVerdict] = None
                     verified_profit_forge: Optional[Dict[str, Any]] = None
                     verified_profit_trace: Optional[Dict[str, Any]] = None
@@ -20561,12 +20896,34 @@ def process_agent_submissions(
                                 session_id=ckpt_sid,
                             )
                             if win_test_name:
-                                est_calldata_len = _estimate_test_calldata_len(sol_vcid_txt, test_name=win_test_name)
+                                refined_cd_len = _estimate_test_calldata_len(sol_vcid_txt, test_name=win_test_name)
+                                if refined_cd_len != est_calldata_len:
+                                    est_calldata_len = refined_cd_len
+                                    acct_cand, win_test_name, _ = _evaluate_best_test_gains(
+                                        gains_list,
+                                        store=store,
+                                        chain=chain,
+                                        gas_price_wei=gas_price_w,
+                                        decimals_map=dec_map,
+                                        prices_map=price_map,
+                                        router=(router if block_pin > 0 else None),
+                                        block_pin=block_pin,
+                                        calldata_len=est_calldata_len,
+                                        session_id=ckpt_sid,
+                                    )
 
                             if acct_cand is not None and _is_profit_verdict(acct_cand.verdict):
                                 req_vcid_doc = _read_json(req_dir / f"poc_request_{vcid}.json", default={}) if req_dir.is_dir() else {}
-                                vcid_target = _norm_addr(str((req_vcid_doc if isinstance(req_vcid_doc, dict) else {}).get("target_address") or ""))
                                 ckpt_closure = ckpt_data.get("closure") if isinstance(ckpt_data.get("closure"), dict) else {}
+                                vcid_target = _norm_addr(
+                                    str(
+                                        (req_vcid_doc if isinstance(req_vcid_doc, dict) else {}).get("target_address")
+                                        or ckpt_data.get("target_address")
+                                        or res_data.get("target_address")
+                                        or res_data.get("target")
+                                        or ((ckpt_closure.get("seed_addresses") or ckpt_data.get("seed_addrs") or [None])[0] or "")
+                                    )
+                                )
                                 vcid_closure_addrs = list(
                                     dict.fromkeys(
                                         na
@@ -20578,78 +20935,48 @@ def process_agent_submissions(
                                         if (na := _norm_addr(str(x))) and na not in chain_infra
                                     )
                                 )
-                                live_ok = True
-                                live_reason = "LIVE_HEAD_QUORUM_UNAVAILABLE"
-                                eff_block = block_pin
-                                b_head_v = 0
-                                head_fresh_v = False
-                                if vcid_target and sol_vcid_txt and block_pin > 0:
-                                    cf_urls = router.candidate_urls(chain, need_archive=True, for_forge=True) or ["http://127.0.0.1:8545"]
-                                    causal_ok, causal_reason = verify_counterfactual_target_causality(
-                                        ws=ws,
-                                        rel_test_path=f"test/test_{vcid}.t.sol",
-                                        sol_code=sol_vcid_txt,
-                                        target_addr=vcid_target,
-                                        fork_url=cf_urls[0],
-                                        fork_block=block_pin,
-                                        match_test=win_test_name,
-                                        gas_price_wei=gas_price_w,
-                                        offline=False,
-                                        closure_addrs=vcid_closure_addrs,
-                                    )
-                                    if not causal_ok:
-                                        live_ok = False
-                                        live_reason = causal_reason
-                                if live_ok and block_pin > 0:
-                                    vcid_caller = (
-                                        _norm_addr(str((req_vcid_doc if isinstance(req_vcid_doc, dict) else {}).get("zero_state_caller") or ""))
-                                        or allowed_caller
-                                    )
-                                    live_ok, live_acct_v, b_head_v, live_reason, head_fresh_v = _replay_and_judge_at_live_head(
-                                        ws=ws,
-                                        rel_test_path=f"test/test_{vcid}.t.sol",
-                                        match_test=win_test_name,
-                                        store=store,
-                                        router=router,
-                                        chain=chain,
-                                        block_pin=block_pin,
-                                        decimals_map=dec_map,
-                                        prices_map=price_map,
-                                        calldata_len=est_calldata_len,
-                                        default_fail_reason="LIVE_HEAD_REPLAY_GAIN_MISSING",
-                                        session_id=ckpt_sid,
-                                        target_addr=vcid_target,
-                                        target_addrs=vcid_closure_addrs or None,
-                                        allowed_caller=vcid_caller,
-                                    )
-                                    if live_ok and live_acct_v is not None:
-                                        acct_cand = live_acct_v
-                                        eff_block = b_head_v
-                                if not live_ok and block_pin > 0:
-                                    if head_fresh_v and b_head_v > block_pin:
-                                        lh_seeds = list(
-                                            dict.fromkeys(
-                                                a
-                                                for a in (
-                                                    list(ckpt_closure.get("seed_addresses") or ckpt_data.get("seed_addrs") or [])
-                                                    + [
-                                                        ca
-                                                        for ca in (ckpt_closure.get("all_addresses") or [])
-                                                        if _norm_addr(str(ca)) not in chain_infra
-                                                    ]
-                                                    + list((req_vcid_doc if isinstance(req_vcid_doc, dict) else {}).get("leg_targets") or [])
-                                                    + req_targets_all
-                                                    + ([vcid_target] if vcid_target else [])
-                                                )
-                                                if _is_non_precompile_addr(str(a))
-                                            )
-                                        )
-                                        lh_safe = _verify_live_head_patched_or_depleted(router, chain, b_head_v, lh_seeds)
-                                        if lh_safe is not None:
-                                            live_head_safe_override = (b_head_v, lh_safe[1])
-                                            continue
-                                    blocked_from_profit = _blocked_from_acct_verdict(acct_cand, live_reason)
-                                if live_ok:
+                                vcid_caller = (
+                                    _norm_addr(str((req_vcid_doc if isinstance(req_vcid_doc, dict) else {}).get("zero_state_caller") or ""))
+                                    or allowed_caller
+                                )
+                                lh_seeds = (
+                                    list(ckpt_closure.get("seed_addresses") or ckpt_data.get("seed_addrs") or [])
+                                    + [
+                                        ca
+                                        for ca in (ckpt_closure.get("all_addresses") or [])
+                                        if _norm_addr(str(ca)) not in chain_infra
+                                    ]
+                                    + list((req_vcid_doc if isinstance(req_vcid_doc, dict) else {}).get("leg_targets") or [])
+                                    + req_targets_all
+                                    + ([vcid_target] if vcid_target else [])
+                                )
+                                live_ok, acct_cand, eff_block, lh_safe_v = _confirm_profit_causality_and_live_head(
+                                    ws=ws,
+                                    rel_test_path=f"test/test_{vcid}.t.sol",
+                                    sol_code=sol_vcid_txt,
+                                    match_test=win_test_name,
+                                    target_addr=vcid_target,
+                                    closure_addrs=vcid_closure_addrs,
+                                    live_head_seed_addrs=lh_seeds,
+                                    allowed_caller=vcid_caller,
+                                    calldata_len=est_calldata_len,
+                                    gas_price_wei=gas_price_w,
+                                    acct_in=acct_cand,
+                                    store=store,
+                                    router=router,
+                                    chain=chain,
+                                    block_pin=block_pin,
+                                    decimals_map=dec_map,
+                                    prices_map=price_map,
+                                    session_id=ckpt_sid,
+                                    default_fail_reason="LIVE_HEAD_REPLAY_GAIN_MISSING",
+                                )
+                                if not live_ok:
+                                    if lh_safe_v is not None:
+                                        live_head_safe_override = (lh_safe_v[1], lh_safe_v[2])
+                                        continue
+                                    blocked_from_profit = acct_cand
+                                else:
                                     if verified_profit_acct is None or _verdict_rank_key(acct_cand) > _verdict_rank_key(verified_profit_acct):
                                         verified_profit_acct = acct_cand
                                         verified_profit_forge = dict(fdoc)
@@ -20667,7 +20994,6 @@ def process_agent_submissions(
                                     f"UNVERIFIED_PROFIT_CLAIM_BELOW_MIN:{acct_cand.reason}",
                                 )
 
-                    all_reqs_answered = (not req_cids) or req_cids.issubset(verdicts_by_cid.keys())
                     if all_reqs_answered:
                         explicit_blocked_cand = next(
                             (
@@ -21400,7 +21726,7 @@ def audit_single_protocol(
                 "reason": reason_txt,
             }
             _write_json_atomic(pdir / "result.json", interim_d_res)
-            store.set_queue_agent_state(slug, "awaiting_poc", session_id=eff_sid)
+            store.set_queue_agent_state(slug, "awaiting_addresses", session_id=eff_sid)
             return interim_d_res
 
         def _finish_blocked(
@@ -22003,6 +22329,7 @@ def audit_single_protocol(
                         if clone_batch:
                             store.put_proto_meta_batch(clone_meta)
                             store.upsert_queue_items_batch(clone_batch)
+                            _sync_sealed_receipts_for_batch(store, clone_batch)
                 ckpt["mode_b_expanded"] = True
 
             closure = build_backward_trust_closure(
@@ -22575,77 +22902,43 @@ def audit_single_protocol(
                 ws_live = pdir / "forge"
                 sol_best_p = ws_live / best_rel_path
                 sol_best_txt = sol_best_p.read_text(encoding="utf-8", errors="replace") if sol_best_p.is_file() else ""
-                causal_s4_ok = True
-                causal_s4_reason = ""
-                if primary_target and sol_best_txt:
-                    cf_urls_s4 = router.candidate_urls(chain, need_archive=True, for_forge=True) or ["http://127.0.0.1:8545"]
-                    causal_s4_ok, causal_s4_reason = verify_counterfactual_target_causality(
-                        ws=ws_live,
-                        rel_test_path=best_rel_path,
-                        sol_code=sol_best_txt,
-                        target_addr=primary_target,
-                        fork_url=cf_urls_s4[0],
-                        fork_block=block_pin,
-                        match_test=best_test_name,
-                        gas_price_wei=gas_price_w,
-                        offline=False,
-                        closure_addrs=harness_vault_addrs,
-                    )
-                if causal_s4_ok:
-                    s4_final_cd_len = _estimate_test_calldata_len(
-                        sol_best_txt, fallback=s4_calldata_len, test_name=best_test_name
-                    )
-                    live_confirmed, live_acct_ok, b_head, live_fail_reason, head_is_fresh = _replay_and_judge_at_live_head(
-                        ws=ws_live,
-                        rel_test_path=best_rel_path,
-                        match_test=best_test_name,
-                        store=store,
-                        router=router,
-                        chain=chain,
-                        block_pin=block_pin,
-                        decimals_map=closure.token_decimals,
-                        prices_map=closure.token_prices_usd,
-                        calldata_len=s4_final_cd_len,
-                        session_id=eff_sid,
-                        target_addr=primary_target,
-                        target_addrs=harness_vault_addrs or None,
-                        allowed_caller=caller,
-                    )
-                    if live_confirmed and live_acct_ok is not None:
-                        best_acct = live_acct_ok
-                        effective_audit_block = b_head
-                else:
-                    live_confirmed = False
-                    b_head = 0
-                    head_is_fresh = False
-                    live_fail_reason = causal_s4_reason
-
-                if not live_confirmed and best_acct is not None:
+                s4_final_cd_len = _estimate_test_calldata_len(
+                    sol_best_txt, fallback=s4_calldata_len, test_name=best_test_name
+                )
+                lh_seeds_s4 = [
+                    *closure.seed_addresses,
+                    *protocol_vault_addrs,
+                    *([primary_target] if primary_target else []),
+                ]
+                live_confirmed, best_acct, effective_audit_block, lh_res_s4 = _confirm_profit_causality_and_live_head(
+                    ws=ws_live,
+                    rel_test_path=best_rel_path,
+                    sol_code=sol_best_txt,
+                    match_test=best_test_name,
+                    target_addr=primary_target,
+                    closure_addrs=harness_vault_addrs,
+                    live_head_seed_addrs=lh_seeds_s4,
+                    allowed_caller=caller,
+                    calldata_len=s4_final_cd_len,
+                    gas_price_wei=gas_price_w,
+                    acct_in=best_acct,
+                    store=store,
+                    router=router,
+                    chain=chain,
+                    block_pin=block_pin,
+                    decimals_map=closure.token_decimals,
+                    prices_map=closure.token_prices_usd,
+                    session_id=eff_sid,
+                )
+                if not live_confirmed and lh_res_s4 is not None:
                     # 원하는 것.md L13: 최신 확정 헤드 신선도 충족 시 업그레이드·일시중지(Paused)·금고 고갈로 전체 폐포의 E1/E3 조건이 교차 증명된 경우에만 '안전' 분류
-                    if head_is_fresh and b_head > block_pin:
-                        lh_res_s4 = _verify_live_head_patched_or_depleted(
-                            router,
-                            chain,
-                            b_head,
-                            list(
-                                dict.fromkeys(
-                                    [
-                                        *closure.seed_addresses,
-                                        *protocol_vault_addrs,
-                                        *([primary_target] if primary_target else []),
-                                    ]
-                                )
-                            ),
-                        )
-                        if lh_res_s4 is not None:
-                            return _finish_safe(
-                                lh_res_s4[1],
-                                early_exit_tag=lh_res_s4[0],
-                                audit_blk=b_head,
-                                include_resumed=False,
-                                forge_doc=forge_payload,
-                            )
-                    best_acct = _blocked_from_acct_verdict(best_acct, live_fail_reason)
+                    return _finish_safe(
+                        lh_res_s4[2],
+                        early_exit_tag=lh_res_s4[0],
+                        audit_blk=lh_res_s4[1],
+                        include_resumed=False,
+                        forge_doc=forge_payload,
+                    )
 
             if best_acct is not None and _is_profit_verdict(best_acct.verdict):
                 acct = best_acct
@@ -22676,7 +22969,11 @@ def audit_single_protocol(
                     if slug.startswith(("modeb-match-", "modeb-clone-"))
                     else None
                 )
-                if (not fully_exhausted) and (any(s.needs_agent_synthesis for s in prescreened[:48]) or slices_truncated):
+                if (not fully_exhausted) and (
+                    any(s.needs_agent_synthesis for s in prescreened[:48])
+                    or slices_truncated
+                    or not forge_out.executed
+                ):
                     req_files_rem = emit_poc_requests_for_slug(
                         slug=slug,
                         chain=chain,
@@ -22685,7 +22982,7 @@ def audit_single_protocol(
                         slices=prescreened,
                         verified_sources=verified_sources,
                         principle_summary=principle_summary,
-                        force_all=False,
+                        force_all=(not forge_out.executed),
                         router=router,
                         mechanical_cap=48,
                         session_id=eff_sid,
@@ -22850,12 +23147,19 @@ def _scan_pending_agent_requests(
 
     scan_slug_filter = {_norm_slug(x) for x in only_slugs} if only_slugs is not None else None
     if eff_root.exists():
-        for d in sorted(eff_root.iterdir()):
-            if not d.is_dir() or d.name.startswith("_"):
-                continue
+        if scan_slug_filter is not None:
+            direct_scan_dirs = [eff_root / s for s in sorted(scan_slug_filter) if (eff_root / s).is_dir() and not s.startswith("_")]
+            if len(direct_scan_dirs) == len(scan_slug_filter):
+                scan_dirs = direct_scan_dirs
+            else:
+                scan_dirs = [
+                    p for p in sorted(eff_root.iterdir())
+                    if p.is_dir() and not p.name.startswith("_") and _norm_slug(p.name) in scan_slug_filter
+                ]
+        else:
+            scan_dirs = [p for p in sorted(eff_root.iterdir()) if p.is_dir() and not p.name.startswith("_")]
+        for d in scan_dirs:
             d_norm = _norm_slug(d.name)
-            if scan_slug_filter is not None and d_norm not in scan_slug_filter:
-                continue
             req_dir = d / "poc_requests"
             verdicts_dir = d / "verdicts"
             test_dir = d / "forge" / "test"
@@ -22900,7 +23204,9 @@ def _scan_pending_agent_requests(
             sl_name = _norm_slug(q_it.get("slug") or "")
             if scan_slug_filter is not None and sl_name not in scan_slug_filter:
                 continue
-            if st_name == "awaiting_poc" and sl_name not in seen_p_addrs:
+            if st_name == "awaiting_addresses":
+                _append_unique(pending_addrs, seen_p_addrs, sl_name)
+            elif st_name == "awaiting_poc" and sl_name not in seen_p_addrs:
                 _append_unique(pending_pocs, seen_p_pocs, sl_name)
             elif st_name == "awaiting_verdict":
                 _append_unique(pending_verdicts, seen_p_verdicts, sl_name)
@@ -23066,6 +23372,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
         remaining = int(q_counts.get("pending", 0)) + int(q_counts.get("claimed", 0))
         open_total = (
             remaining
+            + int(q_counts.get("awaiting_addresses", 0))
             + int(q_counts.get("awaiting_poc", 0))
             + int(q_counts.get("awaiting_verdict", 0))
         )
@@ -23246,6 +23553,27 @@ def _fs_invariants_ok(
     )
 
 
+def _is_global_queue_drained(store: SQLiteStore, q_counts: Dict[str, int]) -> bool:
+    return (
+        _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR) == "exhausted"
+        and int(q_counts.get("pending", 0)) == 0
+        and int(q_counts.get("claimed", 0)) == 0
+        and int(q_counts.get("awaiting_addresses", 0)) == 0
+        and int(q_counts.get("awaiting_poc", 0)) == 0
+        and int(q_counts.get("awaiting_verdict", 0)) == 0
+        and int(q_counts.get("done", 0)) > 0
+        and store.get_engine_meta("mode_a_seed_pending", "0") != "1"
+    )
+
+
+def _run_quiet_selftest(run_selftest: bool) -> bool:
+    if not run_selftest:
+        return True
+    selftest_buf = io.StringIO()
+    with contextlib.redirect_stdout(selftest_buf):
+        return cmd_selftest() == 0
+
+
 @_with_decimal_prec_100
 def _evaluate_done_gates(
     store: SQLiteStore,
@@ -23280,15 +23608,7 @@ def _evaluate_done_gates(
         store, artifact_root=eff_root, preverified_pins=preverified_pins
     )
 
-    gate1_ok = (
-        _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR) == "exhausted"
-        and int(q_counts.get("pending", 0)) == 0
-        and int(q_counts.get("claimed", 0)) == 0
-        and int(q_counts.get("awaiting_poc", 0)) == 0
-        and int(q_counts.get("awaiting_verdict", 0)) == 0
-        and done_cnt > 0
-        and store.get_engine_meta("mode_a_seed_pending", "0") != "1"
-    )
+    gate1_ok = _is_global_queue_drained(store, q_counts)
     gate2_ok = len(pending_addrs) == 0 and len(pending_pocs) == 0 and len(pending_verdicts) == 0
 
     done_slugs = store.list_done_slugs()
@@ -23380,12 +23700,7 @@ def _evaluate_done_gates(
 
     gate3_ok = checked_dirs > 0 and checked_dirs == done_cnt and len(pin_failures) == 0
     gate4_ok = len(profit_failures) == 0
-    if run_selftest:
-        selftest_buf = io.StringIO()
-        with contextlib.redirect_stdout(selftest_buf):
-            gate5_ok = cmd_selftest() == 0
-    else:
-        gate5_ok = True
+    gate5_ok = _run_quiet_selftest(run_selftest)
     gate_fs_ok = _fs_invariants_ok(eff_root, run_selftest, script_dir=script_dir, tools_dir=tools_dir)
     all_passed = gate1_ok and gate2_ok and mode_partition_ok and gate3_ok and gate4_ok and gate5_ok and gate_fs_ok
 
@@ -23468,28 +23783,14 @@ def _evaluate_session_done_gates(
             ):
                 profit_failures.append(sl_name)
 
-    cursor_exhausted = _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR) == "exhausted"
-    queue_drained = (
-        cursor_exhausted
-        and int(q_counts.get("pending", 0)) == 0
-        and int(q_counts.get("claimed", 0)) == 0
-        and int(q_counts.get("awaiting_poc", 0)) == 0
-        and int(q_counts.get("awaiting_verdict", 0)) == 0
-        and int(q_counts.get("done", 0)) > 0
-        and store.get_engine_meta("mode_a_seed_pending", "0") != "1"
-    )
+    queue_drained = _is_global_queue_drained(store, q_counts)
     if prof_slug:
         gate1_ok = prof_slug in verified_slugs and len(profit_failures) == 0
     else:
         gate1_ok = queue_drained
     gate3_ok = (len(owned_slugs) > 0 or queue_drained) and len(verified_slugs) == len(owned_slugs) and len(pin_failures) == 0
     gate4_ok = len(profit_failures) == 0
-    if run_selftest:
-        selftest_buf = io.StringIO()
-        with contextlib.redirect_stdout(selftest_buf):
-            gate5_ok = cmd_selftest() == 0
-    else:
-        gate5_ok = True
+    gate5_ok = _run_quiet_selftest(run_selftest)
     gate_fs_ok = _fs_invariants_ok(eff_root, run_selftest, script_dir=script_dir, tools_dir=tools_dir)
     all_passed = gate1_ok and gate2_ok and gate3_ok and gate4_ok and gate5_ok and gate_fs_ok
     if all_passed:
@@ -23520,6 +23821,17 @@ def cmd_done(session_id: Optional[str] = None) -> int:
     try:
         with _exclusive_file_lock(LOCK_FILE_PATH):
             _import_relay_state(store, ARTIFACT_ROOT)
+            if (
+                not session_id
+                and not store.get_engine_meta("corpus_md_partition_seal", "")
+                and INCIDENT_CORPUS_PATH.is_file()
+                and sum(store.queue_counts().values()) > 0
+            ):
+                b_items_d, b_meta_d = _build_and_seal_mode_b_corpus(store)
+                if b_meta_d:
+                    store.put_proto_meta_batch(b_meta_d)
+                store.upsert_queue_items_batch(b_items_d)
+                _sync_sealed_receipts_for_batch(store, b_items_d)
         report = (
             _evaluate_session_done_gates(store, session_id=session_id, artifact_root=ARTIFACT_ROOT, run_selftest=True)
             if session_id
@@ -23540,6 +23852,9 @@ def cmd_done(session_id: Optional[str] = None) -> int:
 @contextlib.contextmanager
 def _offline_socket_guard() -> Iterator[None]:
     """selftest 실행 중 외부 인터넷 C-DNS 조회 및 TCP/UDP 소켓 송수신·시스템 프록시 우회를 물리적으로 차단(127.0.0.1/::1 루프백만 허용)."""
+    if getattr(socket.getaddrinfo, "__name__", "") == "_guarded_getaddrinfo":
+        yield
+        return
     orig_getaddrinfo = socket.getaddrinfo
     orig_gethostbyname = socket.gethostbyname
     orig_gethostbyname_ex = socket.gethostbyname_ex
@@ -23661,7 +23976,7 @@ def _offline_socket_guard() -> Iterator[None]:
 
 
 def cmd_selftest() -> int:
-    """`c:\\Defi\\python.exe -B -X utf8 Defi_구현.py selftest`: 외부 네트워크 소켓 차단 및 `audit_artifacts/_selftest_ns` 완전 격리 네임스페이스에서 T1~T32 전수 자체 검증."""
+    """`c:\\Defi\\python.exe -B -X utf8 Defi_구현.py selftest`: 외부 네트워크 소켓 차단 및 `audit_artifacts/_selftest_ns` 완전 격리 네임스페이스에서 T1~T40 전수 자체 검증."""
     global ARTIFACT_ROOT, CACHE_DIR, SQLITE_DB_PATH, QUEUE_FILE_PATH, QUEUE_LOCK_PATH
     global LOCK_FILE_PATH, SOURCIFY_PARQUET_DIR, SOURCIFY_MANIFEST_PATH
     results: List[Tuple[str, bool, str]] = []
@@ -23688,8 +24003,10 @@ def cmd_selftest() -> int:
     SOURCIFY_PARQUET_DIR = CACHE_DIR / "sourcify_v2"
     SOURCIFY_MANIFEST_PATH = SOURCIFY_PARQUET_DIR / "_manifest.json"
     tempfile.tempdir = str((selftest_ns / "_py_tmp").resolve())
+    selftest_guard_stack = contextlib.ExitStack()
 
     try:
+        selftest_guard_stack.enter_context(_offline_socket_guard())
         with _offline_socket_guard():
             def _rlp_create_low_nonce(sender_hex: str, nonce: int) -> str:
                 s_b = bytes.fromhex(_norm_addr(sender_hex)[2:])
@@ -32197,6 +32514,10 @@ contract MockLpPair37 {
             except Exception:
                 pass
     finally:
+        try:
+            selftest_guard_stack.close()
+        except Exception:
+            pass
         tempfile.tempdir = orig_tempdir
         SOURCIFY_MANIFEST_PATH = orig_sourcify_manifest
         SOURCIFY_PARQUET_DIR = orig_sourcify_parquet
