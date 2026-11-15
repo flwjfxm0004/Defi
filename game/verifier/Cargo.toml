@@ -1,0 +1,29 @@
+[package]
+name = "verifier"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+default-run = "verifier"
+
+[[bin]]
+name = "verifier"
+path = "src/main.rs"
+
+[dependencies]
+math_q32 = { workspace = true }
+verifier_abi = { workspace = true }
+ecs_soa = { workspace = true }
+physics_sdf = { workspace = true }
+ledger_core = { workspace = true }
+ledger_wal = { workspace = true }
+qvm = { workspace = true }
+render_host = { workspace = true }
+audio_opus = { workspace = true }
+net_quic = { workspace = true }
+rayon = { workspace = true }
+arc-swap = { workspace = true }
+ash = { workspace = true }
+ron = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
+blake3 = { workspace = true, features = ["std"] }

@@ -1,3 +1,2 @@
-# Git LFS tracking for large artifacts
-*.ipa filter=lfs diff=lfs merge=lfs -text
-
+# Preserve exact byte-for-byte line endings across PCs (protects SHA-256 pins.json & seal.lock)
+* -text

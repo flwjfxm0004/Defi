@@ -1,0 +1,6 @@
+[target.x86_64-pc-windows-gnu]
+# rustup 툴체인 내장 self-contained 링커 및 정적 CRT 사용 (사용자 경로 무의존).
+rustflags = [
+  "-C", "link-self-contained=yes",
+  "-C", "target-feature=+crt-static",
+]

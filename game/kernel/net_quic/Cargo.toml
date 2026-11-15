@@ -1,0 +1,26 @@
+[package]
+name = "net_quic"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+math_q32 = { workspace = true }
+verifier_abi = { workspace = true }
+ecs_soa = { workspace = true }
+physics_sdf = { workspace = true }
+tokio = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rustls-rustcrypto = { workspace = true }
+rcgen = { workspace = true }
+aes-gcm = { workspace = true }
+chacha20poly1305 = { workspace = true }
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+arc-swap = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+blake3 = { workspace = true, features = ["std"] }

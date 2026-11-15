@@ -1,0 +1,17 @@
+{
+  "game-forge-guard": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd /c c:\\Defi\\game\\target\\release\\verifier.exe hook-guard",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

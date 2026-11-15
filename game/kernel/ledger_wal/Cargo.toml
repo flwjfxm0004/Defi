@@ -1,0 +1,12 @@
+[package]
+name = "ledger_wal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+verifier_abi = { workspace = true }
+ledger_core = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+ron = { workspace = true }
+blake3 = { workspace = true, features = ["std"] }

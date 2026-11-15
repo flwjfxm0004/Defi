@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+  "kernel/math_q32",
+  "kernel/verifier_abi",
+  "kernel/ecs_soa",
+  "kernel/physics_sdf",
+  "kernel/ledger_core",
+  "kernel/qvm",
+  "kernel/ledger_wal",
+  "kernel/render_host",
+  "kernel/audio_opus",
+  "kernel/client_bin",
+  "kernel/net_quic",
+  "kernel/server_bin",
+  "verifier",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+math_q32 = { path = "kernel/math_q32" }
+verifier_abi = { path = "kernel/verifier_abi" }
+ecs_soa = { path = "kernel/ecs_soa" }
+physics_sdf = { path = "kernel/physics_sdf" }
+ledger_core = { path = "kernel/ledger_core" }
+qvm = { path = "kernel/qvm" }
+ledger_wal = { path = "kernel/ledger_wal" }
+render_host = { path = "kernel/render_host" }
+audio_opus = { path = "kernel/audio_opus" }
+net_quic = { path = "kernel/net_quic" }
+
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+ron = { version = "0.8", default-features = false }
+blake3 = { version = "1.5", default-features = false, features = ["pure"] }
+rayon = "1.10"
+arc-swap = "1.7"
+ash = { version = "0.38", default-features = false, features = ["loaded", "debug"] }
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+raw-window-handle = "0.6"
+ash-window = "0.13"
+gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }
+ktx2 = "0.4"
+cpal = "0.15"
+tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-rustcrypto = "0.0.2-alpha"
+rcgen = { version = "0.13", default-features = false, features = ["pem"] }
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc", "pkcs8"] }
+x25519-dalek = { version = "2.0", default-features = false, features = ["alloc", "static_secrets"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = { version = "0.10", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+overflow-checks = true

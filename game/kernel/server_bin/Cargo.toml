@@ -1,0 +1,17 @@
+[package]
+name = "server_bin"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+math_q32 = { workspace = true }
+verifier_abi = { workspace = true }
+ecs_soa = { workspace = true }
+physics_sdf = { workspace = true }
+ledger_core = { workspace = true }
+ledger_wal = { workspace = true }
+qvm = { workspace = true }
+net_quic = { workspace = true }
+arc-swap = { workspace = true }
+tokio = { workspace = true }

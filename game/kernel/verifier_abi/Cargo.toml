@@ -1,0 +1,10 @@
+[package]
+name = "verifier_abi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+math_q32 = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }

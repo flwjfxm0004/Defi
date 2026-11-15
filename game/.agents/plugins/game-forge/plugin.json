@@ -1,0 +1,6 @@
+{
+  "name": "game-forge",
+  "displayName": "Game Forge Separation-of-Powers Agents",
+  "version": "1.0.0",
+  "description": "Separation-of-powers autonomous MMO engine & liveops agents (game-architect, game-builder, game-prosecutor) bound by 게임.md."
+}

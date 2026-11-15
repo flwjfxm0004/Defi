@@ -1,0 +1,22 @@
+[package]
+name = "render_host"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+math_q32 = { workspace = true }
+verifier_abi = { workspace = true }
+ecs_soa = { workspace = true }
+physics_sdf = { workspace = true }
+ash = { workspace = true }
+gpu-allocator = { workspace = true }
+winit = { workspace = true }
+raw-window-handle = { workspace = true }
+ash-window = { workspace = true }
+gltf = { workspace = true }
+ktx2 = { workspace = true }
+arc-swap = { workspace = true }
+ron = { workspace = true }
+serde = { workspace = true, features = ["std"] }
+blake3 = { workspace = true, features = ["std"] }

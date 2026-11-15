@@ -1,1 +1,39 @@
+# Reproducible heavy caches & scratch (recreated by temp/피시.py & Defi_구현.py)
+# NOTE: Completed 1KB receipts (audit_artifacts/<slug>/{result,pins}.json, verdicts/, profit PoC)
+# and PC-bang relay checkpoints (audit_artifacts/_relay_state.json, _relay_seed_index.json) ARE tracked!
 sourcify_parquet/
+audit_artifacts/_cache/
+audit_artifacts/_shared_cache/
+audit_artifacts/_selftest_ns_*/
+audit_artifacts/*.lock
+audit_artifacts/_queue.json
+audit_artifacts/*/cache/
+audit_artifacts/*/traces/
+audit_artifacts/*/dumps/
+audit_artifacts/*/out/
+audit_artifacts/*/sources/
+audit_artifacts/*/_cast_env/
+audit_artifacts/*/poc_requests/
+audit_artifacts/*/forge/out/
+audit_artifacts/*/forge/cache/
+audit_artifacts/*/forge/broadcast/
+audit_artifacts/*/forge/_subproc_tmp/
+audit_artifacts/*/forge/_subproc_home/
+audit_artifacts/*/poc/cache/
+audit_artifacts/*/poc/out/
+audit_artifacts/*/poc/broadcast/
+audit_artifacts/*/checkpoint.json
+audit_artifacts/*/address_request.json
+audit_artifacts/*/discovered_addresses.json
+audit_artifacts/*/forge_output_*.json
+dump_*.json
+inv_full_out.json
+
+# Rust build output (rebuilt by `python.exe -B -X utf8 temp\피시.py restore --build`)
+game/target/
+
+# Python bytecode & virtualenvs
+__pycache__/
+*.py[co]
+.venv/
+.tmp/

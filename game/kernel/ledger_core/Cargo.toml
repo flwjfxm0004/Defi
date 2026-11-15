@@ -1,0 +1,10 @@
+[package]
+name = "ledger_core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+verifier_abi = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }
