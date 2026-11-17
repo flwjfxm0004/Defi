@@ -141,6 +141,7 @@ TEST_TAGS: Tuple[str, ...] = (
     "T45_DEDUP_DYNAMIC_FLASH_OPTIMIZER_AND_STAGE4_FLASH",
     "T46_ROUND6_SOTA_TRANSCENDENCE_100POINT",
     "T47_FIRST_PRINCIPLE_AGENT_OPTIMIZATION",
+    "T48_SOTA_SPLIT_FS_GATE",
 )
 
 
@@ -4498,6 +4499,7 @@ contract UnprotectedMintToken {
                         verified_sources={},
                         force_all=False,
                         mechanical_cap=48,
+                        compact_single_bundle=False,
                     )
                     st31.upsert_queue_item("t32-repair-done", 1, "ethereum", 150_000.0, ["0x" + "55" * 20])
                     st31.complete_queue_item("t32-repair-done", VERDICT_SAFE, 0.0)
@@ -12028,6 +12030,61 @@ contract MockLpPair37 {
                         "T47_FIRST_PRINCIPLE_AGENT_OPTIMIZATION",
                         t47_all_ok,
                         f"slim={t47_slim_ok},compact={t47_compact_ok},dup={t47_dup_ok},bundle={t47_bundle_ok}",
+                    )
+                )
+
+            if _want_test("T48_SOTA_SPLIT_FS_GATE", tag_filters):
+                # --- T48: FS gate 장비.md 허용(라이브 루트 .chrome-cdp 등 외부 흔들림과 분리해 허용목록으로 판정) + 다중출처 분할 최적화기 ---
+                t48_fs_ok = bool("장비.md" in _ALLOWED_ROOT_ENTRIES)
+                _c48a = {"provider": "morpho_blue", "vault": MORPHO_BLUE_MAINNET, "fee_bps": 0, "max_borrowable_raw": str(300)}
+                _c48b = {"provider": "balancer_v2", "vault": BALANCER_V2_VAULT, "fee_bps": 0, "max_borrowable_raw": str(300)}
+                _c48c = {"provider": "aave_v3", "vault": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2", "fee_bps": 5, "max_borrowable_raw": str(1000)}
+                _single48 = optimize_flash_split_for_capital([_c48a, _c48b, _c48c], 200)
+                _split48 = optimize_flash_split_for_capital([_c48a, _c48b], 500)
+                _short48 = optimize_flash_split_for_capital([_c48a], 1000)
+                _wrap48 = _build_stage4_flash_wrapped_slices(
+                    [CausalSlice(slice_id="ch_flash_capital_t48", target_address=_checksum("0x" + "aa" * 20), channel="CH_STORAGE", legs=["0xa9059cbb"], witness_candidates=[1], leg_targets=[_checksum("0x" + "aa" * 20)])],
+                    {"by_token": {_checksum("0x" + "ab" * 20): {"best": {**_c48a, "stage4_mode": 2, "fee_bps": 0}, "candidates": [{**_c48a, "stage4_mode": 2}, {**_c48b, "stage4_mode": 1}]}}},
+                    ["0x" + "ab" * 20],
+                    {_norm_addr("0x" + "ab" * 20): 18},
+                )
+                _hint48 = dict((_wrap48[0].flash_loan_hint or {})) if _wrap48 else {}
+                t48_split_ok = (
+                    _single48["sufficient"] is True
+                    and len(_single48["plan"]) == 1
+                    and int(_single48["total_fee_raw"]) == 0
+                    and _split48["sufficient"] is True
+                    and len(_split48["plan"]) == 2
+                    and _split48["plan"][0]["amount_raw"] == "300"
+                    and _split48["plan"][1]["amount_raw"] == "200"
+                    and _short48["sufficient"] is False
+                    and len(_wrap48) == 1
+                    and str(_hint48.get("total_borrowable_raw") or "") == "600"
+                    and isinstance(_hint48.get("split_plan"), dict)
+                    and _hint48["split_plan"].get("sufficient") is True
+                )
+                import ast as _ast48
+                import hashlib as _hl48
+                with open(SCRIPT_DIR / "Defi_구현.py", "r", encoding="utf-8") as _fh48:
+                    _src48 = _fh48.read()
+                _tree48 = _ast48.parse(_src48)
+                _seen48 = {}
+                _dup48 = 0
+                for _n48 in _ast48.walk(_tree48):
+                    if isinstance(_n48, _ast48.FunctionDef):
+                        _h48 = _hl48.sha256(_ast48.dump(_n48).encode()).hexdigest()
+                        if _h48 in _seen48:
+                            _dup48 += 1
+                        else:
+                            _seen48[_h48] = _n48.name
+                t48_dup_ok = (_dup48 == 0 and "os.environ" not in _src48)
+                t48_v4_ok = (_selector("unlock(bytes)").lower() in VALUE_SINK_SELECTORS)
+                t48_all_ok = t48_fs_ok and t48_split_ok and t48_dup_ok and t48_v4_ok
+                results.append(
+                    (
+                        "T48_SOTA_SPLIT_FS_GATE",
+                        t48_all_ok,
+                        f"fs={t48_fs_ok},split={t48_split_ok},v4={t48_v4_ok},dup={t48_dup_ok}",
                     )
                 )
 

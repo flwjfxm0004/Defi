@@ -11339,6 +11339,79 @@ _STAGE4_FLASH_MODE: Dict[str, int] = {
 }
 
 
+def optimize_flash_split_for_capital(
+    candidates: Sequence[Mapping[str, Any]],
+    required_raw: int,
+) -> Dict[str, Any]:
+    """
+    다중 출처 분할 차입 최적화기(2026-11-17 SOTA 초월): 단일 공급자 상한 초과 시
+    수수료 최하·상한 최대 순서로 탐욕 분할해 최소 총 수수료를 산출한다(정수 연산 전용, `float` 0건).
+    반환: `{sufficient, total_borrowable_raw, total_fee_raw, total_fee_bps, plan}`.
+    `plan` 각 원소는 `{provider, vault, amount_raw(str), fee_bps, fee_raw(str)}`이다.
+    """
+    req = max(0, int(required_raw or 0))
+    avail: List[Dict[str, Any]] = []
+    for cand in candidates or ():
+        if not isinstance(cand, Mapping):
+            continue
+        try:
+            cap = int(cand.get("max_borrowable_raw") or 0)
+        except (TypeError, ValueError):
+            cap = 0
+        if cap <= 0:
+            continue
+        try:
+            fee_bps = int(cand.get("fee_bps") or 0)
+        except (TypeError, ValueError):
+            fee_bps = 0
+        avail.append(
+            {
+                "provider": str(cand.get("provider") or ""),
+                "vault": _checksum(str(cand.get("vault") or "")) if _norm_addr(str(cand.get("vault") or "")) else str(cand.get("vault") or ""),
+                "cap": cap,
+                "fee_bps": max(0, fee_bps),
+            }
+        )
+    avail.sort(key=lambda c: (int(c["fee_bps"]), _FLASH_PROVIDER_RANK.get(str(c["provider"]), 99), -int(c["cap"]), str(c["vault"])))
+    total_cap = sum(int(c["cap"]) for c in avail)
+    plan: List[Dict[str, Any]] = []
+    total_fee_raw = 0
+    remaining = req
+    if req <= 0:
+        return {
+            "sufficient": True,
+            "total_borrowable_raw": str(total_cap),
+            "total_fee_raw": "0",
+            "total_fee_bps": 0,
+            "plan": [],
+        }
+    for cand in avail:
+        if remaining <= 0:
+            break
+        take = min(int(cand["cap"]), remaining)
+        fee_raw = (take * int(cand["fee_bps"]) + 9999) // 10000
+        total_fee_raw += fee_raw
+        plan.append(
+            {
+                "provider": str(cand["provider"]),
+                "vault": str(cand["vault"]),
+                "amount_raw": str(take),
+                "fee_bps": int(cand["fee_bps"]),
+                "fee_raw": str(fee_raw),
+            }
+        )
+        remaining -= take
+    sufficient = remaining <= 0
+    total_fee_bps = int((total_fee_raw * 10000) // req) if (sufficient and req > 0) else 0
+    return {
+        "sufficient": sufficient,
+        "total_borrowable_raw": str(total_cap),
+        "total_fee_raw": str(total_fee_raw),
+        "total_fee_bps": total_fee_bps,
+        "plan": plan,
+    }
+
+
 def _decode_abi_u256_word(raw_b: bytes, word_idx: int = 0) -> int:
     off = word_idx * 32
     if len(raw_b) < off + 32:
@@ -11739,12 +11812,26 @@ def discover_optimal_flash_sources_for_tokens(
         for item in sorted(agg_best_by_venue.values(), key=lambda x: x["_sort_key"])
     ]
     flash_search_needed = bool(c not in FLASH_PROVIDERS or unfunded_tokens)
+    optimal_split_by_token: Dict[str, Any] = {}
+    for t_chk_split, tok_doc_split in by_token.items():
+        cands_split = list((tok_doc_split.get("candidates") or []) if isinstance(tok_doc_split, Mapping) else [])
+        total_cap_split = 0
+        for _cand_split in cands_split:
+            if isinstance(_cand_split, Mapping):
+                try:
+                    total_cap_split += int(_cand_split.get("max_borrowable_raw") or 0)
+                except (TypeError, ValueError):
+                    pass
+        optimal_split_by_token[t_chk_split] = optimize_flash_split_for_capital(
+            cands_split, total_cap_split
+        )
     return {
         "chain": c,
         "block_pin": int(block_pin),
         "probed_onchain": probed_onchain,
         "by_token": by_token,
         "ranked_options": ranked_options,
+        "optimal_split_by_token": optimal_split_by_token,
         "unfunded_tokens": unfunded_tokens,
         "flash_search_needed": flash_search_needed,
     }
@@ -11809,11 +11896,31 @@ def _build_stage4_flash_wrapped_slices(
 
     cap_raw = int(chosen_best.get("max_borrowable_raw") or 0)
     t_dec = max(0, min(18, int((decimals_map or {}).get(_norm_addr(chosen_tok), 18))))
-    raw_ws = [10 ** t_dec, 100 * (10 ** t_dec), cap_raw // 4, cap_raw // 2, cap_raw]
+    split_plan_doc: Optional[Dict[str, Any]] = None
+    split_total_cap = cap_raw
+    try:
+        _chosen_entry = by_tok.get(chosen_tok)
+        _chosen_cands = list(_chosen_entry.get("candidates") or []) if isinstance(_chosen_entry, Mapping) else []
+        _stage4_cands = [
+            _cc
+            for _cc in _chosen_cands
+            if isinstance(_cc, Mapping)
+            and int(_cc.get("stage4_mode") or 0) in (1, 2, 3, 4)
+            and int(_cc.get("fee_bps") or 0) <= 9
+        ]
+        if _stage4_cands:
+            _total_stage4_cap = sum(int(_cc.get("max_borrowable_raw") or 0) for _cc in _stage4_cands)
+            if _total_stage4_cap > cap_raw:
+                split_total_cap = _total_stage4_cap
+                split_plan_doc = optimize_flash_split_for_capital(_stage4_cands, _total_stage4_cap)
+    except Exception:
+        split_plan_doc = None
+    eff_cap_raw = max(cap_raw, split_total_cap)
+    raw_ws = [10 ** t_dec, 100 * (10 ** t_dec), cap_raw // 4, cap_raw // 2, cap_raw, eff_cap_raw // 2, eff_cap_raw]
     witness_ws: List[int] = []
     seen_w: Set[int] = set()
     for w_i in raw_ws:
-        if 0 < w_i <= cap_raw and w_i not in seen_w:
+        if 0 < w_i <= eff_cap_raw and w_i not in seen_w:
             seen_w.add(w_i)
             witness_ws.append(w_i)
         if len(witness_ws) >= 4:
@@ -11838,6 +11945,8 @@ def _build_stage4_flash_wrapped_slices(
         "token": chosen_tok,
         "fee_bps": int(chosen_best.get("fee_bps") or 0),
         "max_borrowable_raw": str(cap_raw),
+        "total_borrowable_raw": str(split_total_cap),
+        "split_plan": dict(split_plan_doc) if split_plan_doc is not None else {},
     }
     wrapped: List[CausalSlice] = []
     for cand in [*pri_cands, *sec_cands]:
@@ -14718,6 +14827,8 @@ for _intent_sig in (
     "executeBatch((uint8,address,uint256,bytes)[])",
     "fill((bytes32,address,uint256,uint256,uint256,address),bytes)",
     "executeIntent(bytes,bytes,bytes32,bytes)",
+    # Uniswap V4 PoolManager.unlock(bytes) - hook unlock callback gateway (take/settle/balanceDelta coupling)
+    "unlock(bytes)",
 ):
     VALUE_SINK_SELECTORS.add(_selector(_intent_sig).lower())
 
@@ -24622,6 +24733,7 @@ def _domain_deltas(
     def _agg_snapshot(snap: Dict[str, int]) -> Dict[str, int]:
         has_explicit_native = any(k in native_keys or _norm_addr(k) == "0x0000000000000000000000000000000000000000" for k in snap)
         agg: Dict[str, int] = {}
+        seen_ck: Set[str] = set()
         for k, v in snap.items():
             nk = _norm_addr(k)
             raw_v = int(v or 0)
@@ -24639,7 +24751,11 @@ def _domain_deltas(
                 ck = "native"
             else:
                 ck = nk or k
-            agg[ck] = _sat_add_u256(agg.get(ck, 0), raw_v)
+            if ck in seen_ck:
+                agg[ck] = _sat_add_u256(agg.get(ck, 0), raw_v)
+            else:
+                agg[ck] = raw_v
+                seen_ck.add(ck)
         return agg
 
     cb_agg = _agg_snapshot(caller_before)
@@ -25679,6 +25795,7 @@ def emit_poc_requests_for_slug(
             "verified_exit_pools": exit_pool_summary,
             "flash_loan_options": flash_opts,
             "optimal_flash_by_token": eff_flash_plan.get("by_token") or {},
+            "optimal_split_by_token": eff_flash_plan.get("optimal_split_by_token") or {},
             "unfunded_flash_tokens": list(eff_flash_plan.get("unfunded_tokens") or ()),
             "flash_search_needed": bool(eff_flash_plan.get("flash_search_needed")),
             "principle_summary": principle_summary,
@@ -31770,7 +31887,7 @@ def process_agent_submissions(
                             ws,
                             rel_t,
                             sol_src,
-                            timeout_sec=75,
+                            timeout_sec=180,
                             allowed_caller=cid_caller,
                             fork_url=(rpc_u if block_pin > 0 else ""),
                             fork_block=block_pin,
@@ -34958,6 +35075,15 @@ def audit_single_protocol(
                 any_value_sink = True
                 any_open_entry = True
 
+            # Uniswap V4 hook surface(2026-11-17 SOTA): PoolManager 연결 시 unlock 콜백·take/settle/
+            # balanceDelta coupling을 미모의 Sink로 간주해 E2/E3 Safety 조기종료를 원천 차단한다(Fail-Open).
+            v4_mgr_set_s3 = frozenset(
+                _norm_addr(m_a) for m_a in UNISWAP_V4_POOL_MANAGERS.get(chain, ()) if _norm_addr(m_a)
+            )
+            if v4_mgr_set_s3 and any(_norm_addr(a) in v4_mgr_set_s3 for a in closure.all_addresses):
+                any_value_sink = True
+                any_open_entry = True
+
             e23_uncertain = bool(
                 closure.rpc_balance_incomplete
                 or closure.closure_truncated
@@ -36233,8 +36359,10 @@ _ALLOWED_ROOT_ENTRIES: FrozenSet[str] = frozenset(
         "tools",
         "vcruntime140.dll",
         "vcruntime140_1.dll",
+        ".chrome-cdp",
         "원하는 것.md",
         "작품",
+        "장비.md",
         "지시서.md",
         "초지능",
         "컨트랙트.md",
