@@ -134,14 +134,17 @@ def _isolated_subproc_env(scratch_root: Path) -> Dict[str, str]:
     return env_dict
 
 
-MIN_TVL_USD: float = 100_000.0
-MIN_PROFIT_USD: float = 100.0
+MIN_TVL_USD_DEC: Decimal = Decimal("100000")
+MIN_PROFIT_USD_DEC: Decimal = Decimal("100.00")
+MIN_TVL_USD: Decimal = MIN_TVL_USD_DEC
+MIN_PROFIT_USD: Decimal = MIN_PROFIT_USD_DEC
 PROFIT_FLOOR_DEC: Decimal = Decimal("100.00")
 MAX_AUDIT_BLOCK_LAG: int = 5
 CLAIM_TTL_SEC: int = 3600
 SOURCES_UNVERIFIED_TTL_SEC: int = 21600
 MAX_SQLITE_BYTES: int = 512 * 1024 * 1024
-FALLBACK_USD_KRW: float = 1400.0
+FALLBACK_USD_KRW_DEC: Decimal = Decimal("1400")
+FALLBACK_USD_KRW: Decimal = FALLBACK_USD_KRW_DEC
 
 # 3분류 최종 판정 상수 (`한화 즉시 <천단위콤마 양의 원화정수>원 이익 가능` | `안전` | `미검증 차단`)
 VERDICT_PROFIT: str = "한화 즉시 얼마 이익 가능"
@@ -1906,16 +1909,16 @@ class SQLiteStore:
         if not slug_list:
             return 0
         with self._write_tx():
-            if len(slug_list) <= 200:
-                q_marks = ",".join("?" for _ in slug_list)
-                existing_rows = self._conn.execute(
-                    f"SELECT slug, priority, tvl_usd, tvl_usd_dec, sort_rank, sort_rank_dec, status, addresses_json, principle_summary FROM audit_queue WHERE slug IN ({q_marks})",
-                    slug_list,
-                ).fetchall()
-            else:
-                existing_rows = self._conn.execute(
-                    "SELECT slug, priority, tvl_usd, tvl_usd_dec, sort_rank, sort_rank_dec, status, addresses_json, principle_summary FROM audit_queue"
-                ).fetchall()
+            existing_rows: List[Any] = []
+            for off_sq in range(0, len(slug_list), 200):
+                chunk_sq = slug_list[off_sq : off_sq + 200]
+                q_marks = ",".join("?" for _ in chunk_sq)
+                existing_rows.extend(
+                    self._conn.execute(
+                        f"SELECT slug, priority, tvl_usd, tvl_usd_dec, sort_rank, sort_rank_dec, status, addresses_json, principle_summary FROM audit_queue WHERE slug IN ({q_marks})",
+                        chunk_sq,
+                    ).fetchall()
+                )
             existing_map = {str(r["slug"]): dict(r) for r in existing_rows}
             for raw_item in items:
                 raw_slug = raw_item[0]
@@ -6544,7 +6547,9 @@ def _extract_cfg_entry_guard_profile(clean: bytes) -> Dict[str, Any]:
         is_bp = sel_sh in _COMMON_BOILERPLATE_SELECTORS
         if not (ep.reaches_value_sink or ep.reaches_sstore):
             continue
-        # Check for ReentrancyGuard / transient lock mutex: slot in (read_slots & written_slots) guarded by reverting JUMPI and written >=2 times (or transient slot)
+        # ReentrancyGuard mutex: slot in (read_slots & written_slots) guarded by reverting JUMPI and written >=2 times.
+        # EIP-1153 transient slots (flagged >= 1<<240) are NOT cleared on revert (ChainSecurity 2024 class), so single-write
+        # transient locks are insufficient; require >=2 writes for all slots including transient to avoid false Safe.
         shared_rw_slots = ep.read_slots & ep.written_slots
         has_mutex = False
         if shared_rw_slots:
@@ -6563,7 +6568,7 @@ def _extract_cfg_entry_guard_profile(clean: bytes) -> Dict[str, Any]:
                             if r_sl in shared_rw_slots:
                                 guarded_read_slots.add(r_sl)
             for m_sl in sorted(guarded_read_slots):
-                if slot_write_cnt.get(m_sl, 0) >= 2 or m_sl >= (1 << 240):
+                if slot_write_cnt.get(m_sl, 0) >= 2:
                     has_mutex = True
                     break
 
@@ -14688,7 +14693,21 @@ VALUE_SINK_SELECTORS: Set[str] = {
     "0x490e6cbc",  # collect(...)
     "0xab9c4b5d",  # flashLoan(...)
     "0x5cffe9de",  # flashLoanSimple(...)
+    # 2026 intent / AA / module-batch sinks (ERC-4337 handleOps, ERC-7579 executeBatch, UniswapX/CowSwap fill)
+    "0x1f6c34c9",  # handleOps(PackedUserOperation[],address) - ERC-4337 EntryPoint
+    "0x950fb655",  # executeBatch((uint8,address,uint256,bytes)[]) - ERC-7579/7702 batch
+    "0x662efd96",  # fill((bytes32,address,uint256,uint256,uint256,address),bytes) - UniswapX-style intent
+    "0x5d20067f",  # executeIntent(bytes,bytes,bytes32,bytes) - generic intent solver
 }
+
+# Computed hex for intent sinks to avoid manual errors (SOTA transcendence: intent economy blind spot)
+for _intent_sig in (
+    "handleOps((address,uint256,bytes32,bytes32,bytes32,bytes,bytes,bytes32,bytes32,bytes32,bytes,bytes32,bytes32,bytes32)[])",
+    "executeBatch((uint8,address,uint256,bytes)[])",
+    "fill((bytes32,address,uint256,uint256,uint256,address),bytes)",
+    "executeIntent(bytes,bytes,bytes32,bytes)",
+):
+    VALUE_SINK_SELECTORS.add(_selector(_intent_sig).lower())
 
 
 @dataclass
@@ -24552,6 +24571,13 @@ def _domain_deltas(
     w_dec_raw = int((decimals_map or {}).get(wnative, 18)) if wnative else 18
     w_dec = w_dec_raw if 0 <= w_dec_raw <= 77 else 18
 
+    _UINT256_MAX_SAT: int = (1 << 256) - 1
+
+    def _sat_add_u256(a: int, b: int) -> int:
+        # Solidity _satAdd cap (type(uint256).max) parity: Python int unbounded -> saturate to uint256 max
+        tot = int(a or 0) + int(b or 0)
+        return tot if tot <= _UINT256_MAX_SAT else _UINT256_MAX_SAT
+
     def _agg_snapshot(snap: Dict[str, int]) -> Dict[str, int]:
         has_explicit_native = any(k in native_keys or _norm_addr(k) == "0x0000000000000000000000000000000000000000" for k in snap)
         agg: Dict[str, int] = {}
@@ -24572,7 +24598,7 @@ def _domain_deltas(
                 ck = "native"
             else:
                 ck = nk or k
-            agg[ck] = agg.get(ck, 0) + raw_v
+            agg[ck] = _sat_add_u256(agg.get(ck, 0), raw_v)
         return agg
 
     cb_agg = _agg_snapshot(caller_before)
@@ -24703,11 +24729,11 @@ def judge_conservation_accounting(
     vault_after: Dict[str, int],
     gas_used: int = 150_000,
     gas_price_wei: int = 2_000_000_000,
-    flash_principal_usd: float = 0.0,
-    flash_fee_bps: float = 0.0,
+    flash_principal_usd: Union[Decimal, int, str] = Decimal("0"),
+    flash_fee_bps: Union[Decimal, int, str] = Decimal("0"),
     storage_slot_flips: Optional[List[Tuple[int, int, int]]] = None,
     decimals_map: Optional[Dict[str, int]] = None,
-    prices_map: Optional[Mapping[str, Union[float, Decimal, str]]] = None,
+    prices_map: Optional[Mapping[str, Union[Decimal, int, str]]] = None,
     router: Optional[RPCRouter] = None,
     block_pin: int = 0,
     live_head_block: int = 0,
@@ -32660,7 +32686,17 @@ def _find_reverse_upgraded_proxies(
 
 _FACTORY_CLONE_GETTER_SELS: Tuple[str, ...] = tuple(
     _selector(sig)
-    for sig in ("factory()", "masterContract()", "vaultFactory()", "poolFactory()", "deployer()")
+    for sig in (
+        "factory()",
+        "masterContract()",
+        "vaultFactory()",
+        "poolFactory()",
+        "deployer()",
+        "entryPoint()",
+        "moduleFactory()",
+        "solver()",
+        "intentSolver()",
+    )
 )
 
 
