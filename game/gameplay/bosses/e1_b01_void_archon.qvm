@@ -1,0 +1,41 @@
+// Season 1 Multi-Phase Adaptive Boss 01: Void Archon (`게임.md §4.3` — 0 invulnerability stall)
+// Pattern IDs are priority-encoded: `commit_commands` applies the highest emitted ID, so later phases
+// override earlier ones and loadout-adaptive responses override the neutral base within each phase.
+fn on_tick(self, target) {
+    read_hp bhp = self
+    read_shield bsh = self
+    const_q32 phase2_hp = 60000
+    const_q32 phase3_hp = 25000
+    cmp_lt_q32 in_p2 = bhp, phase2_hp
+    cmp_lt_q32 in_p3 = bhp, phase3_hp
+    has_trait_bit p_cryo = target, 0
+    has_trait_bit p_volt = target, 2
+    emit_boss_pattern self, 0
+    if p_cryo {
+        emit_boss_pattern self, 1
+    endif
+    if p_volt {
+        emit_boss_pattern self, 2
+    endif
+    if in_p2 {
+        emit_boss_pattern self, 3
+        if p_volt {
+            emit_boss_pattern self, 4
+        endif
+        read_pos bp = self
+        read_pos pp = target
+        sub_vec3 dir = pp, bp
+        const_q32 spd = 60
+        scale_vec3 pvel = dir, spd
+        const_q32 pdmg = 14
+        emit_projectile bp, pvel, pdmg
+    endif
+    if in_p3 {
+        emit_boss_pattern self, 5
+        const_q32 one = 1
+        cmp_lt_q32 exposed = bsh, one
+        if exposed {
+            emit_boss_pattern self, 6
+        endif
+    endif
+}

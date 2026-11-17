@@ -1,0 +1,17 @@
+// Gate Tactical Augment Tier 2 (Gold): Shatter Superconductor Breaker
+fn on_tick(self, target) {
+    read_shield tsh = target
+    const_q32 one = 1
+    cmp_ge_q32 shielded = tsh, one
+    if shielded {
+        const_q32 sh_burst = 95
+        emit_clash sh_burst
+    endif
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 resonance = sp, tp
+    const_q32 hp = 16
+    const_q32 sh = 32
+    const_q32 cg = 18
+    emit_damage hp, sh, cg
+}

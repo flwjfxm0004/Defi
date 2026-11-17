@@ -1,0 +1,13 @@
+// Season 2 Gate Tactical Augment Tier 1 (Silver): Temporal Echo Strike
+fn on_tick(self, target) {
+    read_vel sv = self
+    read_pos sp = self
+    const_q32_milli back = -250
+    fma_vec3 echo = sv, back, sp
+    const_q32 hp = 6
+    const_q32 sh = 10
+    const_q32 cg = 6
+    for i in 0..2 {
+        emit_damage hp, sh, cg
+    endfor
+}

@@ -1,0 +1,23 @@
+// Multi-Axis Resonance Trait 02: 4-Piece Matrix Quartet (Pyro × Void × Benediction)
+fn on_tick(self, target) {
+    has_trait_bit mat_two = self, 3
+    has_trait_bit mat_four = self, 4
+    read_pos sp = self
+    read_vel sv = self
+    const_q32 one = 1
+    fma_vec3 surge_pos = sv, one, sp
+    dot_vec3 k_dot = surge_pos, sp
+    if mat_two {
+        const_q32 burst = 65
+        emit_clash burst
+    endif
+    if mat_four {
+        const_q32 dash_y = 2
+        const_q32 zero = 0
+        make_vec3 lift = zero, dash_y, zero
+        emit_impulse lift
+        const_q32 rad = 16
+        const_q32_milli slow = 250
+        emit_phantasia surge_pos, rad, slow
+    endif
+}

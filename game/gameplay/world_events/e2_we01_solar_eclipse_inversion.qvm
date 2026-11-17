@@ -1,0 +1,17 @@
+// Season 2 Dynamic Open-World Environmental Physics Event: Solar Eclipse Local Gravity Inversion (`게임.md §1.1, §5.2`)
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 eclipse_phase = sp, tp
+    const_q32 zero = 0
+    const_q32 inv_grav_vy = 9
+    make_vec3 anti_grav = zero, inv_grav_vy, zero
+    emit_impulse anti_grav
+    sub_vec3 dir = tp, sp
+    const_q32 spd = 40
+    scale_vec3 flare_vel = dir, spd
+    const_q32 fdmg = 6
+    for i in 0..2 {
+        emit_projectile sp, flare_vel, fdmg
+    endfor
+}

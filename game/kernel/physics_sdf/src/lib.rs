@@ -15,7 +15,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use ecs_soa::{CombatArena, EntityId};
+use ecs_soa::{CombatArena, EntityId, MobilityMode};
 use math_q32::{Q32, QVec3};
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +108,7 @@ pub struct SparseSdfWorld {
     bricks: BTreeMap<BrickCoord, Arc<SdfBrick>>,
     undo_ring: Box<[TickUndoSlot]>,
     dirty_queue: BTreeSet<BrickCoord>,
+    last_stream_tick: BTreeMap<BrickCoord, u64>,
 }
 
 impl Default for SparseSdfWorld {
@@ -135,6 +136,7 @@ impl SparseSdfWorld {
             bricks: BTreeMap::new(),
             undo_ring: ring.into_boxed_slice(),
             dirty_queue: BTreeSet::new(),
+            last_stream_tick: BTreeMap::new(),
         }
     }
 
@@ -448,6 +450,7 @@ impl SparseSdfWorld {
         let max_bz = (center_voxel[2].saturating_add(r).saturating_add(1)).div_euclid(BRICK_INNER_DIM);
 
         let mut transitioned: u32 = 0;
+        let mut conductive_seeds: VecDeque<([i32; 3], u8)> = VecDeque::new();
         let mut bx = min_bx;
         while bx <= max_bx {
             let mut by = min_by;
@@ -507,6 +510,13 @@ impl SparseSdfWorld {
                                                 if cur == (ElementCellState::Water as u8)
                                                     || cur == (ElementCellState::ConductiveOre as u8) =>
                                             {
+                                                if (1..=8).contains(&lx)
+                                                    && (1..=8).contains(&ly)
+                                                    && (1..=8).contains(&lz)
+                                                    && conductive_seeds.len() < 128
+                                                {
+                                                    conductive_seeds.push_back(([wx, wy, wz], 0));
+                                                }
                                                 ElementCellState::ElectroCharged as u8
                                             }
                                             ElementStimulus::VoidGravityInvert if brick.sdf_cm[i] >= 0 => {
@@ -535,6 +545,99 @@ impl SparseSdfWorld {
                 by = by.saturating_add(1);
             }
             bx = bx.saturating_add(1);
+        }
+
+        // Cellular 6-neighbor conductive BFS diffusion (`전도 확산`, `게임.md §1.1`) across connected Water / ConductiveOre:
+        if stimulus == ElementStimulus::VoltDischarge {
+            const MAX_CONDUCTIVE_HOPS: u8 = 4;
+            const MAX_DIFFUSED_CELLS: u32 = 192;
+            let mut diffused: u32 = 0;
+            let dirs: [[i32; 3]; 6] = [
+                [1, 0, 0],
+                [-1, 0, 0],
+                [0, 1, 0],
+                [0, -1, 0],
+                [0, 0, 1],
+                [0, 0, -1],
+            ];
+            while let Some(([cx, cy, cz], hop)) = conductive_seeds.pop_front() {
+                if hop >= MAX_CONDUCTIVE_HOPS || diffused >= MAX_DIFFUSED_CELLS {
+                    continue;
+                }
+                for d in dirs {
+                    let nx = cx.saturating_add(d[0]);
+                    let ny = cy.saturating_add(d[1]);
+                    let nz = cz.saturating_add(d[2]);
+                    let f = self.sample_field(nx, ny, nz);
+                    if f == (ElementCellState::Water as u8)
+                        || f == (ElementCellState::ConductiveOre as u8)
+                    {
+                        let b_min_x = nx.saturating_sub(8).div_euclid(BRICK_INNER_DIM);
+                        let b_max_x = nx.saturating_add(1).div_euclid(BRICK_INNER_DIM);
+                        let b_min_y = ny.saturating_sub(8).div_euclid(BRICK_INNER_DIM);
+                        let b_max_y = ny.saturating_add(1).div_euclid(BRICK_INNER_DIM);
+                        let b_min_z = nz.saturating_sub(8).div_euclid(BRICK_INNER_DIM);
+                        let b_max_z = nz.saturating_add(1).div_euclid(BRICK_INNER_DIM);
+
+                        let mut wrote_interior = false;
+                        let mut dbx = b_min_x;
+                        while dbx <= b_max_x {
+                            let mut dby = b_min_y;
+                            while dby <= b_max_y {
+                                let mut dbz = b_min_z;
+                                while dbz <= b_max_z {
+                                    let lx_i = nx
+                                        .saturating_sub(dbx.saturating_mul(BRICK_INNER_DIM))
+                                        .saturating_add(1);
+                                    let ly_i = ny
+                                        .saturating_sub(dby.saturating_mul(BRICK_INNER_DIM))
+                                        .saturating_add(1);
+                                    let lz_i = nz
+                                        .saturating_sub(dbz.saturating_mul(BRICK_INNER_DIM))
+                                        .saturating_add(1);
+                                    let ncoord = BrickCoord {
+                                        bx: dbx,
+                                        by: dby,
+                                        bz: dbz,
+                                    };
+                                    if (0..10).contains(&lx_i)
+                                        && (0..10).contains(&ly_i)
+                                        && (0..10).contains(&lz_i)
+                                        && self.bricks.contains_key(&ncoord)
+                                        && self.snapshot_brick_for_undo(tick, ncoord)
+                                        && let Some(arc_b) = self.bricks.get_mut(&ncoord)
+                                    {
+                                        let b_mut = Arc::make_mut(arc_b);
+                                        let ci = SdfBrick::cell_index(
+                                            lx_i as usize,
+                                            ly_i as usize,
+                                            lz_i as usize,
+                                        );
+                                        b_mut.field_state[ci] = ElementCellState::ElectroCharged as u8;
+                                        self.dirty_queue.insert(ncoord);
+                                        if (1..=8).contains(&lx_i)
+                                            && (1..=8).contains(&ly_i)
+                                            && (1..=8).contains(&lz_i)
+                                        {
+                                            wrote_interior = true;
+                                        }
+                                    }
+                                    dbz = dbz.saturating_add(1);
+                                }
+                                dby = dby.saturating_add(1);
+                            }
+                            dbx = dbx.saturating_add(1);
+                        }
+                        if wrote_interior {
+                            transitioned = transitioned.saturating_add(1);
+                            diffused = diffused.saturating_add(1);
+                            if conductive_seeds.len() < 256 {
+                                conductive_seeds.push_back(([nx, ny, nz], hop.saturating_add(1)));
+                            }
+                        }
+                    }
+                }
+            }
         }
         transitioned
     }
@@ -599,6 +702,24 @@ impl SparseSdfWorld {
     }
 
     #[inline]
+    pub fn brick(&self, coord: BrickCoord) -> Option<&SdfBrick> {
+        self.bricks.get(&coord).map(Arc::as_ref)
+    }
+
+    /// Applies an authoritative brick synchronized over a per-chunk reliable QUIC stream (`게임.md §9.1`),
+    /// enforcing monotonic `server_tick` ordering per brick across independent QUIC streams.
+    pub fn apply_streamed_brick(&mut self, coord: BrickCoord, brick: SdfBrick, server_tick: u64) -> bool {
+        let prev_tick = self.last_stream_tick.get(&coord).copied().unwrap_or(0);
+        if server_tick < prev_tick {
+            return false;
+        }
+        self.last_stream_tick.insert(coord, server_tick);
+        self.bricks.insert(coord, Arc::new(brick));
+        self.dirty_queue.insert(coord);
+        true
+    }
+
+    #[inline]
     pub fn sample_sdf_cm(&self, wx: i32, wy: i32, wz: i32) -> i16 {
         let bx = wx.div_euclid(BRICK_INNER_DIM);
         let by = wy.div_euclid(BRICK_INNER_DIM);
@@ -626,7 +747,40 @@ impl SparseSdfWorld {
         }
     }
 
-    /// Resolves player/entity SDF ground collision & environmental field impulses (`Updraft`, `InvertedGravity`).
+    #[inline]
+    pub fn has_adjacent_wall(&self, wx: i32, wy: i32, wz: i32) -> bool {
+        self.sample_sdf_cm(wx.saturating_add(1), wy, wz) <= 80
+            || self.sample_sdf_cm(wx.saturating_sub(1), wy, wz) <= 80
+            || self.sample_sdf_cm(wx, wy, wz.saturating_add(1)) <= 80
+            || self.sample_sdf_cm(wx, wy, wz.saturating_sub(1)) <= 80
+    }
+
+    /// Deterministic 8-step 3D SDF line-of-sight acoustic occlusion raycast (`게임.md §1.3, §8.1`).
+    pub fn raycast_sdf_occlusion(&self, listener: QVec3, emitter: QVec3) -> bool {
+        let delta = emitter.sat_sub(listener);
+        let dist = delta.length();
+        if dist <= Q32::ONE {
+            return false;
+        }
+        let mut step: i32 = 1;
+        while step <= 7 {
+            let t = Q32::from_ratio_i32(step, 8);
+            let p = listener.sat_add(delta.scale(t));
+            let s = self.sample_sdf_cm(
+                p.x.to_int_floor(),
+                p.y.to_int_floor(),
+                p.z.to_int_floor(),
+            );
+            if s < 0 {
+                return true;
+            }
+            step = step.saturating_add(1);
+        }
+        false
+    }
+
+    /// Resolves full 3D SDF gradient collision, SDF wall-run adjacency, and all 4 reactive field states
+    /// (`InvertedGravity`, `UpdraftColumn`, `FrozenIce`, `ElectroCharged`) (`게임.md §1.1, §8.1`).
     pub fn resolve_entity_sdf_contacts(&self, arena: &mut CombatArena, id: EntityId, dt: Q32) {
         let Some(mut pos) = arena.position(id) else {
             return;
@@ -634,26 +788,72 @@ impl SparseSdfWorld {
         let Some(mut vel) = arena.velocity(id) else {
             return;
         };
+        let slot = id.0 as usize;
         let wx = pos.x.to_int_floor();
         let wy = pos.y.to_int_floor();
         let wz = pos.z.to_int_floor();
 
+        let wall_adj = self.has_adjacent_wall(wx, wy, wz);
+        let is_wall_running = arena.mobility[slot] == (MobilityMode::WallRun as u8) && wall_adj;
+        if arena.mobility[slot] == (MobilityMode::WallRun as u8) && !wall_adj {
+            arena.mobility[slot] = MobilityMode::Airborne as u8;
+        }
+
         let field = self.sample_field(wx, wy, wz);
+        let field_below = self.sample_field(wx, wy.saturating_sub(1), wz);
         let gravity = if field == (ElementCellState::InvertedGravity as u8) {
             Q32::from_int(15)
         } else if field == (ElementCellState::UpdraftColumn as u8) {
             Q32::from_int(22)
+        } else if is_wall_running {
+            Q32::ZERO
         } else {
             Q32::from_int(-20)
         };
         vel.y = vel.y.sat_add(gravity.sat_mul(dt));
 
+        // ElectroCharged conductive field shock impulse + charge induction:
+        if field == (ElementCellState::ElectroCharged as u8)
+            || field_below == (ElementCellState::ElectroCharged as u8)
+        {
+            vel.y = vel.y.sat_add(Q32::from_int(4).sat_mul(dt));
+            arena.charge[slot] = arena.charge[slot]
+                .sat_add(Q32::from_int(6).sat_mul(dt))
+                .clamp_val(Q32::ZERO, Q32::from_int(100));
+        }
+
+        // Full 3D central-difference SDF normal resolution (`0` vertical-wall teleporting!):
         let sdf_cm = self.sample_sdf_cm(wx, wy, wz);
         if sdf_cm < 0 {
-            let push_m = Q32::from_ratio_i32((sdf_cm as i32).saturating_neg(), 100);
-            pos.y = pos.y.sat_add(push_m);
-            if vel.y < Q32::ZERO {
-                vel.y = Q32::ZERO;
+            let gx = (self.sample_sdf_cm(wx.saturating_add(1), wy, wz) as i32)
+                .saturating_sub(self.sample_sdf_cm(wx.saturating_sub(1), wy, wz) as i32);
+            let gy = (self.sample_sdf_cm(wx, wy.saturating_add(1), wz) as i32)
+                .saturating_sub(self.sample_sdf_cm(wx, wy.saturating_sub(1), wz) as i32);
+            let gz = (self.sample_sdf_cm(wx, wy, wz.saturating_add(1)) as i32)
+                .saturating_sub(self.sample_sdf_cm(wx, wy, wz.saturating_sub(1)) as i32);
+            let grad = QVec3::new(Q32::from_int(gx), Q32::from_int(gy), Q32::from_int(gz));
+            let mut nrm = grad.normalize_or_zero();
+            if nrm == QVec3::ZERO {
+                nrm = QVec3::new(Q32::ZERO, Q32::ONE, Q32::ZERO);
+            }
+            let push_m = Q32::from_ratio_i32((sdf_cm as i32).saturating_neg(), 100)
+                .clamp_val(Q32::ZERO, Q32::ONE);
+            pos = pos.sat_add(nrm.scale(push_m));
+            let vn = vel
+                .x
+                .sat_mul(nrm.x)
+                .sat_add(vel.y.sat_mul(nrm.y))
+                .sat_add(vel.z.sat_mul(nrm.z));
+            if vn < Q32::ZERO {
+                vel = vel.sat_sub(nrm.scale(vn));
+            }
+            // FrozenIce preserves 100% frictionless glide + slight forward boost; normal rock has mild traction:
+            let on_ice = field == (ElementCellState::FrozenIce as u8)
+                || field_below == (ElementCellState::FrozenIce as u8);
+            if on_ice {
+                let speed_boost = Q32::from_ratio_i32(101, 100);
+                vel.x = vel.x.sat_mul(speed_boost).clamp_val(Q32::from_int(-45), Q32::from_int(45));
+                vel.z = vel.z.sat_mul(speed_boost).clamp_val(Q32::from_int(-45), Q32::from_int(45));
             }
         }
         arena.set_position(id, pos);
@@ -808,11 +1008,18 @@ impl Default for CompressedMotionDb {
             }
             let mut k: usize = 0;
             while k < COSMETIC_BONES {
-                db.cosmetic_poses_q16[c][k] = [
-                    ((k as i32).saturating_mul(256)).saturating_add(ci.saturating_mul(128)),
-                    32_768,
-                    0,
-                ];
+                // `k = 0` (`foot_l`) and `k = 1` (`foot_r`) rest directly on ground plane `y = 0` (`0` floating!):
+                db.cosmetic_poses_q16[c][k] = if k == 0 {
+                    [-9_830, 0, (ci % 5).saturating_sub(2).saturating_mul(2_048)]
+                } else if k == 1 {
+                    [9_830, 0, (2_i32.saturating_sub(ci % 5)).saturating_mul(2_048)]
+                } else {
+                    [
+                        ((k as i32).saturating_mul(256)).saturating_add(ci.saturating_mul(128)),
+                        (k as i32).saturating_mul(8_192),
+                        0,
+                    ]
+                };
                 k = k.saturating_add(1);
             }
             c = c.saturating_add(1);
@@ -843,11 +1050,32 @@ impl CompressedMotionDb {
         dt: Q32,
         state: &mut InertialMotionState,
     ) {
+        self.step_combat_skeleton_action_q32(root_pos, root_vel, weapon_slot, 0, dt, state);
+    }
+
+    /// Action- & Animation-Cancel-aware combat hurtbox skeleton FK (`게임.md §1.3, §8.1`).
+    pub fn step_combat_skeleton_action_q32(
+        &self,
+        root_pos: QVec3,
+        root_vel: QVec3,
+        weapon_slot: u8,
+        action_mask: u16,
+        dt: Q32,
+        state: &mut InertialMotionState,
+    ) {
+        let action_bias = if (action_mask & 0x000E) != 0 {
+            // Dodge / Parry / Swap cancel shifts feature code immediately to cancel/counter clips:
+            Q32::HALF
+        } else if (action_mask & 0x0001) != 0 {
+            Q32::from_ratio_i32(1, 8)
+        } else {
+            Q32::ZERO
+        };
         let query = [
             root_vel.x.clamp_val(Q32::NEG_ONE, Q32::ONE),
             root_vel.y.clamp_val(Q32::NEG_ONE, Q32::ONE),
             root_vel.z.clamp_val(Q32::NEG_ONE, Q32::ONE),
-            Q32::from_ratio_i32(weapon_slot as i32, 4),
+            Q32::from_ratio_i32(weapon_slot as i32, 4).sat_add(action_bias),
         ];
 
         let mut best_clip: usize = 0;
@@ -930,7 +1158,8 @@ impl CompressedMotionDb {
     /// Synthesizes secondary cosmetic bones & foot-IK once on the final post-rollback sub-tick (`게임.md §8.1`).
     pub fn synthesize_final_subtick_cosmetics(&self, root_pos: QVec3, ground_sdf_cm: i16, state: &mut InertialMotionState) {
         let clip = (state.active_clip as usize).min(MOTION_CLIPS.saturating_sub(1));
-        let ik_lift = Q32::from_ratio_i32((ground_sdf_cm as i32).saturating_neg().max(0), 100);
+        let ik_lift = Q32::from_ratio_i32((ground_sdf_cm as i32).saturating_neg().max(-35), 100)
+            .clamp_val(Q32::from_ratio_i32(-35, 100), Q32::from_ratio_i32(45, 100));
         let mut k: usize = 0;
         while k < COSMETIC_BONES {
             let raw = self.cosmetic_poses_q16[clip][k];
@@ -940,6 +1169,32 @@ impl CompressedMotionDb {
                 Q32::promote_q16_16(raw[2]),
             );
             state.cosmetic_world_bones[k] = root_pos.sat_add(local);
+            k = k.saturating_add(1);
+        }
+    }
+
+    /// Per-foot 3D SDF terrain contact IK solver (`foot_l` = 0, `foot_r` = 1) (`게임.md §1.3, §8.1`).
+    pub fn synthesize_foot_ik_world(&self, root_pos: QVec3, world: &SparseSdfWorld, state: &mut InertialMotionState) {
+        let clip = (state.active_clip as usize).min(MOTION_CLIPS.saturating_sub(1));
+        let mut k: usize = 0;
+        while k < COSMETIC_BONES {
+            let raw = self.cosmetic_poses_q16[clip][k];
+            let base_x = root_pos.x.sat_add(Q32::promote_q16_16(raw[0]));
+            let base_y = root_pos.y.sat_add(Q32::promote_q16_16(raw[1]));
+            let base_z = root_pos.z.sat_add(Q32::promote_q16_16(raw[2]));
+            let final_y = if k < 2 {
+                let foot_sdf = world.sample_sdf_cm(
+                    base_x.to_int_floor(),
+                    base_y.to_int_floor(),
+                    base_z.to_int_floor(),
+                );
+                let delta_m = Q32::from_ratio_i32((foot_sdf as i32).saturating_neg(), 100)
+                    .clamp_val(Q32::from_ratio_i32(-35, 100), Q32::from_ratio_i32(45, 100));
+                base_y.sat_add(delta_m)
+            } else {
+                base_y
+            };
+            state.cosmetic_world_bones[k] = QVec3::new(base_x, final_y, base_z);
             k = k.saturating_add(1);
         }
     }
@@ -996,7 +1251,9 @@ mod tests {
         let reacted2 = world.apply_element_stimulus(11, [11, 6, 4], 2, ElementStimulus::VoltDischarge);
         assert!(carved1 > 0 && carved2 > 0);
         assert!(reacted1 > 0 && reacted2 > 0);
-        // Far voxel `[15, 4, 0]` outside Euclidean radius of `[4, 4, 4]` (`r=3`) and `[11, 4, 11]` (`r=2`) remains Water!
+        // Conductive diffusion (`전도 확산`) reaches `[14, 6, 4]` outside initial `r=2` sphere (`dx=3 => d_sq=9 > 4`)!
+        assert_eq!(world.sample_field(14, 6, 4), ElementCellState::ElectroCharged as u8);
+        // Far voxel `[15, 4, 0]` (`7 > 4` hops away) remains Water!
         assert_eq!(world.sample_field(15, 4, 0), ElementCellState::Water as u8);
         assert_ne!(world.state_hash(), hash_t0);
 

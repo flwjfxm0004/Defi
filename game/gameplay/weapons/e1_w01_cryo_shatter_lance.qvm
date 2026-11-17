@@ -1,0 +1,15 @@
+// Season 1 Weapon 01: Cryo × Fortitude — Shatter Lance
+fn on_tick(self, target) {
+    call prelude_shatter_gate(self, target) -> gated_sh
+    const_q32_milli hp = 11000
+    const_q32_milli sh = 15000
+    const_q32 cg = 8
+    emit_damage hp, sh, cg
+    has_trait_bit cryo_awk = self, 12
+    if cryo_awk {
+        read_pos sp = self
+        const_q32 rad = 10
+        const_q32_milli slow = 300
+        emit_phantasia sp, rad, slow
+    endif
+}

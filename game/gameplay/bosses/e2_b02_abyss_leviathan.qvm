@@ -1,0 +1,36 @@
+// Season 2 Multi-Phase Adaptive Boss 02: Abyss Leviathan (`S=2` full boss replacement)
+// Priority-encoded pattern IDs (highest emitted ID wins at commit).
+fn on_tick(self, target) {
+    read_shield bsh = self
+    read_hp bhp = self
+    const_q32 one = 1
+    cmp_ge_q32 armored = bsh, one
+    const_q32 p2_hp = 40000
+    cmp_lt_q32 in_p2 = bhp, p2_hp
+    has_trait_bit s2_aether = target, 8
+    has_trait_bit s2_solar = target, 9
+    emit_boss_pattern self, 0
+    if armored {
+        emit_boss_pattern self, 1
+    endif
+    if s2_solar {
+        emit_boss_pattern self, 2
+        const_q32 z = 0
+        const_q32 surge = 4
+        make_vec3 lunge = surge, z, z
+        emit_impulse lunge
+    endif
+    if s2_aether {
+        emit_boss_pattern self, 3
+    endif
+    if in_p2 {
+        emit_boss_pattern self, 7
+        if s2_aether {
+            emit_boss_pattern self, 8
+        endif
+    endif
+    const_q32 hp = 9
+    const_q32 sh = 16
+    const_q32 cg = 0
+    emit_damage hp, sh, cg
+}

@@ -1,0 +1,46 @@
+// Shared deterministic acyclic DAG helper library (`게임.md §7.1, §8.3`)
+
+fn prelude_shatter_gate(self, target) {
+    read_shield cur_sh = target
+    const_q32 lo = 5
+    const_q32 hi = 25
+    clamp_q32 out_sh = cur_sh, lo, hi
+    return out_sh
+}
+
+fn prelude_kinematic_step(self, target) {
+    read_pos sp = self
+    read_vel sv = self
+    const_q32 one = 1
+    fma_vec3 projected = sv, one, sp
+    dot_vec3 energy = projected, sp
+    return energy
+}
+
+fn prelude_charge_window(self, target) {
+    read_charge ch = self
+    const_q32 full = 80
+    cmp_ge_q32 ready = ch, full
+    const_q32 base = 11
+    return base
+}
+
+fn prelude_range_probe(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    dist_sq_vec3 d2 = tp, sp
+    return d2
+}
+
+fn prelude_resonance_check(self, target) {
+    has_trait_bit r0 = self, 0
+    read_shield sh = self
+    return sh
+}
+
+fn prelude_boss_phase_gate(self, target) {
+    read_hp hp_cur = self
+    const_q32 mid_hp = 600
+    cmp_lt_q32 p2 = hp_cur, mid_hp
+    return hp_cur
+}

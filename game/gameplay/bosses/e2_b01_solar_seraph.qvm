@@ -1,0 +1,32 @@
+// Season 2 Multi-Phase Adaptive Boss 01: Solar Seraph (`S=2` full boss replacement)
+// Priority-encoded pattern IDs (highest emitted ID wins at commit).
+fn on_tick(self, target) {
+    read_pos bp = self
+    read_pos pp = target
+    dot_vec3 elev = bp, pp
+    read_hp bhp = self
+    const_q32 enrage_hp = 45000
+    cmp_lt_q32 solar_flare = bhp, enrage_hp
+    has_trait_bit s2_aether = target, 8
+    has_trait_bit s2_chrono = target, 10
+    emit_boss_pattern self, 0
+    if s2_chrono {
+        emit_boss_pattern self, 1
+    endif
+    if s2_aether {
+        emit_boss_pattern self, 2
+    endif
+    if solar_flare {
+        emit_boss_pattern self, 5
+        if s2_aether {
+            emit_boss_pattern self, 6
+        endif
+        sub_vec3 dir = pp, bp
+        const_q32 spd = 60
+        scale_vec3 lvel = dir, spd
+        const_q32 ldmg = 12
+        for i in 0..2 {
+            emit_projectile bp, lvel, ldmg
+        endfor
+    endif
+}

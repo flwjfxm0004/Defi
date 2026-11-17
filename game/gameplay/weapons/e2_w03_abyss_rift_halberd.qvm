@@ -1,0 +1,14 @@
+// Season 2 Weapon 03: Abyss × Fortitude — Rift Halberd
+fn on_tick(self, target) {
+    read_hp thp = target
+    read_charge sch = self
+    const_q32_milli hp = 5480
+    const_q32_milli sh = 7500
+    const_q32 cg = 5
+    for i in 0..2 {
+        emit_damage hp, sh, cg
+    endfor
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 cleave = sp, tp
+}

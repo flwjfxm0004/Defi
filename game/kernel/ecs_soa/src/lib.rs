@@ -338,6 +338,27 @@ impl CombatArena {
         true
     }
 
+    /// Deterministically despawns every live `Projectile` farther than `max_dist` from `center`
+    /// (bounded projectile population for `O(P * N)` hit resolution, `게임.md §8.1`). Returns despawn count.
+    pub fn despawn_projectiles_beyond(&mut self, center: QVec3, max_dist: Q32) -> u32 {
+        let lim_sq = max_dist.mul_wide(max_dist);
+        let mut removed: u32 = 0;
+        let mut s: usize = 0;
+        while s < MAX_ENTITIES {
+            if self.alive[s] != 0 && self.kinds[s] == (EntityKind::Projectile as u8) {
+                let p = QVec3::new(self.pos_x[s], self.pos_y[s], self.pos_z[s]);
+                if p.dist_sq_wide(center) > lim_sq {
+                    let g = self.generations[s];
+                    if self.despawn(EntityId(s as u32, g)) {
+                        removed = removed.saturating_add(1);
+                    }
+                }
+            }
+            s = s.saturating_add(1);
+        }
+        removed
+    }
+
     #[inline]
     pub fn is_valid(&self, id: EntityId) -> bool {
         let slot = id.0 as usize;
@@ -383,10 +404,31 @@ impl CombatArena {
     }
 
     /// Applies player input with zero-cooldown (`<= 0.05s`) 3-weapon swap preserving full momentum & altitude,
-    /// plus `Discharge` burst on full `Charge` (`게임.md §1.2`).
+    /// single-frame Animation Cancel, and `Discharge` burst on full `Charge` (`게임.md §1.1~§1.3`).
     pub fn apply_player_input(&mut self, player: EntityId, input: &InputFrame, dt: Q32, out_cmds: &mut CommandBuffer) {
+        let _ = self.apply_player_input_with_hurtbox(
+            player,
+            input,
+            (QVec3::ZERO, Q32::from_int(4_096), false),
+            dt,
+            out_cmds,
+        );
+    }
+
+    /// Spatial 3D hurtbox-aligned player input & combat resolver (`게임.md §1.1~§1.3`).
+    /// `hurtbox = (weapon_bone_pos, weapon_reach, enforce_bone_reach)`.
+    /// Returns `true` when a primary weapon strike connects with the target hurtbox in this frame.
+    pub fn apply_player_input_with_hurtbox(
+        &mut self,
+        player: EntityId,
+        input: &InputFrame,
+        hurtbox: (QVec3, Q32, bool),
+        dt: Q32,
+        out_cmds: &mut CommandBuffer,
+    ) -> bool {
+        let (weapon_bone_pos, weapon_reach, enforce_bone_reach) = hurtbox;
         if !self.is_valid(player) {
-            return;
+            return false;
         }
         let s = player.0 as usize;
         let requested_slot = input.weapon_slot().min(2);
@@ -394,23 +436,34 @@ impl CombatArena {
         let action_mask = input.action_mask();
 
         if requested_slot != self.active_weapon[s] {
-            // Instant atomic weapon swap (`0` cooldown, `0` global lock, velocity & altitude untouched!).
+            // Instant atomic weapon swap (`0` cooldown, `0` global lock, immediate Animation Cancel, velocity & altitude untouched!).
             self.active_weapon[s] = requested_slot;
+            self.attack_cooldown[s] = 0;
             self.swap_timer[s] = dt.clamp_val(Q32::ZERO, Q32::MAX_SWAP_SEC);
             if self.charge[s] >= Q32::from_int(100) {
                 self.charge[s] = Q32::ZERO;
                 if let Some(boss) = self.first_alive_of_kind(EntityKind::Boss) {
-                    let _ = out_cmds.push(SimCommand::DealDamage {
-                        source: player,
-                        target: boss,
-                        hp_damage: Q32::from_int(85),
-                        shatter_damage: Q32::from_int(55),
-                        charge_gain: Q32::ZERO,
-                    });
+                    let b = boss.0 as usize;
+                    let b_pos = QVec3::new(self.pos_x[b], self.pos_y[b], self.pos_z[b]);
+                    let dis_reach = weapon_reach.sat_add(Q32::from_int(8));
+                    if !enforce_bone_reach || weapon_bone_pos.dist_sq_wide(b_pos) <= dis_reach.mul_wide(dis_reach) {
+                        let _ = out_cmds.push(SimCommand::DealDamage {
+                            source: player,
+                            target: boss,
+                            hp_damage: Q32::from_int(85),
+                            shatter_damage: Q32::from_int(55),
+                            charge_gain: Q32::ZERO,
+                        });
+                    }
                 }
             }
         } else {
             self.swap_timer[s] = Q32::ZERO;
+        }
+
+        // Single-frame Animation Cancel on Dodge or Parry (`게임.md §1.3`):
+        if (action_mask & (actions::DODGE_PHANTASIA | actions::PARRY_CLASH)) != 0 {
+            self.attack_cooldown[s] = 0;
         }
 
         // Inertia-preserving 3D mobility transitions (zero stamina gate, zero artificial damping!).
@@ -423,7 +476,12 @@ impl CombatArena {
             next_v.y = next_v.y.sat_add(Q32::from_int(18).sat_mul(dt));
         } else if (action_mask & actions::GRAPPLE_HOOK) != 0 {
             self.mobility[s] = MobilityMode::Grapple as u8;
-            next_v = next_v.sat_add(move_vec.scale(Q32::from_int(14)));
+            let grapple_pull = QVec3::new(
+                move_vec.x.sat_mul(Q32::from_int(36)),
+                Q32::from_int(24),
+                move_vec.z.sat_mul(Q32::from_int(36)),
+            );
+            next_v = next_v.sat_add(grapple_pull.scale(dt));
         } else if (action_mask & actions::GLIDE_WING) != 0 {
             self.mobility[s] = MobilityMode::Glide as u8;
             if next_v.y < Q32::from_int(-2) {
@@ -436,48 +494,99 @@ impl CombatArena {
             }
         } else if (action_mask & actions::SURFACE_SLIDE) != 0 {
             self.mobility[s] = MobilityMode::SurfaceSlide as u8;
+            // Redirect downward landing momentum into tangential low-friction surface slide speed:
+            let downward = if next_v.y < Q32::ZERO {
+                next_v.y.sat_neg()
+            } else {
+                Q32::ZERO
+            };
+            let slide_accel = Q32::from_int(16).sat_add(downward.sat_mul(Q32::HALF));
+            next_v = next_v.sat_add(move_vec.scale(slide_accel.sat_mul(dt)));
+            next_v.y = next_v.y.sat_sub(Q32::from_int(6).sat_mul(dt));
         }
 
         self.vel_x[s] = next_v.x;
         self.vel_y[s] = next_v.y;
         self.vel_z[s] = next_v.z;
 
+        let mut connected_hit = false;
         // Primary attack & Phantasia / Clash counter loop (`게임.md §1.2`).
         if let Some(boss) = self.first_alive_of_kind(EntityKind::Boss) {
             let b = boss.0 as usize;
+            let b_pos = QVec3::new(self.pos_x[b], self.pos_y[b], self.pos_z[b]);
+            let in_hurtbox_range = !enforce_bone_reach
+                || weapon_bone_pos.dist_sq_wide(b_pos) <= weapon_reach.mul_wide(weapon_reach);
+
             if (action_mask & actions::PRIMARY_ATTACK) != 0 && self.attack_cooldown[s] == 0 {
                 self.attack_cooldown[s] = 12;
-                let (hp_dmg, sh_dmg, ch_gain) = match self.active_weapon[s] {
-                    0 => (Q32::from_int(14), Q32::from_int(45), Q32::from_int(10)),
-                    1 => (Q32::from_int(18), Q32::from_int(12), Q32::from_int(28)),
-                    _ => (Q32::from_int(24), Q32::from_int(20), Q32::from_int(16)),
-                };
-                let _ = out_cmds.push(SimCommand::DealDamage {
-                    source: player,
-                    target: boss,
-                    hp_damage: hp_dmg,
-                    shatter_damage: sh_dmg,
-                    charge_gain: ch_gain,
-                });
+                if in_hurtbox_range {
+                    let (hp_dmg, sh_dmg, ch_gain) = match self.active_weapon[s] {
+                        0 => (Q32::from_int(14), Q32::from_int(45), Q32::from_int(10)),
+                        1 => (Q32::from_int(18), Q32::from_int(12), Q32::from_int(28)),
+                        _ => (Q32::from_int(24), Q32::from_int(20), Q32::from_int(16)),
+                    };
+                    let _ = out_cmds.push(SimCommand::DealDamage {
+                        source: player,
+                        target: boss,
+                        hp_damage: hp_dmg,
+                        shatter_damage: sh_dmg,
+                        charge_gain: ch_gain,
+                    });
+                    connected_hit = true;
+                }
             }
 
             if self.boss_telegraph_ticks[b] > 0 {
-                if (action_mask & actions::DODGE_PHANTASIA) != 0 {
-                    let p_pos = QVec3::new(self.pos_x[s], self.pos_y[s], self.pos_z[s]);
-                    let _ = out_cmds.push(SimCommand::TriggerPhantasia {
-                        center: p_pos,
-                        radius: Q32::from_int(64),
-                        slow_scale: Q32::from_ratio_i32(25, 100),
-                        source: player,
-                    });
-                } else if (action_mask & actions::PARRY_CLASH) != 0 {
-                    let _ = out_cmds.push(SimCommand::TriggerClash {
-                        defender: player,
-                        boss,
-                        shatter_burst: Q32::from_int(160),
-                    });
+                let p_pos = QVec3::new(self.pos_x[s], self.pos_y[s], self.pos_z[s]);
+                let counter_rad = Q32::from_int(28);
+                let in_counter_range = !enforce_bone_reach
+                    || p_pos.dist_sq_wide(b_pos) <= counter_rad.mul_wide(counter_rad);
+                if in_counter_range {
+                    let is_parry_telegraph = (self.boss_pattern[b] & 1) != 0;
+                    if !is_parry_telegraph && (action_mask & actions::DODGE_PHANTASIA) != 0 {
+                        let _ = out_cmds.push(SimCommand::TriggerPhantasia {
+                            center: p_pos,
+                            radius: Q32::from_int(64),
+                            slow_scale: Q32::from_ratio_i32(25, 100),
+                            source: player,
+                        });
+                    } else if is_parry_telegraph && (action_mask & actions::PARRY_CLASH) != 0 {
+                        let _ = out_cmds.push(SimCommand::TriggerClash {
+                            defender: player,
+                            boss,
+                            shatter_burst: Q32::from_int(160),
+                        });
+                    }
                 }
             }
+        }
+        connected_hit
+    }
+
+    /// Deterministic 3D Boss pursuit & tactical spacing (`게임.md §4.3`).
+    pub fn step_boss_pursuit(&mut self, boss: EntityId, target: EntityId, dt: Q32) {
+        if !self.is_valid(boss) || !self.is_valid(target) {
+            return;
+        }
+        let b = boss.0 as usize;
+        let t = target.0 as usize;
+        let b_pos = QVec3::new(self.pos_x[b], self.pos_y[b], self.pos_z[b]);
+        let t_pos = QVec3::new(self.pos_x[t], self.pos_y[t], self.pos_z[t]);
+        let delta = t_pos.sat_sub(b_pos);
+        let dist = delta.length();
+        let local_dt = dt.sat_mul(self.time_scale[b]);
+        if dist > Q32::from_int(3) {
+            let dir = delta.normalize_or_zero();
+            let chase_speed = Q32::from_int(14);
+            let desired_v = dir.scale(chase_speed);
+            let cur_v = QVec3::new(self.vel_x[b], self.vel_y[b], self.vel_z[b]);
+            let steer = desired_v.sat_sub(cur_v).scale(Q32::from_int(4).sat_mul(local_dt));
+            self.vel_x[b] = cur_v.x.sat_add(steer.x);
+            self.vel_y[b] = cur_v.y.sat_add(steer.y);
+            self.vel_z[b] = cur_v.z.sat_add(steer.z);
+        } else {
+            self.vel_x[b] = self.vel_x[b].sat_mul(Q32::from_ratio_i32(92, 100));
+            self.vel_z[b] = self.vel_z[b].sat_mul(Q32::from_ratio_i32(92, 100));
         }
     }
 
@@ -986,6 +1095,46 @@ mod tests {
             c1.sort_deterministic();
             c2.sort_deterministic();
             assert_eq!(c1.as_slice(), c2.as_slice());
+
+            // Orthogonal Boss Dodge (`Phantasia`) vs Parry (`Clash`) telegraph check (`게임.md §1.2`):
+            let b_slot = b.0 as usize;
+            arena.boss_telegraph_ticks[b_slot] = 8;
+            arena.boss_pattern[b_slot] = 0; // Even pattern = Dodge-only telegraph
+            let mut counter_cmds = CommandBuffer::with_capacity(8);
+            let parry_only = RawWireInput {
+                tick: 2,
+                move_dir_milli: [0, 0, 0],
+                aim_yaw_turn_milli: 0,
+                aim_pitch_turn_milli: 0,
+                action_mask: u32::from(actions::PARRY_CLASH),
+                active_weapon_slot: 0,
+            };
+            if let Ok(pkt) = Packet::new_unverified(parry_only).verify_bounds() {
+                arena.apply_player_input(p, &pkt.into_input_frame(), Q32::DT_120HZ, &mut counter_cmds);
+            }
+            assert!(counter_cmds.is_empty());
+
+            let dodge_only = RawWireInput {
+                action_mask: u32::from(actions::DODGE_PHANTASIA),
+                ..parry_only
+            };
+            if let Ok(pkt) = Packet::new_unverified(dodge_only).verify_bounds() {
+                arena.apply_player_input(p, &pkt.into_input_frame(), Q32::DT_120HZ, &mut counter_cmds);
+            }
+            assert_eq!(counter_cmds.len(), 1);
+            arena.commit_commands(&mut counter_cmds);
+            assert_eq!(arena.boss_telegraph_ticks[b_slot], 0);
+
+            arena.boss_telegraph_ticks[b_slot] = 8;
+            arena.boss_pattern[b_slot] = 1; // Odd pattern = Parry-only telegraph
+            if let Ok(pkt) = Packet::new_unverified(dodge_only).verify_bounds() {
+                arena.apply_player_input(p, &pkt.into_input_frame(), Q32::DT_120HZ, &mut counter_cmds);
+            }
+            assert!(counter_cmds.is_empty());
+            if let Ok(pkt) = Packet::new_unverified(parry_only).verify_bounds() {
+                arena.apply_player_input(p, &pkt.into_input_frame(), Q32::DT_120HZ, &mut counter_cmds);
+            }
+            assert_eq!(counter_cmds.len(), 1);
         }
     }
 }

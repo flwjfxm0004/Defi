@@ -1,0 +1,9 @@
+[net]
+offline = true
+
+[build]
+target-dir = "target"
+
+[target.x86_64-pc-windows-gnu]
+linker = "rust-lld.exe"
+rustflags = ["-Z", "unstable-options", "-C", "linker-flavor=ld.lld"]

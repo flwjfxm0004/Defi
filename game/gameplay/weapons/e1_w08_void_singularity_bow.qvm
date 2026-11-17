@@ -1,0 +1,14 @@
+// Season 1 Weapon 08: Void × Attack — Event Horizon Singularity Bow
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 dir = tp, sp
+    const_q32 speed = 60
+    scale_vec3 pvel = dir, speed
+    const_q32_milli pdmg = 500
+    emit_projectile sp, pvel, pdmg
+    const_q32_milli hp = 10568
+    const_q32_milli sh = 15000
+    const_q32 cg = 8
+    emit_damage hp, sh, cg
+}

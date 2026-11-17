@@ -1,0 +1,30 @@
+// Multi-Axis Resonance Trait 01: Simulacrum Awakening (Cryo × Volt × Attack/Fortitude, Normal -> Gold -> Prism)
+fn on_tick(self, target) {
+    has_trait_bit tier_norm = self, 0
+    has_trait_bit tier_gold = self, 1
+    has_trait_bit tier_prism = self, 2
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 dir = tp, sp
+    if tier_norm {
+        const_q32 hp = 9
+        const_q32 sh = 18
+        const_q32 cg = 10
+        emit_damage hp, sh, cg
+    endif
+    if tier_gold {
+        const_q32 v_scale = 60
+        scale_vec3 pvel = dir, v_scale
+        const_q32 pdmg = 8
+        for i in 0..3 {
+            emit_projectile sp, pvel, pdmg
+        endfor
+    endif
+    if tier_prism {
+        const_q32 rad = 18
+        const_q32_milli slow = 200
+        emit_phantasia sp, rad, slow
+        const_q32 shatter = 85
+        emit_clash shatter
+    endif
+}

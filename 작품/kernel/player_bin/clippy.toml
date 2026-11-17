@@ -1,0 +1,11 @@
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "Non-deterministic iteration order; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "Non-deterministic iteration order; use BTreeSet" },
+    { path = "std::process::Command", reason = "Runtime process spawning prohibited" },
+    { path = "std::time::SystemTime", reason = "SystemTime prohibited; use Instant only in outer playback clock" },
+    { path = "f64", reason = "f64 prohibited; only f32 DAC/push-constant boundary allowed" },
+]
+disallowed-methods = [
+    { path = "std::env::var", reason = "Environment inspection prohibited" },
+    { path = "std::env::var_os", reason = "Environment inspection prohibited" },
+]

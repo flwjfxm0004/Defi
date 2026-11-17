@@ -189,6 +189,7 @@ pub fn verify_compiled_module(module: &CompiledQvmModule) -> Result<(), QvmError
         if code_len == 0 || func.reg_window_size < 2 || (func.reg_window_size as usize) > MAX_REGS {
             return Err(QvmError::RegisterDepthExceeded);
         }
+        verify_structured_loops_and_jumps(&func.code)?;
         for (pc, &op) in func.code.iter().enumerate() {
             if op.fuel_cost() == 0 {
                 return Err(QvmError::ForbiddenConstruct("Zero-fuel instruction"));
@@ -283,6 +284,125 @@ pub fn verify_compiled_module(module: &CompiledQvmModule) -> Result<(), QvmError
         return Err(QvmError::RegisterDepthExceeded);
     }
 
+    Ok(())
+}
+
+/// Returns the register written by `op` (if any) inside the current function's register window.
+#[inline]
+const fn op_written_reg(op: Op) -> Option<u8> {
+    match op {
+        Op::LoadConstQ32 { dst, .. }
+        | Op::LoadConstI32 { dst, .. }
+        | Op::LoadConstBool { dst, .. }
+        | Op::MoveReg { dst, .. }
+        | Op::AddQ32 { dst, .. }
+        | Op::SubQ32 { dst, .. }
+        | Op::MulQ32 { dst, .. }
+        | Op::DivQ32 { dst, .. }
+        | Op::CmpLtQ32 { dst, .. }
+        | Op::CmpGeQ32 { dst, .. }
+        | Op::MakeQVec3 { dst, .. }
+        | Op::AddQVec3 { dst, .. }
+        | Op::SubQVec3 { dst, .. }
+        | Op::ScaleQVec3 { dst, .. }
+        | Op::FmaQVec3 { dst, .. }
+        | Op::ClampQ32 { dst, .. }
+        | Op::DotQVec3 { dst, .. }
+        | Op::DistSqQVec3 { dst, .. }
+        | Op::ReadPos { dst, .. }
+        | Op::ReadVel { dst, .. }
+        | Op::ReadHp { dst, .. }
+        | Op::ReadShield { dst, .. }
+        | Op::ReadCharge { dst, .. }
+        | Op::HasTraitBit { dst, .. } => Some(dst),
+        Op::CallStatic { ret_dst, .. } => Some(ret_dst),
+        Op::ForBegin { counter_reg, .. } => Some(counter_reg),
+        _ => None,
+    }
+}
+
+/// Structured control-flow verifier (`게임.md §8.3`), independent of the source compiler:
+/// 1. Every `ForBegin` at `pc` pairs with exactly one `ForStep` at `exit_pc - 1` carrying the same
+///    `counter_reg`/`max_iters` and `body_pc == pc + 1`; loops nest properly (`<= MAX_LOOP_NESTING`).
+/// 2. No instruction inside a loop body (including nested `ForBegin` / `CallStatic.ret_dst`) writes
+///    any enclosing loop's `counter_reg`, so every loop terminates after exactly `max_iters` passes.
+/// 3. `JumpIfFalse` / `JumpForward` never cross a loop boundary (source and target lie inside
+///    exactly the same set of loops), so jumps cannot skip a `ForBegin` or escape a `ForStep`.
+fn verify_structured_loops_and_jumps(code: &[Op]) -> Result<(), QvmError> {
+    let code_len = code.len();
+    // (begin_pc, step_pc, counter_reg)
+    let mut loops: Vec<(usize, usize, u8)> = Vec::new();
+    let mut stack: Vec<(usize, usize, u8)> = Vec::new();
+
+    for (pc, &op) in code.iter().enumerate() {
+        // Rule 2: no write into any enclosing loop counter (a loop's own `ForBegin` is outside its body).
+        if let Some(w) = op_written_reg(op)
+            && stack.iter().any(|&(_, _, creg)| creg == w)
+        {
+            return Err(QvmError::ForbiddenConstruct(
+                "Write to active loop counter register inside loop body",
+            ));
+        }
+        match op {
+            Op::ForBegin {
+                counter_reg,
+                max_iters,
+                exit_pc,
+            } => {
+                let exit = exit_pc as usize;
+                if exit <= pc.saturating_add(1) || exit > code_len {
+                    return Err(QvmError::BackwardUnstructuredJump);
+                }
+                let step_pc = exit.saturating_sub(1);
+                let Some(&Op::ForStep {
+                    counter_reg: s_creg,
+                    max_iters: s_max,
+                    body_pc,
+                }) = code.get(step_pc)
+                else {
+                    return Err(QvmError::SyntaxError("ForBegin without matching ForStep"));
+                };
+                if s_creg != counter_reg || s_max != max_iters || (body_pc as usize) != pc.saturating_add(1) {
+                    return Err(QvmError::SyntaxError("Mismatched ForBegin/ForStep pair"));
+                }
+                if let Some(&(_, outer_step, _)) = stack.last()
+                    && step_pc >= outer_step
+                {
+                    return Err(QvmError::SyntaxError("Improperly nested loop"));
+                }
+                if stack.len() >= MAX_LOOP_NESTING {
+                    return Err(QvmError::StaticLoopBoundExceeded);
+                }
+                stack.push((pc, step_pc, counter_reg));
+                loops.push((pc, step_pc, counter_reg));
+            }
+            Op::ForStep { .. } => {
+                match stack.pop() {
+                    Some((_, step_pc, _)) if step_pc == pc => {}
+                    _ => return Err(QvmError::SyntaxError("ForStep without matching ForBegin")),
+                }
+            }
+            _ => {}
+        }
+    }
+    if !stack.is_empty() {
+        return Err(QvmError::SyntaxError("Unterminated loop"));
+    }
+
+    // Rule 3: jumps stay inside exactly the same set of loops (body range `(begin, step]`).
+    for (pc, &op) in code.iter().enumerate() {
+        let target = match op {
+            Op::JumpIfFalse { target_pc, .. } | Op::JumpForward { target_pc } => target_pc as usize,
+            _ => continue,
+        };
+        for &(begin, step, _) in &loops {
+            let src_in = begin < pc && pc <= step;
+            let tgt_in = begin < target && target <= step;
+            if src_in != tgt_in {
+                return Err(QvmError::BackwardUnstructuredJump);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -795,7 +915,9 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 "while" | "loop" => return Err(QvmError::ForbiddenConstruct("Unbounded loop keyword forbidden")),
                 "static" | "global" => return Err(QvmError::ForbiddenConstruct("Mutable/global state forbidden")),
                 "closure" | "move" => return Err(QvmError::ForbiddenConstruct("Closure upvalue forbidden")),
-                "float" | "double" => return Err(QvmError::ForbiddenConstruct("Floating-point type forbidden")),
+                "float" | "double" | "f32" | "f64" => {
+                    return Err(QvmError::ForbiddenConstruct("Floating-point type forbidden"))
+                }
                 "clock" | "time" | "env" | "fs" | "os" => {
                     return Err(QvmError::ForbiddenConstruct("Host OS/clock symbol forbidden"))
                 }
@@ -916,9 +1038,18 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
         reg_map.insert("target", 1);
         let mut next_reg: u8 = 2;
         let mut loop_stack: Vec<(u8, u16, usize)> = Vec::new();
+        let mut if_stack: Vec<(u8, usize, u16)> = Vec::new();
 
         for &stmt in body {
-            if let Some(rest) = stmt.strip_prefix("const_q32 ") {
+            if let Some(rest) = stmt.strip_prefix("const_q32_milli ") {
+                let (vname, val_str) = split_assign(rest)?;
+                let milli_val = parse_i32(val_str)?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::LoadConstQ32 {
+                    dst,
+                    raw_q32: Q32::from_ratio_i32(milli_val, 1_000).raw(),
+                });
+            } else if let Some(rest) = stmt.strip_prefix("const_q32 ") {
                 let (vname, val_str) = split_assign(rest)?;
                 let int_val = parse_i32(val_str)?;
                 let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
@@ -934,6 +1065,39 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 if emit_causal {
                     push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::StateGate, 1);
                 }
+            } else if let Some(rest) = stmt.strip_prefix("read_hp ") {
+                let (vname, ent_name) = split_assign(rest)?;
+                let ent = lookup_reg(&reg_map, ent_name)?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::ReadHp { dst, entity: ent });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::StateGate, 12);
+                }
+            } else if let Some(rest) = stmt.strip_prefix("read_charge ") {
+                let (vname, ent_name) = split_assign(rest)?;
+                let ent = lookup_reg(&reg_map, ent_name)?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::ReadCharge { dst, entity: ent });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::DischargeBurst, 11);
+                }
+            } else if let Some(rest) = stmt.strip_prefix("has_trait_bit ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let ent = lookup_reg(&reg_map, parts[0])?;
+                let bit_i = parse_i32(parts[1])?;
+                if !(0..32).contains(&bit_i) {
+                    return Err(QvmError::SyntaxError("Trait bit index out of 0..31 range"));
+                }
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::HasTraitBit {
+                    dst,
+                    entity: ent,
+                    bit: bit_i as u8,
+                });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::ResonanceField, 10);
+                }
             } else if let Some(rest) = stmt.strip_prefix("read_pos ") {
                 let (vname, ent_name) = split_assign(rest)?;
                 let ent = lookup_reg(&reg_map, ent_name)?;
@@ -944,6 +1108,63 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 let ent = lookup_reg(&reg_map, ent_name)?;
                 let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
                 ops.push(Op::ReadVel { dst, entity: ent });
+            } else if let Some(rest) = stmt.strip_prefix("make_vec3 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv3(rhs)?;
+                let rx = lookup_reg(&reg_map, parts[0])?;
+                let ry = lookup_reg(&reg_map, parts[1])?;
+                let rz = lookup_reg(&reg_map, parts[2])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::MakeQVec3 {
+                    dst,
+                    x: rx,
+                    y: ry,
+                    z: rz,
+                });
+            } else if let Some(rest) = stmt.strip_prefix("add_vec3 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::AddQVec3 { dst, a, b });
+            } else if let Some(rest) = stmt.strip_prefix("sub_vec3 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::SubQVec3 { dst, a, b });
+            } else if let Some(rest) = stmt.strip_prefix("scale_vec3 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let v = lookup_reg(&reg_map, parts[0])?;
+                let s = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::ScaleQVec3 { dst, v, s });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::WeaponSwap, 15);
+                }
+            } else if let Some(rest) = stmt.strip_prefix("dot_vec3 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::DotQVec3 { dst, a, b });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::TerrainCsgCut, 14);
+                }
+            } else if let Some(rest) = stmt.strip_prefix("dist_sq_vec3 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::DistSqQVec3 { dst, a, b });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::ElementCellReact, 13);
+                }
             } else if let Some(rest) = stmt.strip_prefix("fma_vec3 ") {
                 let (vname, rhs) = split_assign(rest)?;
                 let parts = split_csv3(rhs)?;
@@ -970,6 +1191,13 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 let b = lookup_reg(&reg_map, parts[1])?;
                 let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
                 ops.push(Op::AddQ32 { dst, a, b });
+            } else if let Some(rest) = stmt.strip_prefix("sub_q32 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::SubQ32 { dst, a, b });
             } else if let Some(rest) = stmt.strip_prefix("mul_q32 ") {
                 let (vname, rhs) = split_assign(rest)?;
                 let parts = split_csv2(rhs)?;
@@ -977,6 +1205,68 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 let b = lookup_reg(&reg_map, parts[1])?;
                 let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
                 ops.push(Op::MulQ32 { dst, a, b });
+            } else if let Some(rest) = stmt.strip_prefix("div_q32 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::DivQ32 { dst, a, b });
+            } else if let Some(rest) = stmt.strip_prefix("cmp_lt_q32 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::CmpLtQ32 { dst, a, b });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::StateGate, 17);
+                }
+            } else if let Some(rest) = stmt.strip_prefix("cmp_ge_q32 ") {
+                let (vname, rhs) = split_assign(rest)?;
+                let parts = split_csv2(rhs)?;
+                let a = lookup_reg(&reg_map, parts[0])?;
+                let b = lookup_reg(&reg_map, parts[1])?;
+                let dst = alloc_reg(&mut reg_map, vname, &mut next_reg)?;
+                ops.push(Op::CmpGeQ32 { dst, a, b });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::WeaponSwap, 18);
+                }
+            } else if let Some(rest) = stmt.strip_prefix("if ") {
+                if if_stack.len() >= 8 {
+                    return Err(QvmError::StaticLoopBoundExceeded);
+                }
+                let cond_name = rest.trim_end_matches('{').trim();
+                let cond_reg = lookup_reg(&reg_map, cond_name)?;
+                let jump_pc = ops.len();
+                ops.push(Op::JumpIfFalse {
+                    cond: cond_reg,
+                    target_pc: 0,
+                });
+                let anchor_node = (causal_nodes.len().saturating_sub(1)) as u16;
+                if_stack.push((cond_reg, jump_pc, anchor_node));
+            } else if stmt == "endif" {
+                let Some((cond_reg, jump_pc, anchor_node)) = if_stack.pop() else {
+                    return Err(QvmError::SyntaxError("Unmatched endif"));
+                };
+                if ops.len() <= jump_pc.saturating_add(1) {
+                    return Err(QvmError::SyntaxError("Empty if block forbidden"));
+                }
+                let exit_pc = ops.len() as u16;
+                ops[jump_pc] = Op::JumpIfFalse {
+                    cond: cond_reg,
+                    target_pc: exit_pc,
+                };
+                if emit_causal {
+                    let tail_node = (causal_nodes.len().saturating_sub(1)) as u16;
+                    if tail_node > anchor_node {
+                        causal_edges.push(CausalEdge {
+                            src: anchor_node,
+                            dst: tail_node,
+                            edge_kind: 19,
+                        });
+                    }
+                }
             } else if let Some(rest) = stmt.strip_prefix("for ") {
                 if loop_stack.len() >= MAX_LOOP_NESTING {
                     return Err(QvmError::StaticLoopBoundExceeded);
@@ -1095,6 +1385,20 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 if emit_causal {
                     push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::SpatialImpulse, 9);
                 }
+            } else if let Some(rest) = stmt.strip_prefix("emit_boss_pattern ") {
+                let parts = split_csv2(rest)?;
+                let boss_r = lookup_reg(&reg_map, parts[0])?;
+                let pat_i = parse_i32(parts[1])?;
+                if !(0..=65_535).contains(&pat_i) {
+                    return Err(QvmError::SyntaxError("Boss pattern id out of u16 range"));
+                }
+                ops.push(Op::EmitBossPattern {
+                    boss_ent: boss_r,
+                    pattern_id: pat_i as u16,
+                });
+                if emit_causal {
+                    push_causal(&mut causal_nodes, &mut causal_edges, AnonMechRole::BossAdaptiveShift, 16);
+                }
             } else if let Some(rest) = stmt.strip_prefix("return ") {
                 let src_r = lookup_reg(&reg_map, rest.trim())?;
                 ops.push(Op::Return { src: src_r });
@@ -1102,8 +1406,8 @@ pub fn compile_qvm_source(src: &str) -> Result<CompiledQvmModule, QvmError> {
                 return Err(QvmError::SyntaxError("Unrecognized qvm statement"));
             }
         }
-        if !loop_stack.is_empty() {
-            return Err(QvmError::SyntaxError("Unclosed for loop"));
+        if !loop_stack.is_empty() || !if_stack.is_empty() {
+            return Err(QvmError::SyntaxError("Unclosed for/if control block"));
         }
         ops.push(Op::Return { src: 0 });
 
@@ -1204,6 +1508,9 @@ fn split_csv2(s: &str) -> Result<[&str; 2], QvmError> {
     let mut it = s.split(',');
     let a = it.next().ok_or(QvmError::SyntaxError("Expected 2 args"))?.trim();
     let b = it.next().ok_or(QvmError::SyntaxError("Expected 2 args"))?.trim();
+    if it.next().is_some() || a.is_empty() || b.is_empty() {
+        return Err(QvmError::SyntaxError("Expected exactly 2 args"));
+    }
     Ok([a, b])
 }
 
@@ -1212,6 +1519,9 @@ fn split_csv3(s: &str) -> Result<[&str; 3], QvmError> {
     let a = it.next().ok_or(QvmError::SyntaxError("Expected 3 args"))?.trim();
     let b = it.next().ok_or(QvmError::SyntaxError("Expected 3 args"))?.trim();
     let c = it.next().ok_or(QvmError::SyntaxError("Expected 3 args"))?.trim();
+    if it.next().is_some() || a.is_empty() || b.is_empty() || c.is_empty() {
+        return Err(QvmError::SyntaxError("Expected exactly 3 args"));
+    }
     Ok([a, b, c])
 }
 
@@ -1325,6 +1635,149 @@ mod tests {
                 assert_eq!(arena.view().shield(be), Q32::from_int(160));
                 assert_eq!(arena.view().hp(be), Q32::from_int(1790));
             }
+        }
+    }
+
+    #[test]
+    fn test_conditional_trait_branch_and_adaptive_boss_pattern() {
+        let src = "
+            fn on_tick(self, target) {
+                read_pos sp = self
+                read_pos tp = target
+                sub_vec3 dir = tp, sp
+                dist_sq_vec3 d2 = tp, sp
+                read_hp bh = target
+                read_charge ch = self
+                const_q32 thresh = 500
+                cmp_lt_q32 low_hp = bh, thresh
+                has_trait_bit has_prism = self, 2
+                if has_prism {
+                    const_q32 rad = 12
+                    const_q32_milli slow = 250
+                    emit_phantasia sp, rad, slow
+                    emit_boss_pattern target, 4
+                endif
+                if low_hp {
+                    emit_boss_pattern target, 5
+                endif
+                const_q32 vel_scale = 30
+                scale_vec3 pvel = dir, vel_scale
+                const_q32 pdmg = 10
+                emit_projectile sp, pvel, pdmg
+            }
+        ";
+        let compiled = compile_qvm_source(src);
+        assert!(compiled.is_ok());
+        if let Ok(module) = compiled {
+            let mut arena = CombatArena::new_boxed(123);
+            let p = arena.spawn(EntityKind::Player, QVec3::from_ints(0, 0, 0), Q32::from_int(1000), Q32::ZERO);
+            let b = arena.spawn(EntityKind::Boss, QVec3::from_ints(2, 0, 0), Q32::from_int(400), Q32::from_int(100));
+            if let (Some(pe), Some(be)) = (p, b) {
+                arena.trait_mask[pe.0 as usize] = 1_u32 << 2;
+                let mut cmds = CommandBuffer::with_capacity(8);
+                let res = execute_handler(&module, &arena.view(), pe, be, &mut cmds);
+                assert!(res.is_ok());
+                arena.commit_commands(&mut cmds);
+                assert_eq!(arena.boss_pattern[be.0 as usize], 5);
+                assert_eq!(arena.charge[pe.0 as usize], Q32::from_int(100));
+            }
+        }
+    }
+
+    #[test]
+    fn test_loop_counter_mutation_cross_loop_jumps_and_extra_args_rejected() {
+        // (1) Source-level loop counter reassignment must be rejected (would otherwise loop until fuel trap):
+        let counter_clobber = "
+            fn on_tick(self, target) {
+                const_q32 hp = 1
+                for i in 0..2 {
+                    const_q32 i = 0
+                    emit_damage hp, hp, hp
+                endfor
+            }
+        ";
+        assert!(matches!(
+            compile_qvm_source(counter_clobber),
+            Err(QvmError::ForbiddenConstruct(_))
+        ));
+        // Nested loop reusing outer counter is a write to an active counter too:
+        let nested_reuse = "
+            fn on_tick(self, target) {
+                const_q32 hp = 1
+                for i in 0..2 {
+                    for i in 0..2 {
+                        emit_damage hp, hp, hp
+                    endfor
+                endfor
+            }
+        ";
+        assert!(compile_qvm_source(nested_reuse).is_err());
+        // (2) `if` opened inside a loop but closed outside it crosses the loop boundary:
+        let crossing_if = "
+            fn on_tick(self, target) {
+                const_q32 hp = 1
+                has_trait_bit t = self, 0
+                for i in 0..2 {
+                    if t {
+                        emit_damage hp, hp, hp
+                endfor
+                    endif
+            }
+        ";
+        assert!(compile_qvm_source(crossing_if).is_err());
+        // (3) Trailing extra comma-separated operands and f32/f64 identifiers are rejected:
+        let extra_args = "
+            fn on_tick(self, target) {
+                const_q32 hp = 1
+                emit_damage hp, hp, hp, hp
+            }
+        ";
+        assert!(compile_qvm_source(extra_args).is_err());
+        let float_ident = "
+            fn on_tick(self, target) {
+                const_q32 f32 = 1
+            }
+        ";
+        assert!(matches!(
+            compile_qvm_source(float_ident),
+            Err(QvmError::ForbiddenConstruct(_))
+        ));
+        // (4) Bytecode-level: hand-crafted module writing the counter inside the body or mismatched pairs fail verify:
+        let good = compile_qvm_source(
+            "
+            fn on_tick(self, target) {
+                const_q32 hp = 1
+                for i in 0..3 {
+                    emit_damage hp, hp, hp
+                endfor
+            }
+        ",
+        );
+        assert!(good.is_ok());
+        if let Ok(mut m) = good {
+            let entry = m.entry_func as usize;
+            let mut creg = None;
+            for op in m.funcs[entry].code.iter() {
+                if let Op::ForBegin { counter_reg, .. } = *op {
+                    creg = Some(counter_reg);
+                }
+            }
+            if let Some(c) = creg {
+                let mut tampered = m.clone();
+                let t_code = &mut tampered.funcs[entry].code;
+                for op in t_code.iter_mut() {
+                    if let Op::EmitDealDamage { .. } = *op {
+                        *op = Op::LoadConstI32 { dst: c, val: 0 };
+                    }
+                }
+                assert!(verify_compiled_module(&tampered).is_err());
+            }
+            for op in m.funcs[entry].code.iter_mut() {
+                if let Op::ForStep { max_iters, .. } = op {
+                    *max_iters = 200;
+                }
+            }
+            assert!(verify_compiled_module(&m).is_err());
         }
     }
 }

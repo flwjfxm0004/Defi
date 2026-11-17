@@ -1,0 +1,15 @@
+// Season 1 Weapon 07: Pyro × Fortitude — Magma Clash Gauntlet
+fn on_tick(self, target) {
+    call prelude_kinematic_step(self, target) -> kin_e
+    has_trait_bit magma_core = self, 14
+    if magma_core {
+        const_q32 sh_burst = 30
+        for k in 0..2 {
+            emit_clash sh_burst
+        endfor
+    endif
+    const_q32_milli hp = 10850
+    const_q32_milli sh = 15000
+    const_q32 cg = 8
+    emit_damage hp, sh, cg
+}

@@ -8,7 +8,7 @@
     clippy::disallowed_methods
 )]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -287,6 +287,7 @@ pub enum WalError {
     RingBufferFull,
     EncodingError,
     CorruptCheckpoint,
+    ManifestParseError,
     Io(std::io::Error),
 }
 
@@ -867,6 +868,117 @@ fn compute_chain_hash(
     hasher.update(&crc.to_le_bytes());
     hasher.update(payload);
     *hasher.finalize().as_bytes()
+}
+
+/// Declarative RON season/epoch manifest schema (`assets/manifests/E_<id>.ron`, `게임.md §3.1, §7.1, §9.2`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeasonEpochDiskManifest {
+    pub epoch_id: u64,
+    pub season_id: u32,
+    pub elements: Vec<String>,
+    pub weapon_modules: Vec<String>,
+    pub boss_modules: Vec<String>,
+    pub chunk_seeds: Vec<(i32, i32, u64)>,
+    pub base_move_speed_milli: i32,
+    pub expected_farm_ticks: u64,
+    pub faucet_caps: [i64; 8],
+}
+
+/// Complete deterministically sorted season manifest + `gameplay/` `.qvm` source tree loaded from disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeasonGameplayPack {
+    pub manifest: SeasonEpochDiskManifest,
+    pub prelude_src: String,
+    pub weapons: BTreeMap<String, String>,
+    pub traits: BTreeMap<String, String>,
+    pub augments: BTreeMap<String, String>,
+    pub bosses: BTreeMap<String, String>,
+    pub world_events: BTreeMap<String, String>,
+    pub all_modules_rel: BTreeMap<String, String>,
+    pub content_merkle: [u8; 32],
+}
+
+fn collect_qvm_subdir(
+    gameplay_root: &Path,
+    subdir_name: &str,
+    out_cat: &mut BTreeMap<String, String>,
+    out_all: &mut BTreeMap<String, String>,
+) -> Result<(), WalError> {
+    let sub = gameplay_root.join(subdir_name);
+    if !sub.is_dir() {
+        return Ok(());
+    }
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for ent_res in fs::read_dir(&sub)? {
+        let ent = ent_res?;
+        entries.push(ent.path());
+    }
+    entries.sort();
+    for p in entries {
+        if p.is_file() && p.extension().is_some_and(|e| e == "qvm") {
+            let stem = p
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let rel = format!("gameplay/{subdir_name}/{stem}.qvm");
+            let src = fs::read_to_string(&p)?;
+            out_cat.insert(stem, src.clone());
+            out_all.insert(rel, src);
+        }
+    }
+    Ok(())
+}
+
+/// Loads `assets/manifests/E_<id>.ron` and all sorted `gameplay/{prelude,weapons,traits,augments,bosses,world_events}/*.qvm`
+/// scripts, computing their canonical `BLAKE3` content digest (`게임.md §5.2, §7.1, §9.2`).
+pub fn load_season_gameplay_pack(
+    manifest_path: &Path,
+    gameplay_root: &Path,
+) -> Result<SeasonGameplayPack, WalError> {
+    let raw_ron = fs::read_to_string(manifest_path)?;
+    let manifest: SeasonEpochDiskManifest =
+        ron::from_str(&raw_ron).map_err(|_| WalError::ManifestParseError)?;
+    let prelude_src = fs::read_to_string(gameplay_root.join("prelude.qvm"))?;
+
+    let mut weapons = BTreeMap::new();
+    let mut traits = BTreeMap::new();
+    let mut augments = BTreeMap::new();
+    let mut bosses = BTreeMap::new();
+    let mut world_events = BTreeMap::new();
+    let mut all_modules_rel = BTreeMap::new();
+
+    collect_qvm_subdir(gameplay_root, "weapons", &mut weapons, &mut all_modules_rel)?;
+    collect_qvm_subdir(gameplay_root, "traits", &mut traits, &mut all_modules_rel)?;
+    collect_qvm_subdir(gameplay_root, "augments", &mut augments, &mut all_modules_rel)?;
+    collect_qvm_subdir(gameplay_root, "bosses", &mut bosses, &mut all_modules_rel)?;
+    collect_qvm_subdir(
+        gameplay_root,
+        "world_events",
+        &mut world_events,
+        &mut all_modules_rel,
+    )?;
+
+    let mut h = blake3::Hasher::new();
+    h.update(b"SEASON_GAMEPLAY_PACK_V1");
+    h.update(raw_ron.as_bytes());
+    h.update(prelude_src.as_bytes());
+    for (rel, src) in &all_modules_rel {
+        h.update(rel.as_bytes());
+        h.update(src.as_bytes());
+    }
+    let content_merkle = *h.finalize().as_bytes();
+
+    Ok(SeasonGameplayPack {
+        manifest,
+        prelude_src,
+        weapons,
+        traits,
+        augments,
+        bosses,
+        world_events,
+        all_modules_rel,
+        content_merkle,
+    })
 }
 
 #[cfg(test)]

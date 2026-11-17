@@ -1,0 +1,13 @@
+// Season 1 Weapon 06: Volt × Fortitude — Lorentz Rail Cannon
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 delta = tp, sp
+    const_q32 zero = 0
+    scale_vec3 recoil = delta, zero
+    emit_impulse recoil
+    const_q32_milli hp = 11000
+    const_q32_milli sh = 15000
+    const_q32 cg = 9
+    emit_damage hp, sh, cg
+}

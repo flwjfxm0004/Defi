@@ -1,0 +1,16 @@
+// Season 2 Weapon 08: Chrono × Benediction — Stasis Dual Pistols
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_vel sv = self
+    const_q32 one = 1
+    const_q32_milli hp = 5480
+    const_q32_milli sh = 7500
+    const_q32 cg = 5
+    for i in 0..2 {
+        fma_vec3 step_p = sv, one, sp
+        emit_damage hp, sh, cg
+    endfor
+    read_hp shp = self
+    const_q32 zero = 0
+    cmp_ge_q32 alive = shp, zero
+}

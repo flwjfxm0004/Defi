@@ -1,0 +1,24 @@
+(
+    epoch_id: 1,
+    season_id: 1,
+    elements: ["Cryo", "Pyro", "Volt", "Void"],
+    weapon_modules: [
+        "e1_w01_cryo_shatter_lance",
+        "e1_w02_volt_charge_chakram",
+        "e1_w03_pyro_discharge_katana",
+        "e1_w04_void_phantasia_scythe",
+        "e1_w05_cryo_glacier_aegis",
+        "e1_w06_volt_rail_cannon",
+        "e1_w07_pyro_meteor_gauntlet",
+        "e1_w08_void_singularity_bow",
+        "e1_w09_volt_harmonic_orb",
+    ],
+    boss_modules: [
+        "e1_b01_void_archon",
+        "e1_b02_cryo_behemoth",
+    ],
+    chunk_seeds: [(0, 0, 101), (1, 0, 102), (0, 1, 103), (1, 1, 104), (1, 2, 105), (2, 1, 106)],
+    base_move_speed_milli: 10400,
+    expected_farm_ticks: 560,
+    faucet_caps: (1500000, 1500000, 1500000, 1500000, 1500000, 1500000, 1500000, 1500000),
+)

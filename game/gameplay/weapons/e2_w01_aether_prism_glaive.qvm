@@ -1,0 +1,12 @@
+// Season 2 Weapon 01: Aether × Fortitude — Prism Glaive
+fn on_tick(self, target) {
+    has_trait_bit aether_sigil = self, 4
+    read_shield tsh = target
+    read_pos sp = self
+    read_pos tp = target
+    dist_sq_vec3 d2 = tp, sp
+    const_q32_milli hp = 11000
+    const_q32_milli sh = 15000
+    const_q32 cg = 8
+    emit_damage hp, sh, cg
+}

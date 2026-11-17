@@ -139,6 +139,24 @@ impl LedgerCore {
     }
 
     #[inline]
+    pub fn shard_quota_remaining(&self, shard_id: u16, asset: AssetId) -> i64 {
+        self.shard_faucet_remaining
+            .get(&(shard_id, asset))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[inline]
+    pub fn total_faucet_minted_amount(&self, asset: AssetId) -> i128 {
+        self.total_faucet_minted.get(&asset).copied().unwrap_or(0)
+    }
+
+    #[inline]
+    pub const fn season_id(&self) -> u32 {
+        self.season_id
+    }
+
+    #[inline]
     pub fn seasonal_power(&self, account: AccountId) -> i64 {
         self.seasonal_power.get(&account).copied().unwrap_or(0)
     }

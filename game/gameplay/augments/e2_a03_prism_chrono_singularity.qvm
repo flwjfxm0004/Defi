@@ -1,0 +1,18 @@
+// Season 2 Gate Tactical Augment Tier 3 (Prism): Chrono Singularity Collapse
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    read_charge ch = self
+    dist_sq_vec3 d2 = tp, sp
+    const_q32 rad = 26
+    const_q32_milli slow = 150
+    emit_phantasia tp, rad, slow
+    const_q32 burst = 90
+    const_q32 hp = 10
+    const_q32 sh = 20
+    const_q32 cg = 8
+    for i in 0..2 {
+        emit_clash burst
+        emit_damage hp, sh, cg
+    endfor
+}

@@ -1,0 +1,17 @@
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "Non-deterministic iteration order; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "Non-deterministic iteration order; use BTreeSet" },
+    { path = "std::process::Command", reason = "Runtime process spawning prohibited" },
+    { path = "std::time::Instant", reason = "Wall-clock prohibited outside player_bin outer loop" },
+    { path = "std::time::SystemTime", reason = "Wall-clock prohibited" },
+    { path = "std::fs::File", reason = "Filesystem prohibited outside explicitly permitted crates" },
+    { path = "std::fs::OpenOptions", reason = "Filesystem prohibited outside explicitly permitted crates" },
+]
+disallowed-methods = [
+    { path = "std::env::var", reason = "Environment inspection prohibited in runtime crates" },
+    { path = "std::env::var_os", reason = "Environment inspection prohibited in runtime crates" },
+    { path = "std::env::args", reason = "CLI env prohibited in kernel crates" },
+    { path = "std::fs::read", reason = "Filesystem prohibited outside explicitly permitted crates" },
+    { path = "std::fs::write", reason = "Filesystem prohibited outside explicitly permitted crates" },
+    { path = "std::process::exit", reason = "Abrupt process exit prohibited in kernel crates" },
+]

@@ -1,0 +1,13 @@
+// Season 1 Weapon 05: Cryo × Benediction — Glacier Resonance Aegis
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 align = sp, tp
+    read_shield self_sh = self
+    const_q32 zero = 0
+    cmp_ge_q32 fortified = self_sh, zero
+    const_q32_milli hp = 11150
+    const_q32_milli sh = 15000
+    const_q32 cg = 7
+    emit_damage hp, sh, cg
+}

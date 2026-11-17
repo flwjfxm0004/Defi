@@ -1,0 +1,16 @@
+{
+  "anime-forge-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd /c c:\\Defi\\작품\\target\\release\\verifier.exe hook-guard",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

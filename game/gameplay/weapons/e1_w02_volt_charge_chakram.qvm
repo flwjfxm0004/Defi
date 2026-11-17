@@ -1,0 +1,13 @@
+// Season 1 Weapon 02: Volt × Attack — Charge Chakram
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_vel sv = self
+    const_q32 step = 1
+    fma_vec3 lead = sv, step, sp
+    const_q32_milli hp = 5480
+    const_q32_milli sh = 7500
+    const_q32 cg = 6
+    for i in 0..2 {
+        emit_damage hp, sh, cg
+    endfor
+}

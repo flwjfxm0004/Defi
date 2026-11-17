@@ -1,0 +1,12 @@
+// Season 2 Weapon 09: Aether × Benediction — Starlight Resonance Harp
+fn on_tick(self, target) {
+    call prelude_resonance_check(self, target) -> res_sh
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 chord = sp, tp
+    dist_sq_vec3 span = tp, sp
+    const_q32_milli hp = 11000
+    const_q32_milli sh = 15000
+    const_q32 cg = 9
+    emit_damage hp, sh, cg
+}

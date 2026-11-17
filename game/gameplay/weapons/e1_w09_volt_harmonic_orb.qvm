@@ -1,0 +1,13 @@
+// Season 1 Weapon 09: Volt × Benediction — Phase Harmonic Conduit Orb
+fn on_tick(self, target) {
+    call prelude_charge_window(self, target) -> cw
+    read_pos sp = self
+    read_pos tp = target
+    dist_sq_vec3 span = tp, sp
+    const_q32_milli hp = 2735
+    const_q32_milli sh = 3750
+    const_q32 cg = 3
+    for i in 0..4 {
+        emit_damage hp, sh, cg
+    endfor
+}

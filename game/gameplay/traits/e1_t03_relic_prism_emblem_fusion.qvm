@@ -1,0 +1,37 @@
+// Season 1 Trait 03: Energy Gear Relic + Cross-Party Benediction Resonance + Trait Emblem Anomalous Fusion
+fn on_tick(self, target) {
+    has_trait_bit relic_core = self, 5
+    has_trait_bit party_bene = self, 6
+    has_trait_bit emblem_fuse = self, 7
+    read_charge ch = self
+    const_q32 req = 40
+    cmp_ge_q32 charged = ch, req
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 dir = tp, sp
+    if relic_core {
+        const_q32 hp = 12
+        const_q32 sh = 22
+        const_q32 cg = 14
+        emit_damage hp, sh, cg
+    endif
+    if party_bene {
+        const_q32 brad = 20
+        const_q32_milli bslow = 300
+        emit_phantasia sp, brad, bslow
+    endif
+    if emblem_fuse {
+        const_q32 spd = 60
+        scale_vec3 pvel = dir, spd
+        const_q32 pdmg = 10
+        const_q32 c_sh = 55
+        for k in 0..2 {
+            emit_projectile sp, pvel, pdmg
+            emit_clash c_sh
+        endfor
+        if charged {
+            const_q32 dburst = 70
+            emit_clash dburst
+        endif
+    endif
+}

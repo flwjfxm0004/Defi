@@ -1,0 +1,19 @@
+// Season 2 Gate Tactical Augment Tier 2 (Gold): Solar Lance Array
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 dir = tp, sp
+    const_q32 spd = 60
+    scale_vec3 pvel = dir, spd
+    const_q32 pdmg = 14
+    emit_projectile sp, pvel, pdmg
+    read_shield tsh = target
+    const_q32 cap = 400
+    cmp_lt_q32 weak = tsh, cap
+    if weak {
+        const_q32 hp = 12
+        const_q32 sh = 40
+        const_q32 cg = 10
+        emit_damage hp, sh, cg
+    endif
+}

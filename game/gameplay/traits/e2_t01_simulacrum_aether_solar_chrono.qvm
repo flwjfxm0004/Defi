@@ -1,0 +1,35 @@
+// Season 2 Trait 01: Simulacrum Awakening (Aether × Solar × Chrono, Normal -> Gold -> Prism)
+fn on_tick(self, target) {
+    has_trait_bit s2_norm = self, 8
+    has_trait_bit s2_gold = self, 9
+    has_trait_bit s2_prism = self, 10
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 dir = tp, sp
+    dist_sq_vec3 gap = tp, sp
+    if s2_norm {
+        const_q32_milli dash_k = 150
+        scale_vec3 dash = dir, dash_k
+        emit_impulse dash
+    endif
+    if s2_gold {
+        const_q32 spd = 60
+        scale_vec3 pvel = dir, spd
+        const_q32 pdmg = 6
+        for i in 0..4 {
+            emit_projectile sp, pvel, pdmg
+        endfor
+    endif
+    if s2_prism {
+        read_shield tsh = target
+        const_q32 one = 1
+        cmp_ge_q32 armored = tsh, one
+        if armored {
+            const_q32 burst = 110
+            emit_clash burst
+        endif
+        const_q32 rad = 20
+        const_q32_milli slow = 220
+        emit_phantasia sp, rad, slow
+    endif
+}

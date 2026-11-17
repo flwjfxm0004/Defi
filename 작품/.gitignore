@@ -1,0 +1,6 @@
+/target/
+/output/*.mkv
+/state/wal/*.wal
+/state/wal/*.tmp
+/state/ipc_branches.json
+/tmp_*/

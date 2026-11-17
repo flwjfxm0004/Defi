@@ -1,0 +1,41 @@
+// Season 1 Multi-Phase Adaptive Boss 02: Cryo Behemoth (`게임.md §4.3` — causal spacing, charge & phase response)
+// Priority-encoded pattern IDs (highest emitted ID wins at commit).
+fn on_tick(self, target) {
+    read_hp bhp = self
+    read_shield bsh = self
+    const_q32 p2_hp = 50000
+    cmp_lt_q32 in_p2 = bhp, p2_hp
+    const_q32 one = 1
+    cmp_lt_q32 shield_broken = bsh, one
+    read_pos bp = self
+    read_pos pp = target
+    dist_sq_vec3 d2 = pp, bp
+    read_charge pch = target
+    const_q32 high_ch = 70
+    cmp_ge_q32 discharge_threat = pch, high_ch
+    has_trait_bit p_pyro = target, 1
+    has_trait_bit p_matrix = target, 4
+    emit_boss_pattern self, 0
+    if discharge_threat {
+        emit_boss_pattern self, 1
+        const_q32 hp = 10
+        const_q32 sh = 20
+        const_q32 cg = 0
+        emit_damage hp, sh, cg
+    endif
+    if p_pyro {
+        emit_boss_pattern self, 2
+    endif
+    if p_matrix {
+        emit_boss_pattern self, 3
+    endif
+    if shield_broken {
+        emit_boss_pattern self, 4
+    endif
+    if in_p2 {
+        emit_boss_pattern self, 6
+        if p_pyro {
+            emit_boss_pattern self, 7
+        endif
+    endif
+}

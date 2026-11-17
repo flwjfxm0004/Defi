@@ -1,0 +1,4 @@
+disallowed-types = [
+    { path = "f32", reason = "Floating-point prohibited in K_sim; use Q32/Q64" },
+    { path = "f64", reason = "Floating-point prohibited in K_sim; use Q32/Q64" },
+]

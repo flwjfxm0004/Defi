@@ -1,0 +1,15 @@
+// Gate Tactical Augment Tier 1 (Silver): Kinetic Ricochet Salvo
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    read_vel sv = self
+    sub_vec3 dir = tp, sp
+    const_q32 spd = 60
+    scale_vec3 pvel = dir, spd
+    const_q32 one = 1
+    fma_vec3 anchor = sv, one, sp
+    const_q32 pdmg = 7
+    for i in 0..2 {
+        emit_projectile anchor, pvel, pdmg
+    endfor
+}

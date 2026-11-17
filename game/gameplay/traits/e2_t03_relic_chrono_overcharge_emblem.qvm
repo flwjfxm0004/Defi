@@ -1,0 +1,37 @@
+// Season 2 Trait 03: Chrono Relic + Cross-Party Lift Resonance + Overcharge Emblem Fusion
+fn on_tick(self, target) {
+    has_trait_bit relic = self, 13
+    has_trait_bit party = self, 14
+    has_trait_bit emblem = self, 15
+    read_charge ch = self
+    const_q32 full = 90
+    cmp_ge_q32 overcharged = ch, full
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 facing = sp, tp
+    if relic {
+        call prelude_shatter_gate(self, target) -> gate_sh
+        const_q32 hp = 9
+        const_q32 cg = 16
+        emit_damage hp, gate_sh, cg
+    endif
+    if party {
+        const_q32 z = 0
+        const_q32 up = 3
+        make_vec3 lift = z, up, z
+        emit_impulse lift
+    endif
+    if emblem {
+        sub_vec3 dir = tp, sp
+        const_q32 spd = 60
+        scale_vec3 pvel = dir, spd
+        const_q32 pdmg = 9
+        for k in 0..3 {
+            emit_projectile sp, pvel, pdmg
+        endfor
+        if overcharged {
+            const_q32 ob = 80
+            emit_clash ob
+        endif
+    endif
+}

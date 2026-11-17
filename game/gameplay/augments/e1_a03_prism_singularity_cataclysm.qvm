@@ -1,0 +1,19 @@
+// Gate Tactical Augment Tier 3 (Prism): Singularity Cataclysm Convergence
+fn on_tick(self, target) {
+    read_charge sch = self
+    read_pos sp = self
+    read_pos tp = target
+    dist_sq_vec3 gap = tp, sp
+    const_q32 rad = 24
+    const_q32_milli slow = 180
+    emit_phantasia sp, rad, slow
+    sub_vec3 dir = tp, sp
+    const_q32 spd = 60
+    scale_vec3 pvel = dir, spd
+    const_q32 sh_b = 75
+    const_q32 pdmg = 12
+    for i in 0..3 {
+        emit_clash sh_b
+        emit_projectile sp, pvel, pdmg
+    endfor
+}

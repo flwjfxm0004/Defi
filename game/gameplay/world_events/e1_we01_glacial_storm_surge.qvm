@@ -1,0 +1,13 @@
+// Season 1 Dynamic Open-World Environmental Physics Event: Glacial Storm Updraft Surge (`게임.md §1.1, §5.2`)
+fn on_tick(self, target) {
+    read_pos sp = self
+    read_pos tp = target
+    dist_sq_vec3 field_d2 = tp, sp
+    const_q32 zero = 0
+    const_q32 updraft_vy = 6
+    make_vec3 updraft = zero, updraft_vy, zero
+    emit_impulse updraft
+    const_q32 rad = 22
+    const_q32_milli slow = 350
+    emit_phantasia sp, rad, slow
+}

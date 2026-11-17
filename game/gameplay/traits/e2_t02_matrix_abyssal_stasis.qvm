@@ -1,0 +1,27 @@
+// Season 2 Trait 02: Abyssal Matrix Set (2-piece shatter surge / 4-piece predictive stasis field)
+fn on_tick(self, target) {
+    has_trait_bit m2 = self, 11
+    has_trait_bit m4 = self, 12
+    read_hp shp = self
+    read_hp thp = target
+    cmp_lt_q32 behind = shp, thp
+    read_vel sv = self
+    read_pos sp = self
+    const_q32_milli dtk = 500
+    fma_vec3 ahead = sv, dtk, sp
+    if m2 {
+        const_q32 hp = 10
+        const_q32 sh = 30
+        const_q32 cg = 20
+        emit_damage hp, sh, cg
+    endif
+    if m4 {
+        if behind {
+            const_q32 rad = 14
+            const_q32_milli slow = 260
+            emit_phantasia ahead, rad, slow
+        endif
+        const_q32 burst = 60
+        emit_clash burst
+    endif
+}

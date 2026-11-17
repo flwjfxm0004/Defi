@@ -1,0 +1,17 @@
+// Season 2 Weapon 05: Aether × Benediction — Zephyr Twin Fans
+fn on_tick(self, target) {
+    call prelude_range_probe(self, target) -> rng_d2
+    read_pos sp = self
+    read_pos tp = target
+    sub_vec3 dir = tp, sp
+    const_q32 speed = 60
+    scale_vec3 pvel = dir, speed
+    const_q32_milli pdmg = 250
+    const_q32_milli hp = 5340
+    const_q32_milli sh = 7500
+    const_q32 cg = 4
+    for i in 0..2 {
+        emit_projectile sp, pvel, pdmg
+        emit_damage hp, sh, cg
+    endfor
+}

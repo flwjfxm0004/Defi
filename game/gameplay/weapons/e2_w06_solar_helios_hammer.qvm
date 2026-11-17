@@ -1,0 +1,14 @@
+// Season 2 Weapon 06: Solar × Fortitude — Helios Siege Hammer
+fn on_tick(self, target) {
+    call prelude_boss_phase_gate(self, target) -> cur_h
+    read_pos sp = self
+    read_pos tp = target
+    dot_vec3 shock = sp, tp
+    const_q32_milli hp = 11000
+    const_q32_milli sh = 15000
+    const_q32 cg = 9
+    emit_damage hp, sh, cg
+    const_q32 z = 0
+    make_vec3 still = z, z, z
+    emit_impulse still
+}

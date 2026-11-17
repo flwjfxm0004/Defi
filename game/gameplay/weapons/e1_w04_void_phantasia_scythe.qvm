@@ -1,0 +1,18 @@
+// Season 1 Weapon 04: Void × Benediction — Chrono Phantasia Scythe
+fn on_tick(self, target) {
+    read_hp thp = target
+    const_q32 exec_lim = 80
+    cmp_lt_q32 near_break = thp, exec_lim
+    if near_break {
+        read_pos sp = self
+        const_q32 rad = 14
+        const_q32_milli slow = 250
+        emit_phantasia sp, rad, slow
+    endif
+    const_q32_milli hp = 3648
+    const_q32_milli sh = 5000
+    const_q32 cg = 4
+    for i in 0..3 {
+        emit_damage hp, sh, cg
+    endfor
+}
