@@ -14230,11 +14230,23 @@ def build_backward_trust_closure(
         return (Decimal(amt) / (Decimal(10) ** dec_t)) * u_p_hi_d, u_p_d
 
     if mc_queries:
+        # Speed maximization (2026-11-17: Multicall3 + parallel chunks, order-preserving).
+        # Serial 128-chunk loop is replaced by ThreadPool for live routers without changing result order.
+        _mc_chunks = [mc_queries[i : i + 128] for i in range(0, len(mc_queries), 128)]
         mc_out: List[Tuple[bool, bytes]] = []
-        for idx_mq in range(0, len(mc_queries), 128):
-            mc_out.extend(router.multicall3(c, mc_queries[idx_mq : idx_mq + 128], block_pin=block_pin))
-            if block_pin > 0 and isinstance(router, RPCRouter) and router.last_multicall_transport_failed():
-                rpc_balance_incomplete = True
+        if len(_mc_chunks) >= 2 and _is_live_real_router(router):
+            def _run_chunk(_ch: List[Tuple[str, bytes]]) -> List[Tuple[bool, bytes]]:
+                return router.multicall3(c, _ch, block_pin=block_pin)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(_mc_chunks))) as ex_mq:
+                for _chunk_res in ex_mq.map(_run_chunk, _mc_chunks):
+                    mc_out.extend(_chunk_res)
+                    if block_pin > 0 and isinstance(router, RPCRouter) and router.last_multicall_transport_failed():
+                        rpc_balance_incomplete = True
+        else:
+            for idx_mq in range(0, len(mc_queries), 128):
+                mc_out.extend(router.multicall3(c, mc_queries[idx_mq : idx_mq + 128], block_pin=block_pin))
+                if block_pin > 0 and isinstance(router, RPCRouter) and router.last_multicall_transport_failed():
+                    rpc_balance_incomplete = True
         if block_pin > 0 and (len(mc_out) < len(mc_queries) or not any(ok for ok, _ in mc_out)):
             try:
                 rebuilt_mc: List[Tuple[bool, bytes]] = list(mc_out)
@@ -21599,6 +21611,35 @@ def _build_arena_children_map(arena_list: Sequence[Any]) -> Tuple[Dict[int, List
         for idx_c, nd_c in enumerate(arena_list):
             if isinstance(nd_c, dict):
                 children_map[idx_c] = [ch_i for ch_i in (nd_c.get("children") or ()) if isinstance(ch_i, int)]
+        # Partial-trace union: forge --json arenas sometimes list only one child explicitly while `parent`
+        # fields encode the full fork (e.g. create + call both parented to root). Union parent edges to
+        # avoid orphaning reachable subtrees (Fail-Open for coupled/causal detection).
+        _parent_roots: List[int] = []
+        for idx_c, nd_c in enumerate(arena_list):
+            if not isinstance(nd_c, dict):
+                continue
+            par_i = nd_c.get("parent")
+            if isinstance(par_i, int) and 0 <= par_i < len(arena_list) and par_i != idx_c:
+                lst = children_map.setdefault(par_i, [])
+                if idx_c not in lst:
+                    lst.append(idx_c)
+            else:
+                _parent_roots.append(idx_c)
+        # Roots: explicit [0] plus any parent-orphaned nodes not reachable from 0 via union.
+        _reachable: Set[int] = set()
+        _stk: List[int] = [0]
+        while _stk:
+            _cur = _stk.pop()
+            if _cur in _reachable or _cur < 0 or _cur >= len(arena_list):
+                continue
+            _reachable.add(_cur)
+            for _ch in children_map.get(_cur, ()):
+                if _ch not in _reachable:
+                    _stk.append(_ch)
+        for _pr in _parent_roots:
+            if _pr not in _reachable:
+                root_indices.append(_pr)
+        root_indices = list(dict.fromkeys(root_indices))
     else:
         root_indices = []
         for idx_c, nd_c in enumerate(arena_list):
@@ -25436,7 +25477,7 @@ def emit_poc_requests_for_slug(
     session_id: str = "",
     closure: Optional[TrustClosureResult] = None,
     incident_sources: Optional[Dict[str, Any]] = None,
-    compact_single_bundle: bool = False,
+    compact_single_bundle: Optional[bool] = None,
     pre_diagnostics: Optional[Dict[str, Any]] = None,
     flash_plan: Optional[Dict[str, Any]] = None,
 ) -> List[Path]:
@@ -25642,6 +25683,15 @@ def emit_poc_requests_for_slug(
             "flash_search_needed": bool(eff_flash_plan.get("flash_search_needed")),
             "principle_summary": principle_summary,
             "search_subject": poc_subject,
+            "agent_glance": {
+                "target": cs_target,
+                "chain_block": f"{c}@{block_pin}",
+                "legs": legs_val,
+                "channels": channels_val,
+                "exit_pools": len(exit_pool_summary or []),
+                "flash_needed": bool(eff_flash_plan.get("flash_search_needed")),
+                "next": "EDIT editable_files[0] -> RUN isolated_commands.preverify_forge_test -> WRITE editable_files[1]",
+            },
             "known_metadata": poc_meta_hint if isinstance(poc_meta_hint, dict) else {},
             "recommended_web_queries": list(
                 dict.fromkeys([*poc_web_queries, f'"{cs_target}" "{c}" contract source code', *dyn_flash_queries])
@@ -25706,7 +25756,15 @@ def emit_poc_requests_for_slug(
         _write_json_atomic(rpath, req_payload)
         return rpath
 
-    if compact_single_bundle and len(agent_slices) >= 1:
+    # First-principle agent step compression (SOTA 참고만, 지시서 직렬 호출 최소화):
+    # 호출자가 compact를 미지정(None)이고 동일 target 소수(<=4)면 단일 번들로 합쳐 N->1로 줄인다.
+    # 명시적 False는 존중(다중 파일 기대 테스트 보존).
+    _auto_compact = (
+        compact_single_bundle is None
+        and 1 <= len(agent_slices) <= 4
+        and len({_norm_addr(s.target_address) for s in agent_slices}) == 1
+    )
+    if (compact_single_bundle or _auto_compact) and len(agent_slices) >= 1:
         primary_sl = agent_slices[0]
         bundle_vaults = [
             x
@@ -36036,6 +36094,34 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             _export_relay_state(store, ARTIFACT_ROOT)
 
         active_request_files = _collect_active_request_files(pending_addrs, pending_pocs, pending_verdicts)
+        # First-principle agent slimming (신규 Muse Code 세션이 지시서를 처음 받는 관점):
+        # run 전문을 5건으로 줄이고 다음 행동을 순서 체크리스트로 명시해 한 번에 읽고 직렬 실행하게 한다.
+        if pending_addrs:
+            _agent_checklist = [
+                f"1. Read active_request_files[0]={active_request_files[0] if active_request_files else 'audit_artifacts/*/address_request.json'}",
+                "2. Web Search recommended_web_queries + Web Fetch recommended_web_fetch_urls",
+                "3. Run isolated_commands.verify_* templates only, write editable_files[0]=discovered_addresses.json",
+                f"4. Run next_step={next_step} serially",
+            ]
+        elif pending_pocs:
+            _agent_checklist = [
+                f"1. Read active_request_files[0]={active_request_files[0] if active_request_files else 'audit_artifacts/*/poc_requests/poc_request_1.json'}",
+                "2. Implement dynamic verification in editable_files=[forge/test/test_<cid>.t.sol] within allowlist",
+                "3. Run isolated_commands.preverify_forge_test, fix per trace, write verdicts/verdict_<cid>.json",
+                f"4. Run next_step={next_step} serially",
+            ]
+        elif pending_verdicts:
+            _agent_checklist = [
+                "1. Read active_request_files poc_request + forge_output",
+                "2. Write verdicts/verdict_<cid>.json (verdict/notes>=16/remediation_exhausted)",
+                f"3. Run next_step={next_step} serially",
+            ]
+        elif sess.get("profit_slug"):
+            _agent_checklist = [f"1. Audit complete (profit sealed). Run next_step={next_step}"]
+        elif open_total == 0 and cursor_phase_now == "exhausted":
+            _agent_checklist = [f"1. Queue exhausted. Run next_step={next_step}"]
+        else:
+            _agent_checklist = [f"1. No delegation pending. Run next_step={next_step} serially"]
         summary: Dict[str, Any] = {
             "command": "run",
             "session_id": sid,
@@ -36047,7 +36133,8 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             "zombie_recovered": recovered,
             "agent_submissions_processed": agent_handled,
             "batch_processed": len(processed),
-            "results": processed[-25:],
+            "results": processed[-5:],
+            "agent_checklist": _agent_checklist,
             "sourcify_corpus_present": _has_sourcify_corpus_files(SOURCIFY_PARQUET_DIR),
             "sourcify_cursor_phase": cursor_phase_now,
             "sourcify_matched": total_cursor_matched,

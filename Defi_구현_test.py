@@ -140,6 +140,7 @@ TEST_TAGS: Tuple[str, ...] = (
     "T44_SYMBOLIC_CFG_ROLE_ABI_MIDFRAME_PREDIAG",
     "T45_DEDUP_DYNAMIC_FLASH_OPTIMIZER_AND_STAGE4_FLASH",
     "T46_ROUND6_SOTA_TRANSCENDENCE_100POINT",
+    "T47_FIRST_PRINCIPLE_AGENT_OPTIMIZATION",
 )
 
 
@@ -11979,6 +11980,54 @@ contract MockLpPair37 {
                         "T46_ROUND6_SOTA_TRANSCENDENCE_100POINT",
                         t46_all_ok,
                         f"dec={t46_dec_ok},sig={t46_sig_ok},on2={t46_on2_ok},mutex={t46_mutex_ok},sat={t46_sat_ok},intent={t46_intent_ok},dup={t46_dup_ok}",
+                    )
+                )
+
+            if _want_test("T47_FIRST_PRINCIPLE_AGENT_OPTIMIZATION", tag_filters):
+                # --- T47: 제1원리 에이전트 최적화 (신규 Muse Code가 지시서를 처음 받는 관점, SOTA 참고만) ---
+                import inspect as _inspect47
+                _src47_run = _inspect47.getsource(cmd_run)
+                # run 전문 5건 + checklist 순서 명시 (한 번 읽고 직렬 실행)
+                t47_slim_ok = ("processed[-5:]" in _src47_run and "agent_checklist" in _src47_run)
+                # PoC 동일 target 소수 자동 단일 번들 (N->1 파일, 지시서 단계 단축)
+                _src47_poc = _inspect47.getsource(emit_poc_requests_for_slug)
+                t47_compact_ok = ("_auto_compact" in _src47_poc and "len(agent_slices) <= 4" in _src47_poc)
+                # 산출물·캐시는 audit_artifacts 격리 유지 + os.environ 0 + 중복 0
+                import ast as _ast47, hashlib as _hl47
+                with open(SCRIPT_DIR / "Defi_구현.py", "r", encoding="utf-8") as _fh47:
+                    _src_all47 = _fh47.read()
+                _tree47 = _ast47.parse(_src_all47)
+                _seen47: dict = {}
+                _dup47 = 0
+                for _n47 in _ast47.walk(_tree47):
+                    if isinstance(_n47, _ast47.FunctionDef):
+                        _h47 = _hl47.sha256(_ast47.dump(_n47).encode()).hexdigest()
+                        if _h47 in _seen47:
+                            _dup47 += 1
+                        else:
+                            _seen47[_h47] = _n47.name
+                t47_dup_ok = (_dup47 == 0 and "os.environ" not in _src_all47)
+                # 실 PoC 단일 번들 동작: 동일 target 2 슬라이스 -> 파일 1건
+                try:
+                    _chk47 = _checksum("0x" + "aa" * 20)
+                    _sl47a = CausalSlice(slice_id="t47_a", target_address=_chk47, channel="CH_STORAGE", legs=["0xa9059cbb"], witness_candidates=[1], leg_targets=[_chk47], needs_agent_synthesis=True)
+                    _sl47b = CausalSlice(slice_id="t47_b", target_address=_chk47, channel="CH_STORAGE", legs=["0x23b872dd"], witness_candidates=[2], leg_targets=[_chk47], needs_agent_synthesis=True)
+                    _orig_art47 = ARTIFACT_ROOT
+                    try:
+                        _set_eng("ARTIFACT_ROOT", selftest_ns)
+                        _paths47 = emit_poc_requests_for_slug(slug="t47_agent_opt", chain="ethereum", block_pin=0, caller=_chk47, slices=[_sl47a, _sl47b], verified_sources={}, force_all=True, router=None)
+                        t47_bundle_ok = (len(_paths47) == 1 and _paths47[0].name == "poc_request_1.json")
+                    finally:
+                        _set_eng("ARTIFACT_ROOT", _orig_art47)
+                        shutil.rmtree(selftest_ns / "t47_agent_opt", ignore_errors=True)
+                except Exception:
+                    t47_bundle_ok = False
+                t47_all_ok = t47_slim_ok and t47_compact_ok and t47_dup_ok and t47_bundle_ok
+                results.append(
+                    (
+                        "T47_FIRST_PRINCIPLE_AGENT_OPTIMIZATION",
+                        t47_all_ok,
+                        f"slim={t47_slim_ok},compact={t47_compact_ok},dup={t47_dup_ok},bundle={t47_bundle_ok}",
                     )
                 )
 
