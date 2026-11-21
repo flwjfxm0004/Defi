@@ -1,0 +1,15 @@
+{
+  "audit_block": 102548720,
+  "chain": "hedera",
+  "file_sha256": {
+    "result.json": "c9c4fae475d438147416ae8bbdb16aa7f9b61c1241527d874363abed2ef4f8d6",
+    "verdicts/verdict_1.json": "ce75071f97b5b42a2724337c2a24ff2ffc241de4e0c0a27063df24ac7f1a4144"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795147287,
+  "slug": "modeb-hedera-178-00000041f6be",
+  "verdict": "안전"
+}

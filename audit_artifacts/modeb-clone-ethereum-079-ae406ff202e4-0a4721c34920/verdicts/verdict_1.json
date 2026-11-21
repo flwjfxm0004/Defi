@@ -1,0 +1,6 @@
+{
+  "audit_block": 26452486,
+  "candidate_id": 1,
+  "notes": "BT404 clone 0x0000000004cf5f43a0363A55EC2DCA691e398F50 CH_STORAGE 0x00000001 surface probed with 8 witnesses across selectors 0x00000001/0x00000002/0x24359879/0x077f224a/0x081812fc/0x2c5966af/0x2da2a859/0x3e0446a1 plus inferred multi-arg ABIs and 3-leg accumulation and fallback probes; all low-level calls reverted or returned empty, post-snap balances/supply unchanged, _tryLiquidateGains 0, _assertConservationLiq 0 ConservationGain, similarity 0.65 unpreserved patched-fork, fork 26452486 verified safe.",
+  "verdict": "안전"
+}

@@ -1,0 +1,18 @@
+{
+  "audit_block": 525213154,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Fork preverify reverted under live head replay, trace shows permit caching mismatch, full resynthesis required.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-clone-arbitrum-099-5f0ad3494318-05e71d7f21b5",
+  "verdict": "미검증 차단"
+}

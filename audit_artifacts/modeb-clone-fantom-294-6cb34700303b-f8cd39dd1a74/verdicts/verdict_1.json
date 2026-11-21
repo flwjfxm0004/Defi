@@ -1,0 +1,14 @@
+{
+  "audit_block": 0,
+  "blocker_reason": "UNREACHABLE_CHAIN_RPC:fantom",
+  "candidate_id": 1,
+  "notes": "UNREACHABLE_CHAIN_RPC:fantom",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "verdict": "미검증 차단"
+}

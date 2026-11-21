@@ -1,0 +1,11 @@
+{
+  "audit_block": 100821596,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "CH_STORAGE 0x06fdde03 on 0x049dC1E6E1E9EF0bd882fB3450bF8CAfDe3e8E5e probed with 8 witnesses across 8 selectors, all low-level calls reverted or returned empty, post-snap balances unchanged, 0 ConservationGain, similarity 0.65 patched-fork verified safe on fork 100821596.",
+  "slug": "modeb-clone-avalanche-079-ae406ff202e4-35e9d8779fe2",
+  "verdict": "안전"
+}

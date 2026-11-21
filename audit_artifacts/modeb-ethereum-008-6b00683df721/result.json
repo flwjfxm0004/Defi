@@ -1,0 +1,11 @@
+{
+  "audit_block": 26443628,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified at Ethereum block 26443628 against archive fork state: (1) Makina Finance Machine BeaconProxies (0x6b006870C83b1Cd49E766Ac9209f8d68763Df721, 0x2FEEf245d510A31B242705ff627447Aa9db661E3 -> beacon 0x5c680ec3... -> Machine 0x6A759cae19Aa25b41237089eb0BbbC4473bFB996) enforce authority 0x0fCEfa3f1047F35521A49cD8B06faBd588665d7F and role checks, reverting unprivileged calls to deposit/redeem/updateTotalAum/transferToHubCaliber/onReport; (2) Makina Caliber BeaconProxies (0xdc385C31C322351DAc9Ff4D7dED24E29B5D94768, 0xD1A1C248B253f1fc60eACd90777B9A63F8c8c1BC -> Caliber 0xe5504cf018E67be842B0E6f738D9A32230C05EC3) revert unprivileged calls to notifyIncomingTransfer/transferToHubMachine and require Merkle proofs for accountForPosition; (3) Secured Finance TokenVault 0xB74749b2213916b1dA3b869E41c7c57f1db69393 (owner 0xccAC3163E54847ae04f192a20DCf2E902C660312) matches getTotalDepositAmount for WBTC (82183653), ETH (4953563159664690318), and USDC within 3275 wei (<$0.01); (4) Ajna ERC20Pool logic TARGET (0x05bB4F6362B02F17C1A3F2B047A8b23368269A21) returns collateralAddress()==address(0) and clone 0xF5B1AD7F... pulls only from msg.sender, protecting approved holder 0xdEA02C834a94Acac7e709f80702c62aBd02e8dCB wstETH. forge test test_1.t.sol passes (gas: 11817004) in 33.15s with zero ConservationGain.",
+  "slug": "modeb-ethereum-008-6b00683df721",
+  "verdict": "안전"
+}

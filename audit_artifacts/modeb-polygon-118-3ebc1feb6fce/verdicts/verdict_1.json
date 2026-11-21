@@ -1,0 +1,6 @@
+{
+  "audit_block": 97570938,
+  "candidate_id": 1,
+  "notes": "TARGET 0x2cffAAf7885530E1C5a9684eBbe397d6f1De48d8 leg 0x02527753(uint256) dynamic check under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three single-leg selectors plus staticcall, vault balances empty at audit block with zero ConservationGain in preverify PASS, Huma refreshAccount path yields no drainable balance.",
+  "verdict": "안전"
+}

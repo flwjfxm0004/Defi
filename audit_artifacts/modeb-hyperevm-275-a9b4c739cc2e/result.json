@@ -1,0 +1,12 @@
+{
+  "audit_block": 51690484,
+  "chain": "hyperevm",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 0.0,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=0.00 similarity=0.0000 vuln_preserved=None",
+  "similarity": 0.0,
+  "slug": "modeb-hyperevm-275-a9b4c739cc2e",
+  "verdict": "안전"
+}

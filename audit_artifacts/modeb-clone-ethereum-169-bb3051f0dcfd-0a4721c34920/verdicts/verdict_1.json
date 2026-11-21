@@ -1,0 +1,6 @@
+{
+  "audit_block": 26453554,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 17622317, BPool 0x8329ab33 0x12989260 0x8c28cbe8와 0x00000001 0x00000002를 8 witness sweep, staticcall, gulp TOK_0, join-exit 3회 반복 후 snapBefore==snapMid ConservationGain 0건. 타겟 0x0000...398F50는 BPool 아님 전 슬라이스 active이나 view 위주 similarity 0.65로 Ocean 결함 보존 불가, 엔진 S4 252 passed 0 gains와 일치해 안전 판정.",
+  "verdict": "안전"
+}

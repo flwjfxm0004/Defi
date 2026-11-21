@@ -1,0 +1,15 @@
+{
+  "audit_block": 0,
+  "chain": "fantom",
+  "file_sha256": {
+    "result.json": "39f6173507233e9b0d3dd4ffa35c7ddb64bdebec69ee71f00f0712af57ee89d5",
+    "verdicts/verdict_1.json": "468981817315edd446b59c10571d68265147db911e6219d53ec0f34ea84d63f1"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795152805,
+  "slug": "modeb-clone-fantom-294-6cb34700303b-f8cd39dd1a74",
+  "verdict": "미검증 차단"
+}

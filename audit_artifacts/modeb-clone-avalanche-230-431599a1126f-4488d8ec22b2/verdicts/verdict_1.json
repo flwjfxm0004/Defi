@@ -1,0 +1,6 @@
+{
+  "audit_block": 100842864,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 12405921, 0x06fdde03 0x0902f1ac 0x0dfe1681를 8 witness sweep, staticcall, 3-leg 반복 호출 후 snapBefore==snapMid ConservationGain 0건. 타겟 0x049d는 Diamond vault 아님 pair view로 registerErc20 double-count 경로 없음 similarity 0.65로 Reddio 결함 보존 불가해 안전 판정.",
+  "verdict": "안전"
+}

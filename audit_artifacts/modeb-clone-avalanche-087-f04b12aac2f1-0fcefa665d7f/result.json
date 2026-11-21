@@ -1,0 +1,11 @@
+{
+  "audit_block": 100825913,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "CH_STORAGE probe on 0x00000000ecbb8edc (avalanche 087) via low-level calls, post-snap unchanged, 0 ConservationGain, similarity 0.65 patched-fork safe on fork 100825913, preverify PASS gas 10809032.",
+  "slug": "modeb-clone-avalanche-087-f04b12aac2f1-0fcefa665d7f",
+  "verdict": "안전"
+}

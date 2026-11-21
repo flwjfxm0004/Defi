@@ -1,0 +1,6 @@
+{
+  "audit_block": 100686157,
+  "candidate_id": 1,
+  "notes": "Verified at Avalanche block 100686157 against fork state: (1) Secured Finance LendingMarketController 0x35e9D8e0223A75E51a67aa731127C91Ea0779Fe2 has isTerminated()=1 and TokenVault 0xB74749b2213916b1dA3b869E41c7c57f1db69393 has paused()=0, both owned by 0x8a9e7F66bc586B464a5d788806f200751031c590; (2) TokenVault getTotalDepositAmount(USDC)=102240139 matches held USDC balance (102240139, ~$102.22), unprivileged withdraw/executeEmergencySettlement/cleanUpAllFunds/unwindPosition calls revert with zero balance change, and implementations hold zero USDC/AVAX. forge test test_1.t.sol passes in 71.34s against https://api.avax.network/ext/bc/C/rpc with zero ConservationGain.",
+  "verdict": "안전"
+}

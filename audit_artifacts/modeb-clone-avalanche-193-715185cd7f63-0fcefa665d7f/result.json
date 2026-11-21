@@ -1,0 +1,11 @@
+{
+  "audit_block": 100789056,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x049dC1E6E1E9EF0bd882fB3450bF8CAfDe3e8E5e leg 0x06fdde03 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-clone-avalanche-193-715185cd7f63-0fcefa665d7f",
+  "verdict": "안전"
+}

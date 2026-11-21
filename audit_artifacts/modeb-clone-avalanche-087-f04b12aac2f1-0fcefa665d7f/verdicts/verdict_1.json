@@ -1,0 +1,6 @@
+{
+  "audit_block": 100825913,
+  "candidate_id": 1,
+  "notes": "CH_STORAGE probe on 0x00000000ecbb8edc (avalanche 087) via low-level calls, post-snap unchanged, 0 ConservationGain, similarity 0.65 patched-fork safe on fork 100825913, preverify PASS gas 10809032.",
+  "verdict": "안전"
+}

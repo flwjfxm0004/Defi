@@ -1,0 +1,11 @@
+{
+  "audit_block": 525875464,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 19795778, receiveMessage 0x0dd27120 sweep 후 ConservationGain 0건. 타겟 0x0106는 L1BlockOracleUpdater 클론이나 Arbitrum chainId에서 AND 체크가 정상 작동해 발신자 검증 통과, similarity 1.0이어도 체인 조건상 취약 미발동으로 안전 판정.",
+  "slug": "modeb-clone-arbitrum-052-b104d3c88c6a-ae74649f64e7",
+  "verdict": "안전"
+}

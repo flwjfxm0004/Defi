@@ -1,0 +1,15 @@
+{
+  "audit_block": 525653654,
+  "chain": "arbitrum",
+  "file_sha256": {
+    "result.json": "09aac72ea2e2fb39cbe3ed023912b9812009c9735669f9c73332ad4653d37a91",
+    "verdicts/verdict_1.json": "985a25702508426a6442638429f97d53eb7dfb0824e58255d81332e2aa96d5bb"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795101925,
+  "slug": "modeb-arbitrum-003-a912677f014b",
+  "verdict": "안전"
+}

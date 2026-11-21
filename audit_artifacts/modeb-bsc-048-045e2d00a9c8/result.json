@@ -1,0 +1,11 @@
+{
+  "audit_block": 134475169,
+  "chain": "bsc",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x045e2Df638eBEc29130DD3bE61161cbA5F00a9c8 leg 0x06fdde03 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-bsc-048-045e2d00a9c8",
+  "verdict": "안전"
+}

@@ -1,0 +1,6 @@
+{
+  "audit_block": 26439979,
+  "candidate_id": 1,
+  "notes": "Fork preverify passed (105s), no conservation gain, no net profit under $100.",
+  "verdict": "안전"
+}

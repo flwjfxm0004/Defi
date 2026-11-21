@@ -1,0 +1,15 @@
+{
+  "audit_block": 9422678,
+  "chain": "rootstock",
+  "file_sha256": {
+    "result.json": "433ae98a6708681f3e23607b1ada022a9c456744a1101fbd47b0e21ac429d27d",
+    "verdicts/verdict_1.json": "3caa061aaf893168a22b5fa401ca369874ca447efeb11693716959d7ef063fb3"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795013323,
+  "slug": "modeb-rootstock-289-5a0d86b4eaa7",
+  "verdict": "안전"
+}

@@ -1,0 +1,11 @@
+{
+  "audit_block": 525824400,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 18612400, 0x00000001 0x03e5fb59 등을 8 witness sweep, staticcall, 3-leg 반복 호출 후 snapBefore==snapMid ConservationGain 0건. 타겟 0x05e71D는 Diamond registerErc20 vault 아님 prescreen reverted similarity 0.65로 Reddio double-count 보존 불가해 안전 판정.",
+  "slug": "modeb-clone-arbitrum-230-431599a1126f-4488d8ec22b2",
+  "verdict": "안전"
+}

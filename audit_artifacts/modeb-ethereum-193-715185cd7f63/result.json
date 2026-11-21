@@ -1,0 +1,12 @@
+{
+  "audit_block": 26450336,
+  "chain": "ethereum",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 80457.7,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=80457.70 similarity=0.0000 vuln_preserved=None",
+  "similarity": 0.0,
+  "slug": "modeb-ethereum-193-715185cd7f63",
+  "verdict": "안전"
+}

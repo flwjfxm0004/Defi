@@ -37,3 +37,14 @@ __pycache__/
 *.py[co]
 .venv/
 .tmp/
+
+# Browser CDP profile & Node modules (local only, never push)
+.chrome-cdp/
+node_modules/
+
+# Push hygiene: ephemeral locks/progress/DB/workspace config + root log (regenerated locally)
+audit_artifacts/**/.slug.lock
+audit_artifacts/_live_progress_*.json
+audit_artifacts/*.db
+audit_artifacts/*/forge/foundry.toml
+wsl_del.log

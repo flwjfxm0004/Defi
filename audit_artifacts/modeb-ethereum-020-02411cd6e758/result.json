@@ -1,0 +1,11 @@
+{
+  "audit_block": 26447749,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x02411C115f63E19fa2c4C42f7b99734036d6E758 leg 0x00fdd58e under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-ethereum-020-02411cd6e758",
+  "verdict": "안전"
+}

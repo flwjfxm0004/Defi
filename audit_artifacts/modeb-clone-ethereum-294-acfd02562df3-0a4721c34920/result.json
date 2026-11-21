@@ -1,0 +1,11 @@
+{
+  "audit_block": 26454295,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 17525908, depositMulti 0xfa80327e를 8 witness sweep 후 ConservationGain 0건. 타겟 0x0000...398F50는 CL 볼트 아님 prescreen reverted similarity 0.65로 길이 결함 보존 불가해 안전 판정.",
+  "slug": "modeb-clone-ethereum-294-acfd02562df3-0a4721c34920",
+  "verdict": "안전"
+}

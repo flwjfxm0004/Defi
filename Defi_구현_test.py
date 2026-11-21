@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 r"""
-Defi_구현_test.py — Defi_구현.py 분리 회귀 테스트 러너 (T1~T45, 태그/범위 선택 실행 지원)
+Defi_구현_test.py — Defi_구현.py 분리 회귀 테스트 러너 (T1~T50, 태그/범위 선택 실행 지원)
 
 사용법:
 - 전체 실행: `c:\Defi\python.exe -B -X utf8 Defi_구현_test.py`
@@ -142,6 +142,10 @@ TEST_TAGS: Tuple[str, ...] = (
     "T46_ROUND6_SOTA_TRANSCENDENCE_100POINT",
     "T47_FIRST_PRINCIPLE_AGENT_OPTIMIZATION",
     "T48_SOTA_SPLIT_FS_GATE",
+    "T49_SOTA_SOUNDNESS_V4_B3_7702_1153",
+    "T50_ERC7821_VM_LOG_DEADCODE",
+    "T51_OSAKA_MODEXP_JUMPDEST_SOTA",
+    "T52_EIP7702_REPLAY_ZERO_CALLER_HARDENING",
 )
 
 
@@ -11959,6 +11963,8 @@ contract MockLpPair37 {
                     "0x1f6c34c9" in VALUE_SINK_SELECTORS
                     and "0x950fb655" in VALUE_SINK_SELECTORS
                     and _selector("executeBatch((uint8,address,uint256,bytes)[])").lower() in VALUE_SINK_SELECTORS
+                    and _selector("execute(address,uint256,bytes)").lower() in VALUE_SINK_SELECTORS
+                    and _selector("settle()").lower() in VALUE_SINK_SELECTORS
                     and _selector("entryPoint()") in _FACTORY_CLONE_GETTER_SELS
                 )
                 # 7) duplicate 0 (AST bodies) + os.environ 0
@@ -11976,12 +11982,22 @@ contract MockLpPair37 {
                         else:
                             _seen46[_h46] = _n46.name
                 t46_dup_ok = (_dup46 == 0 and "os.environ" not in _src_all46)
-                t46_all_ok = t46_dec_ok and t46_sig_ok and t46_on2_ok and t46_mutex_ok and t46_sat_ok and t46_intent_ok and t46_dup_ok
+                # 7b) sort-once equivalence: sorted-list path equals set path (no score drift after pre-sort optimization)
+                _wmap46 = {b"abcd": 2.0, b"efgh": 1.0}
+                _wtot46 = 3.0
+                _hit_set46 = {b"abcd", b"efgh"}
+                _hit_lst46 = sorted(_hit_set46)
+                t46_sort_ok = (
+                    _weighted_containment_from_hits(_hit_set46, _wmap46, _wtot46)
+                    == _weighted_containment_from_hits(_hit_lst46, _wmap46, _wtot46)
+                    == 1.0
+                )
+                t46_all_ok = t46_dec_ok and t46_sig_ok and t46_on2_ok and t46_mutex_ok and t46_sat_ok and t46_intent_ok and t46_dup_ok and t46_sort_ok
                 results.append(
                     (
                         "T46_ROUND6_SOTA_TRANSCENDENCE_100POINT",
                         t46_all_ok,
-                        f"dec={t46_dec_ok},sig={t46_sig_ok},on2={t46_on2_ok},mutex={t46_mutex_ok},sat={t46_sat_ok},intent={t46_intent_ok},dup={t46_dup_ok}",
+                        f"dec={t46_dec_ok},sig={t46_sig_ok},on2={t46_on2_ok},mutex={t46_mutex_ok},sat={t46_sat_ok},intent={t46_intent_ok},dup={t46_dup_ok},sort={t46_sort_ok}",
                     )
                 )
 
@@ -12085,6 +12101,340 @@ contract MockLpPair37 {
                         "T48_SOTA_SPLIT_FS_GATE",
                         t48_all_ok,
                         f"fs={t48_fs_ok},split={t48_split_ok},v4={t48_v4_ok},dup={t48_dup_ok}",
+                    )
+                )
+
+            if _want_test("T49_SOTA_SOUNDNESS_V4_B3_7702_1153", tag_filters):
+                # --- T49: 2026-11-17 SOTA 초월 (Uniswap v4 + Balancer v3 0bps 플래시 회계, EIP-7702 onlyEOA 우회 탐지,
+                #          EIP-1153 교차 진입점 TSTORE->TLOAD 잔여물 슬라이싱, E3 헬퍼 스택·ENTRY_RET 건전성, 치팅 차단, 중복 0) ---
+                # 1) E3 _verify_require_helper_block 스택 위치 검증 + Pass 2 entry_ret_blocks 병합 건전성
+                _owner49 = "ab" * 20
+                _bad_helper_bc49 = bytes.fromhex(
+                    "631111111114600d57600080fd"
+                    "5b3373" + _owner49 + "14602a603556"
+                    "5b6000808080808080f100"
+                    "5b603d57600080fd"
+                    "5b56"
+                )
+                _good_helper_bc49 = bytes.fromhex(
+                    "631111111114600d57600080fd"
+                    "5b3373" + _owner49 + "14602a603556"
+                    "5b6000808080808080f100"
+                    "5b90603e57600080fd"
+                    "5b56"
+                )
+                _mixed_er_bc49 = bytes.fromhex(
+                    "631111111114601657"
+                    "632222222214601b57"
+                    "600080fd"
+                    "5b33602656"
+                    "5b6026602156"
+                    "5b60009056"
+                    "5b73" + _owner49 + "14604457600080fd"
+                    "5b6000808080808080f100"
+                )
+                _dom_bad_h49 = prove_caller_dominator_closed(disassemble_and_build_cfg(_bad_helper_bc49), target_addr="0x" + "91" * 20)
+                _dom_good_h49 = prove_caller_dominator_closed(disassemble_and_build_cfg(_good_helper_bc49), target_addr="0x" + "92" * 20)
+                _dom_mixed_er49 = prove_caller_dominator_closed(disassemble_and_build_cfg(_mixed_er_bc49), target_addr="0x" + "93" * 20)
+                t49_e3_sound_ok = (
+                    (not _dom_bad_h49.early_exit_safe)
+                    and _dom_good_h49.early_exit_safe
+                    and (not _dom_mixed_er49.early_exit_safe)
+                )
+
+                # 2) EIP-7702 onlyEOA 게이트(CALLER==ORIGIN / EXTCODESIZE(CALLER)) + EIP-1153 교차 TSTORE->TLOAD + 프록시 메타 보존
+                _eoa_orig_bc49 = bytes.fromhex(
+                    "631111111114600d57600080fd"
+                    "5b333214601857600080fd"
+                    "5b6000808080808080f100"
+                )
+                _eoa_extcs_bc49 = bytes.fromhex(
+                    "631111111114600d57600080fd"
+                    "5b333b15601857600080fd"
+                    "5b6000808080808080f100"
+                )
+                _tstore_x_bc49 = bytes.fromhex(
+                    "631111111114601657"
+                    "632222222214601d57"
+                    "600080fd"
+                    "5b600160075d00"
+                    "5b60075c506000808080808080f100"
+                )
+                _cfg_orig49 = disassemble_and_build_cfg(_eoa_orig_bc49)
+                _cfg_extcs49 = disassemble_and_build_cfg(_eoa_extcs_bc49)
+                _dom_orig49 = prove_caller_dominator_closed(_cfg_orig49, target_addr="0x" + "94" * 20)
+                _sl_orig49 = slice_four_channel_causal_chains("0x" + "94" * 20, _cfg_orig49, ["0x11111111"])
+                _cfg_tx49 = disassemble_and_build_cfg(_tstore_x_bc49)
+                _sl_tx49 = slice_four_channel_causal_chains("0x" + "95" * 20, _cfg_tx49, ["0x11111111", "0x22222222"])
+                _merged49 = _merge_facet_cfgs([_cfg_orig49, _cfg_extcs49])
+                _ep_m49 = _merged49.entries.get("0x11111111")
+                t49_7702_1153_ok = (
+                    bool(_cfg_orig49.entries.get("0x11111111") and _cfg_orig49.entries["0x11111111"].has_eoa_only_gate)
+                    and bool(_cfg_extcs49.entries.get("0x11111111") and _cfg_extcs49.entries["0x11111111"].has_eoa_only_gate)
+                    and (not _dom_orig49.early_exit_safe)
+                    and any(
+                        s.needs_agent_synthesis and bool((s.prescreen_diagnostics or {}).get("eoa_only_gate_eip7702_bypassable"))
+                        for s in _sl_orig49
+                    )
+                    and any(
+                        s.channel == "CH_TRANSIENT" and s.legs == ["0x11111111", "0x22222222"]
+                        for s in _sl_tx49
+                    )
+                    and (_ep_m49 is not None and _ep_m49.has_eoa_only_gate)
+                )
+
+                # 3) 치팅 방지 강화: 임의 인터페이스 HEVM 인라인 캐스트 + _tryLiquidateGains 리터럴/무차감 위변조 차단
+                _caller49 = _checksum("0x1000000000000000000000000000000000049001")
+                _evil49 = _checksum("0x2000000000000000000000000000000000049002")
+                _ok_ic_deal49, _ = verify_cheatcode_allowlist(
+                    f"interface IFoo {{ function deal(address,uint256) external; }} contract Verify_X {{ function test_x() public {{ IFoo({HEVM_ADDRESS}).deal({_caller49}, 1e18); }} }}"
+                )
+                _ok_ic_prank49, _ = verify_cheatcode_allowlist(
+                    f"interface IFoo {{ function startPrank(address,address) external; }} contract Verify_X {{ function test_x() public {{ IFoo({HEVM_ADDRESS}).startPrank({_evil49}, {_evil49}); }} }}",
+                    allowed_caller=_caller49,
+                )
+                _ok_liq_lit49, _ = verify_agent_harness_accounting_integrity(
+                    "contract AgentVerify_X { function _tryLiquidateGains(ConservationSnap memory snapBefore, ConservationSnap memory snapMid) internal returns (uint256[2] memory liqCredit, uint256[2] memory liqDebited) { liqDebited[1] = _satAdd(liqDebited[1], 1); liqCredit[1] = _satAdd(liqCredit[1], 1e30); } }"
+                )
+                _ok_liq_nodeb49, _ = verify_agent_harness_accounting_integrity(
+                    "contract AgentVerify_X { function _tryLiquidateGains(ConservationSnap memory snapBefore, ConservationSnap memory snapMid) internal returns (uint256[2] memory liqCredit, uint256[2] memory liqDebited) { uint256 g = snapMid.callerBal[1]; liqCredit[1] = _satAdd(liqCredit[1], g); } }"
+                )
+                t49_anticheat_ok = (
+                    (not _ok_ic_deal49)
+                    and (not _ok_ic_prank49)
+                    and (not _ok_liq_lit49)
+                    and (not _ok_liq_nodeb49)
+                )
+
+                # 4) Uniswap v4 (Mode 5) + Balancer v3 (Mode 6) 0bps 플래시 회계 실측·렌더링·solc 실컴파일
+                _tok49 = _checksum("0x" + "c9" * 20)
+                _v4_uni49 = _checksum(UNISWAP_V4_POOL_MANAGERS["unichain"][0])
+
+                class _V4MockRouter49(RPCRouter):
+                    def candidate_urls(self, chain: str, need_archive: bool = False, for_forge: bool = False) -> List[str]:
+                        return ["http://127.0.0.1:8545"]
+
+                    def multicall3(self, chain: str, calls: Sequence[Tuple[str, bytes]], block_pin: int = 0) -> List[Tuple[bool, bytes]]:
+                        out_mc: List[Tuple[bool, bytes]] = []
+                        for tgt_c, cd_b in calls:
+                            if len(cd_b) >= 36 and cd_b[:4].hex() == BALANCE_OF_SEL[2:]:
+                                who_n = _norm_addr("0x" + cd_b[16:36].hex())
+                                val_w = 5000 * (10**18) if (_norm_addr(tgt_c) == _norm_addr(_tok49) and who_n == _norm_addr(_v4_uni49)) else 0
+                                out_mc.append((True, int(val_w).to_bytes(32, "big")))
+                            else:
+                                out_mc.append((False, b""))
+                        return out_mc
+
+                _r49 = _V4MockRouter49(store=None)
+                _fp_v4_49 = discover_optimal_flash_sources_for_tokens(_r49, "unichain", 100, [_tok49])
+                _best_v4_49 = (_fp_v4_49.get("by_token") or {}).get(_tok49, {}).get("best") or {}
+                _sl_v4_49 = CausalSlice(
+                    slice_id="ch_v4_flash_t49",
+                    target_address=_checksum("0x" + "d9" * 20),
+                    channel="CH_STORAGE",
+                    legs=["0x47e7ef24"],
+                    witness_candidates=[10**18],
+                    leg_targets=[_checksum("0x" + "d9" * 20)],
+                    flash_loan_hint={"mode": 5, "vault": _v4_uni49, "token": _tok49, "fee_bps": 0, "max_borrowable_raw": str(5000 * 10**18)},
+                )
+                _sl_b3_49 = CausalSlice(
+                    slice_id="ch_b3_flash_t49",
+                    target_address=_checksum("0x" + "d9" * 20),
+                    channel="CH_STORAGE",
+                    legs=["0x47e7ef24"],
+                    witness_candidates=[10**18],
+                    leg_targets=[_checksum("0x" + "d9" * 20)],
+                    flash_loan_hint={"mode": 6, "vault": BALANCER_V3_VAULT, "token": _tok49, "fee_bps": 0, "max_borrowable_raw": str(5000 * 10**18)},
+                )
+                _h_v4b3_49 = _render_minimal_solidity_harness(
+                    slug="t49_v4b3",
+                    chain="ethereum",
+                    block_pin=21_000_000,
+                    caller=_caller49,
+                    target_addr=_checksum("0x" + "d9" * 20),
+                    token_addrs=[_tok49],
+                    slices=[_sl_v4_49, _sl_b3_49],
+                )
+                _ok_al_49, _ = verify_cheatcode_allowlist(_h_v4b3_49, allowed_caller=_caller49, forbid_inline_fork=True)
+                _ok_ac_49, _ = verify_agent_harness_accounting_integrity(_h_v4b3_49, allowed_caller=_caller49)
+                _solc_v4b3_ok = True
+                if SOLC_BIN.is_file():
+                    _p_sol49 = selftest_ns / "t49_v4b3.sol"
+                    _p_sol49.write_text(_h_v4b3_49, encoding="utf-8")
+                    _pr49 = _run_subproc_tree_safe([str(SOLC_BIN), "--bin", str(_p_sol49)], cwd=selftest_ns, env=None, timeout_sec=30)
+                    _solc_v4b3_ok = (_pr49.returncode == 0)
+                t49_v4_b3_ok = (
+                    _best_v4_49.get("provider") == "uniswap_v4"
+                    and _best_v4_49.get("fee_bps") == 0
+                    and _best_v4_49.get("stage4_mode") == 5
+                    and _STAGE4_FLASH_MODE.get("balancer_v3") == 6
+                    and "unlockCallback(" in _h_v4b3_49
+                    and "onBalancerV3Unlock(" in _h_v4b3_49
+                    and "0x0b0d9c09" in _h_v4b3_49
+                    and "0xae639329" in _h_v4b3_49
+                    and _ok_al_49
+                    and _ok_ac_49
+                    and _solc_v4b3_ok
+                )
+
+                # 5) RPC 분류 우선순위 + agent_glance.exit_pools 정합 + SQLite find_proxies_by_impl/put_proto_meta_batch + AST 정규화 중복 0
+                _rpc_prio_ok49 = (
+                    _classify_rpc_error("HTTP 401 Unauthorized: invalid api key") == "auth_dead"
+                    and _classify_rpc_error("HTTP 403 Forbidden: access denied") == "auth_dead"
+                    and _classify_rpc_error("HTTP 429 Too Many Requests: rate limit exceeded") == "quota"
+                )
+                _st49 = SQLiteStore(":memory:")
+                try:
+                    _st49.put_contract_code(1, "0x" + "a1" * 20, 100, "h1", "s1", "", "0x6000", "eip1967", ["0x" + "b1" * 20])
+                    _st49.put_contract_code(1, "0x" + "a2" * 20, 100, "h2", "s2", "", "0x6000", "none", [])
+                    _st49.put_proto_meta_batch([("slug-49", {"name": "S49"})])
+                    _sql49_ok = (
+                        len(_st49.find_proxies_by_impl(["0x" + "b1" * 20], chain_id=1)) == 1
+                        and _st49.get_proto_meta("slug-49").get("name") == "S49"
+                    )
+                finally:
+                    _st49.close()
+                _cl49 = TrustClosureResult(
+                    chain="ethereum",
+                    block_pin=100,
+                    seed_addresses=[_norm_addr("0x" + "d9" * 20)],
+                    all_addresses=[_norm_addr("0x" + "d9" * 20)],
+                    resolutions={},
+                    vault_exposures={},
+                    max_extractable_usd=1000.0,
+                    min_gas_usd=0.01,
+                    early_exit_safe=False,
+                    early_exit_reason="",
+                    verified_exit_pools={
+                        _norm_addr(_tok49): {
+                            "pool": _checksum("0x" + "e9" * 20),
+                            "dex_kind": "v2",
+                            "quote_token": WRAPPED_NATIVE_BY_CHAIN["ethereum"],
+                            "realizable_usd": 1000.0,
+                            "realizable_usd_dec": "1000",
+                            "paused": False,
+                        }
+                    },
+                )
+                _orig_art49 = ARTIFACT_ROOT
+                _ep_cnt_ok49 = False
+                try:
+                    _set_eng("ARTIFACT_ROOT", selftest_ns)
+                    _p49_reqs = emit_poc_requests_for_slug(
+                        slug="t49_ep_cnt",
+                        chain="ethereum",
+                        block_pin=0,
+                        caller=_caller49,
+                        slices=[_sl_orig49[0]],
+                        verified_sources={},
+                        force_all=True,
+                        router=None,
+                        closure=_cl49,
+                    )
+                    _doc49 = json.loads(_p49_reqs[0].read_text(encoding="utf-8")) if _p49_reqs else {}
+                    _ag49 = _doc49.get("agent_glance") or {}
+                    _ep_cnt_ok49 = (
+                        _ag49.get("exit_pools") == 1
+                        and _ag49.get("eoa_only_gate_eip7702_bypassable") is True
+                    )
+                finally:
+                    _set_eng("ARTIFACT_ROOT", _orig_art49)
+                    shutil.rmtree(selftest_ns / "t49_ep_cnt", ignore_errors=True)
+                t49_misc_ok = _rpc_prio_ok49 and _sql49_ok and _ep_cnt_ok49
+                t49_all_ok = t49_e3_sound_ok and t49_7702_1153_ok and t49_anticheat_ok and t49_v4_b3_ok and t49_misc_ok
+                results.append(
+                    (
+                        "T49_SOTA_SOUNDNESS_V4_B3_7702_1153",
+                        t49_all_ok,
+                        f"e3={t49_e3_sound_ok},7702_1153={t49_7702_1153_ok},anticheat={t49_anticheat_ok},v4b3={t49_v4_b3_ok},misc={t49_misc_ok}",
+                    )
+                )
+
+            if _want_test("T50_ERC7821_VM_LOG_DEADCODE", tag_filters):
+                # --- T50: ERC-7821 sink + Vm getRecordedLogs drift + dead float wrapper removal ---
+                erc7821_sel = _selector("execute(bytes32,bytes)").lower()
+                erc7821_ok = (
+                    erc7821_sel == "0xe9ae5c53"
+                    and erc7821_sel in VALUE_SINK_SELECTORS
+                    and "execute(bytes32,bytes)" in Path(str(eng.__file__)).read_text(encoding="utf-8")
+                )
+                vm_log_ok = (
+                    "function getRecordedLogs() external returns (Log[] memory);" in _SOLIDITY_SPDX_AND_VM_HEADER
+                    and "struct Log {" in _SOLIDITY_SPDX_AND_VM_HEADER
+                    and "function recordLogs() external;" in _SOLIDITY_SPDX_AND_VM_HEADER
+                )
+                dead_ok = (not hasattr(SQLiteStore, "get_price")) and hasattr(SQLiteStore, "get_price_dec")
+                scan50 = quick_scan_value_sinks(bytes.fromhex("63e9ae5c53f100"), cancun_active=True)
+                s2_ok = bool(scan50.has_s2_token_call) and bool(scan50.has_s1_native_call)
+                t50_all_ok = erc7821_ok and vm_log_ok and dead_ok and s2_ok
+                results.append(
+                    (
+                        "T50_ERC7821_VM_LOG_DEADCODE",
+                        t50_all_ok,
+                        f"erc7821={erc7821_ok},vmlog={vm_log_ok},dead={dead_ok},s2={s2_ok}",
+                    )
+                )
+
+            if _want_test("T51_OSAKA_MODEXP_JUMPDEST_SOTA", tag_filters):
+                # --- T51: 2026-11-17 Osaka/Fusaka SOTA (EIP-7823/7825/7883/7935) + 정적 미사용 0 ---
+                eng_src51 = Path(str(eng.__file__)).read_text(encoding="utf-8")
+                osaka_doc_ok = all(
+                    k in eng_src51 for k in ("EIP-7823", "EIP-7883", "EIP-7935", "JUMPDEST")
+                ) and ("7825" in eng_src51)
+                osaka_ver_ok = (
+                    _target_foundry_evm_version({"ethereum": "https://x"}) == "osaka"
+                    and _target_foundry_evm_version({"ethereum": "https://x"}, "prague") == "prague"
+                    and _target_foundry_evm_version({"optimism": "https://x"}) == "prague"
+                )
+                static_use_ok = "router.get_last_batch_errors" in eng_src51 and hasattr(RPCRouter, "get_last_batch_errors")
+                t51_all_ok = osaka_doc_ok and osaka_ver_ok and static_use_ok
+                results.append(
+                    (
+                        "T51_OSAKA_MODEXP_JUMPDEST_SOTA",
+                        t51_all_ok,
+                        f"osaka_doc={osaka_doc_ok},osaka_ver={osaka_ver_ok},static={static_use_ok}",
+                    )
+                )
+
+            if _want_test("T52_EIP7702_REPLAY_ZERO_CALLER_HARDENING", tag_filters):
+                deleg_hex = "0xef0100" + ("ab" * 20)
+                deleg_ok = (
+                    _is_eip7702_delegation_code_hex(deleg_hex)
+                    and not _is_eip7702_delegation_code_hex("0x")
+                    and not _is_eip7702_delegation_code_hex("0x6000")
+                    and not _is_eip7702_delegation_code_hex("0xef0100" + ("00" * 20))
+                    and "chain_id=0" in Path(str(eng.__file__)).read_text(encoding="utf-8")
+                )
+                scan_deleg = quick_scan_value_sinks(_hex_to_bytes(deleg_hex))
+                scan_ok = (not scan_deleg.early_exit_safe)
+                cands52 = _deterministic_caller_candidates("ethereum")
+                first52 = _checksum(cands52[0])
+                second52 = cands52[1] if len(cands52) > 1 else cands52[0]
+
+                class _DelegMockRouter52(RPCRouter):
+                    def __init__(self) -> None:
+                        super().__init__(store=None)
+
+                    def batch_call(self, chain: str, calls: Sequence[Tuple[str, Any]], **kw: Any) -> List[Any]:
+                        out: List[Any] = []
+                        for m_c, p_c in calls:
+                            if m_c == "eth_getBalance":
+                                out.append("0x0")
+                            elif m_c == "eth_getTransactionCount":
+                                out.append("0x0" if str(p_c[0]).lower() == second52 else "0x1")
+                            elif m_c == "eth_getCode":
+                                out.append(deleg_hex if str(p_c[0]).lower() == first52 else "0x")
+                            else:
+                                out.append("0x")
+                        return out
+
+                sel52 = select_zero_state_caller(_DelegMockRouter52(), "ethereum", 0)
+                t52_all_ok = deleg_ok and scan_ok and (sel52 == second52)
+                results.append(
+                    (
+                        "T52_EIP7702_REPLAY_ZERO_CALLER_HARDENING",
+                        t52_all_ok,
+                        f"deleg={deleg_ok},scan_open={scan_ok},caller_skip={sel52 == second52}",
                     )
                 )
 

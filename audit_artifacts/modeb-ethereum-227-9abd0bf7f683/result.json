@@ -1,0 +1,11 @@
+{
+  "audit_block": 26440910,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "No conservation gain after 70 passed forge checks at pinned block 26440910; timeout on extended struct calldata, no immediate profit, RPC failover tried, accounting Fail-Open safe.",
+  "slug": "modeb-ethereum-227-9abd0bf7f683",
+  "verdict": "안전"
+}

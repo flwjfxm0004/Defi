@@ -1,0 +1,15 @@
+{
+  "audit_block": 159745170,
+  "chain": "optimism",
+  "file_sha256": {
+    "result.json": "28d195d8455108cf82f8477b197ff8b969dabb2dedbd9c0315ca8a31305a67f6",
+    "verdicts/verdict_1.json": "434c396f9904dbb8c8ff2e03e77e9690f423ceb7bad83b276688fb11b878457b"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795089403,
+  "slug": "modeb-optimism-188-772f48fdefb0",
+  "verdict": "안전"
+}

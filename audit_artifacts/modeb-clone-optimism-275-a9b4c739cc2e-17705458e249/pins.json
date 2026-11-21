@@ -1,0 +1,15 @@
+{
+  "audit_block": 159750696,
+  "chain": "optimism",
+  "file_sha256": {
+    "result.json": "927463de9ca3faf62842d956e30553147b364f2ba2026273967c7c882ec51352",
+    "verdicts/verdict_1.json": "5c6ab9aac71f10f955f6a6775823b86ce02c9703c2995e361f7db5015648ed20"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795100494,
+  "slug": "modeb-clone-optimism-275-a9b4c739cc2e-17705458e249",
+  "verdict": "안전"
+}

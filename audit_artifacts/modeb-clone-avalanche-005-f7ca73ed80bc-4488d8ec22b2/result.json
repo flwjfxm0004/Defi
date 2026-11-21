@@ -1,0 +1,11 @@
+{
+  "audit_block": 100851846,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 16215135, 0x06fdde03 0x0902f1ac 등을 8 witness sweep 후 ConservationGain 0건. 타겟 0x049d는 FeeManager 아님 pair로 단위 불일치 경로 없음 similarity 0.65로 보존 불가해 안전 판정.",
+  "slug": "modeb-clone-avalanche-005-f7ca73ed80bc-4488d8ec22b2",
+  "verdict": "안전"
+}

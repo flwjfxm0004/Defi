@@ -1,0 +1,11 @@
+{
+  "audit_block": 9422678,
+  "chain": "rootstock",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified on Rootstock block 9422678 fork via preverify_forge_test (--fork-state-by-number): [PASS] test_candidate_1() (gas: 8615213). Target 0x000fec34466972987928d519948AA1b25EACD3E9 is ProtocolSettings module with zero token balances; SovrynProtocol (0x5A0D867e0D70Fcc6Ade25C3F1B89d618b5B4Eaa7) has isProtocolPaused() == true; ContractRegistry(SovrynSwapNetwork) points to emergency shutdown stub 0x8c293eD020f4D7321B6B16c71584fDdB560E0EbD; LoanTokens (iWRBTC 0xa9DcDC63eaBb8a2b6f39D7fF9429d88340044a7A) and Staking (0x5684a06CaB22Db16d901fEe2A5C081b4C91eA40e) are paused/frozen; FeeSharingCollector (0x115cAF168c51eD15ec535727F64684D33B7b08D1) and LockedSOV (0xB4e4517cA4Edf591Dcafb702999F04f02E57D978) yield zero to zero-stake callers and reject unauthorized withdrawal; legacy SovrynSwapNetwork (0x98aCE08D2b759a265ae326F010496bcD63C15afc) fails safely. Conservation invariant holds with zero extractable profit.",
+  "slug": "modeb-rootstock-289-5a0d86b4eaa7",
+  "verdict": "안전"
+}

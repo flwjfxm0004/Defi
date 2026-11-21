@@ -1,0 +1,11 @@
+{
+  "audit_block": 100848496,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 16163253, depositMulti 0xfa80327e를 8 witness sweep 후 ConservationGain 0건. 타겟 0x049d는 CL 볼트 아님 pair로 길이 결함 보존 불가해 안전 판정.",
+  "slug": "modeb-clone-avalanche-294-acfd02562df3-61a34780874d",
+  "verdict": "안전"
+}

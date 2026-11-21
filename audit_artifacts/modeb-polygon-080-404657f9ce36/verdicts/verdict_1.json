@@ -1,0 +1,6 @@
+{
+  "audit_block": 97569618,
+  "candidate_id": 1,
+  "notes": "TARGET 0x0729eA061132bCD76F420F9139af8957b41B90cb multi-leg chained deposit-withdraw selectors under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "verdict": "안전"
+}

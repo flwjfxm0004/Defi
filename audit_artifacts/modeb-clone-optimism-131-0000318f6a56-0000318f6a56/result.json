@@ -1,0 +1,11 @@
+{
+  "audit_block": 159792849,
+  "chain": "optimism",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 8761007, retry 0x222b15fb sweep 1조 포함 후 ConservationGain 0건. similarity 1.0 진짜 MAPOmniService이나 forged retry 멀티스텝이 단일 PoC에서 즉시 이익 0, S4 240개도 0 gains로 안전 판정.",
+  "slug": "modeb-clone-optimism-131-0000318f6a56-0000318f6a56",
+  "verdict": "안전"
+}

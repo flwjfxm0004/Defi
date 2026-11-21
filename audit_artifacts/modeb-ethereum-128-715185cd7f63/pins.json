@@ -1,0 +1,15 @@
+{
+  "audit_block": 26456569,
+  "chain": "ethereum",
+  "file_sha256": {
+    "result.json": "2a3f35fd7118a348b4d19cf9069fe409e92a71b26341acad69e5f9b4085b773a",
+    "verdicts/verdict_1.json": "c187a24bf9bd6cacdf077b81a42539a351807b3d3e552d3076673f33c86545ca"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795181008,
+  "slug": "modeb-ethereum-128-715185cd7f63",
+  "verdict": "안전"
+}

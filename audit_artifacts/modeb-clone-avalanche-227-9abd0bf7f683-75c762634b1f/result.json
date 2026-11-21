@@ -1,0 +1,11 @@
+{
+  "audit_block": 100667520,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified on Avalanche fork block 100667520: Secured Finance LendingMarketController (0x35e9D8e0...) has isTerminated() == true (0xd1cc9976), all LendingMarket maturities return isMatured == true, and Balancer flash-funded calls to TokenVault.deposit, executeOrder, depositAndExecuteOrder, unwindPosition, executeRepayment, and withdrawZCToken all revert with MarketTerminated() (0x66a42cbc); zero-balance withdraw and controller-only setters also revert cleanly.",
+  "slug": "modeb-clone-avalanche-227-9abd0bf7f683-75c762634b1f",
+  "verdict": "안전"
+}

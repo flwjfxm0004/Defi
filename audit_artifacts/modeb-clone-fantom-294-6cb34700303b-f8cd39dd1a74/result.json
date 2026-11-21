@@ -1,0 +1,24 @@
+{
+  "audit_block": 0,
+  "chain": "fantom",
+  "early_exit": "NONE",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "UNREACHABLE_CHAIN_RPC:fantom",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "remediation_steps": [
+    "rpc_block_number_retry_1:Insufficient RPC quorum agreement on fantom: only 1/2 hosts responded",
+    "rpc_block_number_retry_2:Insufficient RPC quorum agreement on fantom: only 1/2 hosts responded",
+    "rpc_block_number_retry_3:Insufficient RPC quorum agreement on fantom: only 1/2 hosts responded",
+    "source_3tier_tried_on_cached_seeds",
+    "rpc_failover_tried_all_endpoints"
+  ],
+  "slug": "modeb-clone-fantom-294-6cb34700303b-f8cd39dd1a74",
+  "verdict": "미검증 차단"
+}

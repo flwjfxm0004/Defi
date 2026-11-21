@@ -1,0 +1,11 @@
+{
+  "audit_block": 28091495,
+  "chain": "pulsechain",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified at PulseChain block 28091495 against archive fork state: (1) Notional v1 fork proxies Portfolios (TARGET 0x0A4721117040ABF319b954aBF13F654505C34920 -> 0xFCE1c68E...), Escrow (0x9abd0b8868546105F6F48298eaDC1D9c82f7f683 -> 0x8a134e65...), and Directory (0xBbA899578bd3fA3DAa863A340f5600797993eF08 -> 0x6F102516...) all enforce owner() == 0x22341fB5D92D3d801144aA5A925F401A91418A05 and revert unprivileged transferOwnership/upgradeTo calls; (2) Escrow withdraw(uint16(1)/uint16(0), 1e18) reverts for unprivileged ZERO_STATE_CALLER and bridged token realizable_extractable_usd is $0.00; (3) Governing Gnosis Safe 0x22341fB5... enforces threshold==3 (5 owners, nonce>=315) and Safe 0xa6e8772a... enforces threshold==1 (nonce>=341). forge test test_1.t.sol passes (gas: 5298027) in 12.55s with zero ConservationGain.",
+  "slug": "modeb-clone-pulsechain-008-6b00683df721-0a4721c34920",
+  "verdict": "안전"
+}

@@ -1,0 +1,14 @@
+{
+  "audit_block": 28088053,
+  "blocker_reason": "forge_output executed false with nonzero exit and zero passed tests, dynamic leg probe produced no settled gain evidence, blocked from safe determination pending canonical restore and re-verify.",
+  "candidate_id": 1,
+  "notes": "forge_output executed false with nonzero exit and zero passed tests, dynamic leg probe produced no settled gain evidence, blocked from safe determination pending canonical restore and re-verify.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "verdict": "미검증 차단"
+}

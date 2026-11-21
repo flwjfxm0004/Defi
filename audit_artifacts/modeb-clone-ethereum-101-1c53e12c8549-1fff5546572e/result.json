@@ -1,0 +1,11 @@
+{
+  "audit_block": 26455690,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 17545326, Gateway sweep 후 ConservationGain 0건. similarity 0.9997 진짜 클론이나 cross-chain TSS 검증이 필요한 임의 호출은 단일 fork에서 즉시 이익 없음, similarity 0.9997이어도 단일체인 무권한 이익 0으로 안전 판정.",
+  "slug": "modeb-clone-ethereum-101-1c53e12c8549-1fff5546572e",
+  "verdict": "안전"
+}

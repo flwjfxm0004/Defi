@@ -1,0 +1,15 @@
+{
+  "audit_block": 525069340,
+  "chain": "arbitrum",
+  "file_sha256": {
+    "result.json": "ee801686a07eea7aa824d89ec88b6312d5339abb9c7574342c8f4ff99a87f087",
+    "verdicts/verdict_1.json": "7c2c7b35406f3ef8187e45eb5b39dfb78bd148e1a9bf623794a82c707d791483"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1794959216,
+  "slug": "modeb-arbitrum-300-dcd1f0dd6368",
+  "verdict": "미검증 차단"
+}

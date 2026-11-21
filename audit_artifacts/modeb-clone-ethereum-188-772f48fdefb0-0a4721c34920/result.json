@@ -1,0 +1,11 @@
+{
+  "audit_block": 26448993,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x0000000004cf5f43a0363A55EC2DCA691e398F50 fallback leg 0x00000001 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-clone-ethereum-188-772f48fdefb0-0a4721c34920",
+  "verdict": "안전"
+}

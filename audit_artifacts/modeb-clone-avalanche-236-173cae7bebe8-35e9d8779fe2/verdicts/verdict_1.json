@@ -1,0 +1,6 @@
+{
+  "audit_block": 100845006,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 11778407, 0x06fdde03 0x0902f1ac 등을 8 witness sweep 후 ConservationGain 0건. 타겟 0x049d는 Enso Controller 아님 pair view로 TWAP 오라클 경로 없음 similarity 0.65로 보존 불가해 안전 판정.",
+  "verdict": "안전"
+}

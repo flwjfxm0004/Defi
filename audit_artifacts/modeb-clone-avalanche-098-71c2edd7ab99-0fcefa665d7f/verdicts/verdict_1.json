@@ -1,0 +1,6 @@
+{
+  "audit_block": 100834203,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 12405921, test_candidate_1에서 0x06fdde03 name 0x0902f1ac getReserves 0x0dfe1681 token0 0x70a08231 balanceOf 등 view 셀렉터와 8 witness sweep 및 fallback 3-leg 호출 후 snapBefore==snapMid, ConservationGain 0건 _tryLiquidateGains 자동 청산 미발동. 타겟 0x049dC1E6은 pair ERC20 view로 PropAMM Router 없음, similarity 0.65 vuln_preserved null로 Kipseli 검증 부재 적용 불가, 엔진 S4 240 passed 0 gains와 일치해 안전 판정.",
+  "verdict": "안전"
+}

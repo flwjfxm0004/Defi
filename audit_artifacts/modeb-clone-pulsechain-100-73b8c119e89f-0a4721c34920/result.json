@@ -1,0 +1,11 @@
+{
+  "audit_block": 28096830,
+  "chain": "pulsechain",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x04866013862349a6A19A04C8a1590ea2cF026134 leg 0xa0a2daf0 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS, similarity 0.65 low-confidence patched-fork check.",
+  "slug": "modeb-clone-pulsechain-100-73b8c119e89f-0a4721c34920",
+  "verdict": "안전"
+}

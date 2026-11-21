@@ -1,0 +1,14 @@
+{
+  "audit_block": 134607471,
+  "blocker_reason": "forge_output_1 executed=false CHEATCODE_ACCOUNTING_VIOLATION FORBIDDEN_TAMPERED_CANONICAL_FN _tryLiquidateGains 로 엔진 봉인 회계가 차단되어 PROVEN_BY_FORGE 및 안전 판정을 봉인할 수 없음. isolated preverify는 PASS(gas 16146829)이나 엔진 래퍼가 정본 위반으로 폐기. 타겟 0x045e2Df6은 Gamma GErc20Delegator(gUSDT)이며 legs 0x182df0f5 exchangeRateStored 0x3b1d21a2 getCash view로 PropAMM 경로 없음, similarity 0.65 vuln_preserved null로 Kipseli 결함 적용 불명. 4 RPC failover, 22 seeds, 619 exit pools, 3-tier source, flash web search 완료. Gamma updateUserDiscount는 별개 결함으로 봉인 증거 없음.",
+  "candidate_id": 1,
+  "notes": "forge_output_1 executed=false CHEATCODE_ACCOUNTING_VIOLATION FORBIDDEN_TAMPERED_CANONICAL_FN _tryLiquidateGains 로 엔진 봉인 회계가 차단되어 PROVEN_BY_FORGE 및 안전 판정을 봉인할 수 없음. isolated preverify는 PASS(gas 16146829)이나 엔진 래퍼가 정본 위반으로 폐기. 타겟 0x045e2Df6은 Gamma GErc20Delegator(gUSDT)이며 legs 0x182df0f5 exchangeRateStored 0x3b1d21a2 getCash view로 PropAMM 경로 없음, similarity 0.65 vuln_preserved null로 Kipseli 결함 적용 불명. 4 RPC failover, 22 seeds, 619 exit pools, 3-tier source, flash web search 완료. Gamma updateUserDiscount는 별개 결함으로 봉인 증거 없음.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "verdict": "미검증 차단"
+}

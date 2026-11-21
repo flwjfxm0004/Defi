@@ -1,0 +1,15 @@
+{
+  "audit_block": 97625302,
+  "chain": "polygon",
+  "file_sha256": {
+    "result.json": "0e4f3c3713ce23109064ff9719b7c94fe3894a964526758be15a16d5bb0dbc5e",
+    "verdicts/verdict_1.json": "ba08d965e727db10534716feae892d6833bf2c99dca81ff6f3ac48f9c9b386ed"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795143478,
+  "slug": "modeb-polygon-169-bb3051f0dcfd",
+  "verdict": "안전"
+}

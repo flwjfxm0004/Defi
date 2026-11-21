@@ -1,0 +1,11 @@
+{
+  "audit_block": 159750696,
+  "chain": "optimism",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x17705474203F7ff7ba8a940c433AB43D1F58E249 leg 0x06de9b0f under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-clone-optimism-275-a9b4c739cc2e-17705458e249",
+  "verdict": "안전"
+}

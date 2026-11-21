@@ -1,0 +1,18 @@
+{
+  "audit_block": 134644072,
+  "chain": "bsc",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "forge_output executed=false CHEATCODE_ACCOUNTING_VIOLATION FORBIDDEN_TAMPERED_CANONICAL_FN _tryLiquidateGains로 엔진 봉인 차단되어 안전 및 PROVEN 판정 불가. isolated preverify PASS이나 엔진 래퍼 폐기. 타겟 0x045e는 Gamma로 TLP 아님 similarity 0.65로 결함 보존 불명. 4 RPC failover, witness sweep, exit 927 확인 완료.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-clone-bsc-002-e80fb6bccfb1-045e2d00a9c8",
+  "verdict": "미검증 차단"
+}

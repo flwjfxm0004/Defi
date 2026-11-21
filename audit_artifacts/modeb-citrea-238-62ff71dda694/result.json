@@ -1,0 +1,11 @@
+{
+  "audit_block": 15483312,
+  "chain": "citrea",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x01465912C8cEc266237050f429fE1b88dAa56C0A leg 0x06fdde03 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-citrea-238-62ff71dda694",
+  "verdict": "안전"
+}

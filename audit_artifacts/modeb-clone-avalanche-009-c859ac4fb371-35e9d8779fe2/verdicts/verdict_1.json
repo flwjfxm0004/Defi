@@ -1,0 +1,6 @@
+{
+  "audit_block": 100853974,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 16215135, 0x06fdde03 등을 8 witness sweep 후 ConservationGain 0건. 타겟 0x049d는 세일 환불 아님 pair로 합계 결함 경로 없음 similarity 0.65로 보존 불가해 안전 판정. 엔진 fast-filter 0.8 완화 적용.",
+  "verdict": "안전"
+}

@@ -1,0 +1,11 @@
+{
+  "audit_block": 525679087,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "CH_STORAGE 0x00000001 on 0x05e71DC39C3De40e017D166e605b97451E7f21B5 probed with 8 witness candidates across 8 selectors plus inferred ABI variants and 3-leg accumulation on TARGET and VAULT_1 0x06147e073B854521c7B778280E7d7dBAfB2D4898; all low-level calls reverted or produced no-callable state transition, post-snap caller/vault/supply balances unchanged, _tryLiquidateGains 0, _assertConservationLiq emitted 0 ConservationGain, similarity 0.65 unpreserved patched-fork behavior verified on fork 525679087.",
+  "slug": "modeb-clone-arbitrum-079-ae406ff202e4-35e9d8779fe2",
+  "verdict": "안전"
+}

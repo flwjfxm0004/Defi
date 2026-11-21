@@ -1,0 +1,15 @@
+{
+  "audit_block": 51690484,
+  "chain": "hyperevm",
+  "file_sha256": {
+    "result.json": "ced7ca05aa3ce90e9a25e49836829776a497f1a4563a8d51c6ea880c7c0cada4",
+    "verdicts/verdict_1.json": "0a5c51b66c320b40f788345d690ff1cd9f052a5eb65d3ce04dd9d8bad4a92425"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795100174,
+  "slug": "modeb-hyperevm-275-a9b4c739cc2e",
+  "verdict": "안전"
+}

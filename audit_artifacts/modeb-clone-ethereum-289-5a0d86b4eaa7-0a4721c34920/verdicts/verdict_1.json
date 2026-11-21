@@ -1,0 +1,6 @@
+{
+  "audit_block": 26443314,
+  "candidate_id": 1,
+  "notes": "Verified at Ethereum block 26443314 against fork state: (1) TARGET BT404OG 0x0000000004cf5f43a0363A55EC2DCA691e398F50 is owned by 0x43800C438f5D639c8B865396cB83a4Efa220091B with zero held assets and reverts unprivileged calls; (2) Secured Finance LendingMarketController 0x35e9D8e0223A75E51a67aa731127C91Ea0779Fe2 (isTerminated=false) and TokenVault 0xB74749b2213916b1dA3b869E41c7c57f1db69393 (paused=false, $78.6k) share owner 0xccAC3163E54847ae04f192a20DCf2E902C660312, user deposits match held WBTC/WETH/USDC reserves, and unprivileged withdraw/executeEmergencySettlement/cleanUpAllFunds calls revert; (3) Notional v1 Portfolios 0x0A4721117040ABF319b954aBF13F654505C34920 and Escrow 0x9abd0b8868546105F6F48298eaDC1D9c82f7f683 ($46.4k) share owner 0x22341fB5D92D3d801144aA5A925F401A91418A05 with valid Directory wiring and revert unprivileged withdraw calls; (4) Ajna ERC20Pool clones with active auctions (0xdB30..., 0x1C50..., 0x37d3...) have 0 remaining borrower auction collateral and 0x34bC... has 0 claimableReserves with takeReserves reverting. forge test test_1.t.sol passes in 41.06s with zero ConservationGain.",
+  "verdict": "안전"
+}

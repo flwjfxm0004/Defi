@@ -1,0 +1,11 @@
+{
+  "audit_block": 59166837,
+  "chain": "base",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified at Base block 59166837 (2026-11-18 UTC, post-Nov 13 patch/drain) against archive fork state: (1) Pool Party SnapshotManager BeaconProxies (0x01ac4dfC..., 0x7B75aaE6..., 0x8BDCB2e8..., 0xD5741416...) enforce onlyAdmin on takePositionSnapshot/takeInvestorSnapshot/settlePercentage/syncInvestor, reverting unprivileged calls, and implementation 0x41B461C8... holds zero balances; (2) all 4 PoolPartyPosition proxies (0x6966..., 0x6948..., 0x0671..., 0x6503...) gate withdraw/collect/decreaseLiquidity behind onlyRole(MANAGER_ROLE); (3) all 4 PoolPartyPositionView contracts (0xec71..., 0x138e..., 0xb88d..., 0xaa77...) and their UniV3 NonfungiblePositionManager NFTs (4648956, 4649015, 4648966, 6266998) have liquidity=0, remainingLiquidityAfterClose=0, owed0=0, owed1=0, and total closure exposure across all 65 addresses is $5.70 (< $100). forge test test_1.t.sol passes in 94.73s with zero ConservationGain.",
+  "slug": "modeb-base-300-41663fbe8c4a",
+  "verdict": "안전"
+}

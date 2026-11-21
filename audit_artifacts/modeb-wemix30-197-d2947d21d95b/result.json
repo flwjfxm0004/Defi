@@ -1,0 +1,11 @@
+{
+  "audit_block": 128856590,
+  "chain": "wemix30",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x002ceeE5624F60fEE129549FFa6805A5EE49C759 leg 0x6b22f267 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-wemix30-197-d2947d21d95b",
+  "verdict": "안전"
+}

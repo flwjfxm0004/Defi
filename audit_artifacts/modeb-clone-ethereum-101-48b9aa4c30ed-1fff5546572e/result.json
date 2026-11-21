@@ -1,0 +1,11 @@
+{
+  "audit_block": 26455786,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 17545326 failover RPC, sweep 후 ConservationGain 0건. similarity 1.0 진짜 Gateway이나 cross-chain TSS가 필요한 임의 호출은 단일 fork에서 즉시 이익 0으로 안전 판정.",
+  "slug": "modeb-clone-ethereum-101-48b9aa4c30ed-1fff5546572e",
+  "verdict": "안전"
+}

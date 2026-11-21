@@ -1,0 +1,15 @@
+{
+  "audit_block": 128856590,
+  "chain": "wemix30",
+  "file_sha256": {
+    "result.json": "eb9d94d82f701f3fa5a38d5afb2a1170fd7408e88082aee77b68ff827e559a17",
+    "verdicts/verdict_1.json": "a653f72ff6a987f5d6f64098c23077a480ab976e255d4e1b102f0a76e107c33f"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795090443,
+  "slug": "modeb-wemix30-197-d2947d21d95b",
+  "verdict": "안전"
+}

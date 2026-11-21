@@ -1,0 +1,11 @@
+{
+  "audit_block": 100842504,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET의 name/symbol/decimals/totalSupply 조회와 gas-capped settle/claim 프로브를 실행했으나 ConservationGain 이벤트가 전혀 발생하지 않아 탈취 가능한 경로가 없음",
+  "slug": "modeb-clone-avalanche-204-684d72b302a7-0fcefa665d7f",
+  "verdict": "안전"
+}

@@ -1,0 +1,11 @@
+{
+  "audit_block": 26438405,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Fork preverify passed via Nodereal (12s), no conservation gain, no net profit under $100.",
+  "slug": "modeb-ethereum-231-35e9d8779fe2",
+  "verdict": "안전"
+}

@@ -1,0 +1,6 @@
+{
+  "audit_block": 100838021,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 12354445, BPool 0x8329ab33 0x12989260 0x8c28cbe8와 pair view 0x06fdde03 0x0902f1ac 0x0dfe1681을 8 witness sweep, staticcall, gulp TOK_0, join-exit 3회 반복 후 snapBefore==snapMid ConservationGain 0건. 타겟 0x049d는 pair 토큰으로 BPool 아님 prescreen active이나 join-exit revert 유사 0.65로 Ocean 결함 보존 불가해 안전 판정.",
+  "verdict": "안전"
+}

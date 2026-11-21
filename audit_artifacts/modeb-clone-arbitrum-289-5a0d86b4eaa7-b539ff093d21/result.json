@@ -1,0 +1,11 @@
+{
+  "audit_block": 525363713,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified at Arbitrum block 525363713 against fork state: (1) TARGET 0xB50721BCf8d664c30412Cfbc6cf7a15145234ad1 has zero bytecode and nonce 0 (L1 ARB token address receiving stray transfers on Arbitrum, no callable entrypoint); (2) ARB L2 token 0x912CE59144191C1204E64559FE8253a0e49E6548 holds non-withdrawable stray balances with unprivileged transfer/sweep guards; (3) Secured Finance LendingMarketController 0x35e9d8e0223a75e51a67aa731127c91ea0779fe2 (isTerminated=false) and TokenVault 0xB74749b2213916b1dA3b869E41c7c57f1db69393 (paused=false) share GnosisSafe owner 0x133C20f23EA2AD4b619155EdF69e028245c0357F, user deposits (USDC/ETH/WBTC) match held reserves, unprivileged withdraw/cleanUpAllFunds/executeEmergencySettlement revert, and uninitialized implementations hold zero funds; (4) all 6 Premia V3 UnderwriterVault BeaconProxies (impl 0xb539ff8563974d407fd6d717ff2f930e99093d21) have maxWithdraw(ZERO_STATE_CALLER)=0, settle() reverts, previewRedeem(previewDeposit(unit))<unit, and combined idle balances total under $100. forge test test_1.t.sol passes against archive fork with zero ConservationGain.",
+  "slug": "modeb-clone-arbitrum-289-5a0d86b4eaa7-b539ff093d21",
+  "verdict": "안전"
+}

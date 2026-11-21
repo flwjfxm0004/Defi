@@ -1,0 +1,11 @@
+{
+  "audit_block": 26452767,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Auto-probed 0x0000000004cf5f43a0363A55EC2DCA691e398F50 legs ['0x00000001'] witnesses probed via low-level calls, post-snap balances unchanged, 0 ConservationGain, similarity 0.65 patched-fork safe verification on fork 26452767.",
+  "slug": "modeb-clone-ethereum-087-f04b12aac2f1-0a4721c34920",
+  "verdict": "안전"
+}

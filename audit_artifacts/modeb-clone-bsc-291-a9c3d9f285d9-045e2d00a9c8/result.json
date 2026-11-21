@@ -1,0 +1,18 @@
+{
+  "audit_block": 134636569,
+  "chain": "bsc",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Rejected unverified VERDICT_SAFE: test_1.t.sol must compile, actively verify TARGET without untouched skeleton, pass with 0 cheatcode violations, and include >=16 chars notes (executed=False, passed=0, failed=0, skeleton=False, target_interacted=True, notes_ok=True, error=FORGE_NONZERO_EXIT:Error: could not instantiate forked environment with provider bsc-rpc.blockreq.com; server returned an error response: error code -32601: public endpoint only serves recent blocks (last 1024). Registe)",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-clone-bsc-291-a9c3d9f285d9-045e2d00a9c8",
+  "verdict": "미검증 차단"
+}

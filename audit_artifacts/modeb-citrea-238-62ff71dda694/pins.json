@@ -1,0 +1,15 @@
+{
+  "audit_block": 15483312,
+  "chain": "citrea",
+  "file_sha256": {
+    "result.json": "2c59535bf5d2669a0c47c8f96c3325973f66add6e42df100881f9c477b519206",
+    "verdicts/verdict_1.json": "24f16c625851f694a3c553ec8c60963190ee23620d5aa87fc88d70dd596fdcd7"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795069802,
+  "slug": "modeb-citrea-238-62ff71dda694",
+  "verdict": "안전"
+}

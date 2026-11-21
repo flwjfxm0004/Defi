@@ -1,0 +1,18 @@
+{
+  "audit_block": 26449495,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "forge_output executed false with cheatcode accounting violation for tampered canonical function, dynamic leg probe performed under two-argument prank produced no settled gain evidence, blocked from safe determination pending canonical restore and re-verify.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-clone-ethereum-233-17705458e249-0d5e62fcb690",
+  "verdict": "미검증 차단"
+}

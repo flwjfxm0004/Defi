@@ -1,0 +1,18 @@
+{
+  "audit_block": 28087434,
+  "chain": "pulsechain",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Fork preverify reverted under live head replay, trace shows permit caching mismatch, full resynthesis required.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-clone-pulsechain-222-2257aacbac57-1373e56934da",
+  "verdict": "미검증 차단"
+}

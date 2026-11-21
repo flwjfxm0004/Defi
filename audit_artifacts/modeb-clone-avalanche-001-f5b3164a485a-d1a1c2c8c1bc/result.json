@@ -1,0 +1,12 @@
+{
+  "audit_block": 100787138,
+  "chain": "avalanche",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 133781.06,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=133781.06 similarity=0.0934 vuln_preserved=None",
+  "similarity": 0.0934,
+  "slug": "modeb-clone-avalanche-001-f5b3164a485a-d1a1c2c8c1bc",
+  "verdict": "안전"
+}

@@ -1,0 +1,11 @@
+{
+  "audit_block": 100686157,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified at Avalanche block 100686157 against fork state: (1) Secured Finance LendingMarketController 0x35e9D8e0223A75E51a67aa731127C91Ea0779Fe2 has isTerminated()=1 and TokenVault 0xB74749b2213916b1dA3b869E41c7c57f1db69393 has paused()=0, both owned by 0x8a9e7F66bc586B464a5d788806f200751031c590; (2) TokenVault getTotalDepositAmount(USDC)=102240139 matches held USDC balance (102240139, ~$102.22), unprivileged withdraw/executeEmergencySettlement/cleanUpAllFunds/unwindPosition calls revert with zero balance change, and implementations hold zero USDC/AVAX. forge test test_1.t.sol passes in 71.34s against https://api.avax.network/ext/bc/C/rpc with zero ConservationGain.",
+  "slug": "modeb-clone-avalanche-289-5a0d86b4eaa7-75c762634b1f",
+  "verdict": "안전"
+}

@@ -1,0 +1,6 @@
+{
+  "audit_block": 26452767,
+  "candidate_id": 1,
+  "notes": "Auto-probed 0x0000000004cf5f43a0363A55EC2DCA691e398F50 legs ['0x00000001'] witnesses probed via low-level calls, post-snap balances unchanged, 0 ConservationGain, similarity 0.65 patched-fork safe verification on fork 26452767.",
+  "verdict": "안전"
+}

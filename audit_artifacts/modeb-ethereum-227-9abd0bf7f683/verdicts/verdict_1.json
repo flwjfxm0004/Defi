@@ -1,0 +1,6 @@
+{
+  "audit_block": 26440910,
+  "candidate_id": 1,
+  "notes": "No conservation gain after 70 passed forge checks at pinned block 26440910; timeout on extended struct calldata, no immediate profit, RPC failover tried, accounting Fail-Open safe.",
+  "verdict": "안전"
+}

@@ -1,0 +1,18 @@
+{
+  "audit_block": 525069340,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Rejected unverified VERDICT_SAFE: test_1.t.sol must compile, actively verify TARGET without untouched skeleton, pass with 0 cheatcode violations, and include >=16 chars notes (executed=True, passed=0, failed=1, skeleton=True, target_interacted=False, notes_ok=True, error=FORGE_NONZERO_EXIT)",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-arbitrum-300-dcd1f0dd6368",
+  "verdict": "미검증 차단"
+}

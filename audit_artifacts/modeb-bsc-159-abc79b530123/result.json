@@ -1,0 +1,12 @@
+{
+  "audit_block": 134618971,
+  "chain": "bsc",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 10380950016.01,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=10380950016.01 similarity=0.0000 vuln_preserved=None",
+  "similarity": 0.0,
+  "slug": "modeb-bsc-159-abc79b530123",
+  "verdict": "안전"
+}

@@ -1,0 +1,11 @@
+{
+  "audit_block": 525320768,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Verified on Arbitrum block 525320768 via Ankr failover RPC (default blockreq RPC returned HTTP 403): (1) TARGET 0xB50721BCf8d664c30412Cfbc6cf7a15145234ad1 is the counterfactual Ethereum L1 ARB proxy address computed via CREATE(0x1C8db745ABe3C8162119b9Ef2c13864Cd1FDD72F, nonce=6); on Arbitrum both TARGET and 0x1C8db745... have zero code and zero nonce, so ZERO_STATE_CALLER cannot deploy code or extract assets from TARGET. (2) VAULT_20 0x912CE59144191C1204E64559FE8253a0e49E6548 (ARB proxy, impl 0xd47D14..., owner 0xCF5757...) reverts on unprivileged upgradeTo/transferOwnership/mint/bridgeMint/transferFrom. (3) Secured Finance TokenVault 0xB74749... (impl 0x40A7d1..., owner 0x133C20... Safe), LendingMarketController 0x35e9D8... (upgraded post-PR#435/#437/#444/#446 impl 0xF32fdf...), and LendingMarket 0x75c762... (beacon 0x62012f...) hold zero withdrawable balance for unprivileged caller (withdraw clamps to 0), revert on privileged calls, and TOK_6 0xb539fF... has zero supply. (4) All remaining funded connected_vaults are individually below $100.00.",
+  "slug": "modeb-clone-arbitrum-227-9abd0bf7f683-b539ff093d21",
+  "verdict": "안전"
+}

@@ -1,0 +1,18 @@
+{
+  "audit_block": 100756507,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Rejected unverified VERDICT_SAFE: test_1.t.sol must compile, actively verify TARGET without untouched skeleton, pass with 0 cheatcode violations, and include >=16 chars notes (executed=False, passed=0, failed=0, skeleton=False, target_interacted=True, notes_ok=True, error=BYTECODE_CHEATCODE_VIOLATION:disallowed_helper_harness_address_coupling:AgentVerify_modeb_clone_avalanche_048_045e2d00a9c8_ff00000c8dce_1:0x4e59b44847b379578588920ca78fbf26c0b4956c)",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "slug": "modeb-clone-avalanche-048-045e2d00a9c8-ff00000c8dce",
+  "verdict": "미검증 차단"
+}

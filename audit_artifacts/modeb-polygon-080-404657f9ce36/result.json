@@ -1,0 +1,11 @@
+{
+  "audit_block": 97569618,
+  "chain": "polygon",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x0729eA061132bCD76F420F9139af8957b41B90cb multi-leg chained deposit-withdraw selectors under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-polygon-080-404657f9ce36",
+  "verdict": "안전"
+}

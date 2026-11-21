@@ -1,0 +1,6 @@
+{
+  "audit_block": 100847058,
+  "candidate_id": 1,
+  "notes": "isolated preverify PASS gas 12354562, depositMulti 0xfa80327e withdraw 0xae0a4eb8와 pair view를 8 witness sweep 후 ConservationGain 0건. 타겟 0x049d는 CL 볼트 아님 pair로 길이 검증 결함 보존 불가해 안전 판정.",
+  "verdict": "안전"
+}

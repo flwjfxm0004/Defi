@@ -1,0 +1,11 @@
+{
+  "audit_block": 525669255,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "TARGET 0x05e71DC39C3De40e017D166e605b97451E7f21B5 fallback leg 0x00000001 under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "slug": "modeb-clone-arbitrum-193-715185cd7f63-35e9d8779fe2",
+  "verdict": "안전"
+}

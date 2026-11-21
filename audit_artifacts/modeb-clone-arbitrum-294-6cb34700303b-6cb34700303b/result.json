@@ -1,0 +1,11 @@
+{
+  "audit_block": 525832699,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "동적 검증 결과 TARGET의 totalSupply/decimals/name 조회와 leg 0x00000001 프로브를 실행했으나 ConservationGain 이벤트가 전혀 발생하지 않아 탈취 가능한 경로가 없음",
+  "slug": "modeb-clone-arbitrum-294-6cb34700303b-6cb34700303b",
+  "verdict": "안전"
+}

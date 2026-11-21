@@ -1,0 +1,11 @@
+{
+  "audit_block": 525779839,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Auto-probed 0x05e71DC39C3De40e017D166e605b97451E7f21B5 legs ['0x00000001'] witnesses probed via low-level calls, post-snap balances unchanged, 0 ConservationGain, similarity 0.65 patched-fork safe verification on fork 525779839.",
+  "slug": "modeb-clone-arbitrum-098-71c2edd7ab99-4488d8ec22b2",
+  "verdict": "안전"
+}

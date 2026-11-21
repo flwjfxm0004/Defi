@@ -1,0 +1,12 @@
+{
+  "audit_block": 134662212,
+  "chain": "bsc",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 10408361591.68,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=10408361591.68 similarity=0.6500 vuln_preserved=None",
+  "similarity": 0.65,
+  "slug": "modeb-clone-bsc-052-b104d3c88c6a-0782b6dc41e5",
+  "verdict": "안전"
+}

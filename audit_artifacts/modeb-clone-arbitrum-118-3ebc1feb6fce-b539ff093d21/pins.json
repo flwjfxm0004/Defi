@@ -1,0 +1,15 @@
+{
+  "audit_block": 525517713,
+  "chain": "arbitrum",
+  "file_sha256": {
+    "result.json": "b3b7db4b24689904d239e9f0890829d4488fde1a811181074144cad705af759f",
+    "verdicts/verdict_1.json": "c73ad04900e272cc7944d44dc80b6aef094e6c4a526e2d34a37edaa16c46e9c0"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795063639,
+  "slug": "modeb-clone-arbitrum-118-3ebc1feb6fce-b539ff093d21",
+  "verdict": "안전"
+}

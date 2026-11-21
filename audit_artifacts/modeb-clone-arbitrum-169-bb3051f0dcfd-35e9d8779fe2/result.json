@@ -1,0 +1,11 @@
+{
+  "audit_block": 525802966,
+  "chain": "arbitrum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 18153270, test_candidate_1에서 BPool 취약 셀렉터 0x8329ab33 0x12989260 0x8c28cbe8과 슬라이스 0x00000001 0x03e5fb59 등을 8 witness sweep, staticcall, gulp TOK_3, join-exit 3회 반복 호출 후 snapBefore==snapMid, ConservationGain 0건 _tryLiquidateGains 미발동. 타겟 0x05e71D는 LendingMarketController계로 BPool 아님, 전 슬라이스 prescreen reverted similarity 0.65로 Ocean 결함 보존 불가, 엔진 S4 240 passed 0 gains와 일치해 안전 판정.",
+  "slug": "modeb-clone-arbitrum-169-bb3051f0dcfd-35e9d8779fe2",
+  "verdict": "안전"
+}

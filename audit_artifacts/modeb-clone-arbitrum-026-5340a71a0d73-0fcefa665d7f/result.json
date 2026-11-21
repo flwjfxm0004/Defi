@@ -1,0 +1,12 @@
+{
+  "audit_block": 525867056,
+  "chain": "arbitrum",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 91220.13,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91220.13 similarity=0.6500 vuln_preserved=None",
+  "similarity": 0.65,
+  "slug": "modeb-clone-arbitrum-026-5340a71a0d73-0fcefa665d7f",
+  "verdict": "안전"
+}

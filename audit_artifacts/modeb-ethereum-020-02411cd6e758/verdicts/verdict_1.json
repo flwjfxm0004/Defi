@@ -1,0 +1,6 @@
+{
+  "audit_block": 26447749,
+  "candidate_id": 1,
+  "notes": "TARGET 0x02411C115f63E19fa2c4C42f7b99734036d6E758 leg 0x00fdd58e under 2-arg ZERO_STATE_CALLER prank with 8 boundary witnesses across three calldata shapes plus staticcall, no caller gain versus vault loss and zero ConservationGain in preverify PASS.",
+  "verdict": "안전"
+}

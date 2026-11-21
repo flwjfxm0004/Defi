@@ -1,0 +1,12 @@
+{
+  "audit_block": 59875625,
+  "chain": "base",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 630178.86,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=630178.86 similarity=0.0000 vuln_preserved=None",
+  "similarity": 0.0,
+  "slug": "modeb-base-070-eab94807ca9c",
+  "verdict": "안전"
+}

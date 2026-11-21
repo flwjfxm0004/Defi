@@ -1,0 +1,11 @@
+{
+  "audit_block": 26454156,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "isolated preverify PASS gas 18032820, 0x00000001 등을 8 witness sweep 후 ConservationGain 0건. 타겟 0x0000...398F50는 Sovryn 컨버터 아님 prescreen reverted similarity 0.65로 결함 보존 불가해 안전 판정.",
+  "slug": "modeb-clone-ethereum-291-a9c3d9f285d9-4e50ad227394",
+  "verdict": "안전"
+}

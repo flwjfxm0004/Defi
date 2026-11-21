@@ -1,0 +1,12 @@
+{
+  "audit_block": 159784314,
+  "chain": "optimism",
+  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "realizable_usd": 26730.65,
+  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=26730.65 similarity=0.6500 vuln_preserved=None",
+  "similarity": 0.65,
+  "slug": "modeb-clone-optimism-083-1d6f03d66666-5e09cd891197",
+  "verdict": "안전"
+}
