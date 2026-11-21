@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 r"""
-Defi_구현_test.py — Defi_구현.py 분리 회귀 테스트 러너 (T1~T50, 태그/범위 선택 실행 지원)
+Defi_구현_self.py — Defi_구현.py 분리 회귀 테스트 러너 (T1~T50, 태그/범위 선택 실행 지원)
 
 사용법:
-- 전체 실행: `c:\Defi\python.exe -B -X utf8 Defi_구현_test.py`
-- 선택 실행: `c:\Defi\python.exe -B -X utf8 Defi_구현_test.py T44 T45` (또는 `T1-T14`, `FLASH`, `--list`)
+- 전체 실행: `c:\Defi\python.exe -B -X utf8 Defi_구현_self.py`
+- 선택 실행: `c:\Defi\python.exe -B -X utf8 Defi_구현_self.py T44 T45` (또는 `T1-T14`, `FLASH`, `--list`)
 """
 from __future__ import annotations
 

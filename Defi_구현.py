@@ -4,7 +4,7 @@
 Defi_구현.py — 전 구간 개념 기반(Concept-Based) 무권한 즉시 이익 전수 감사 엔진 (Deterministic SOTA)
 
 헌법 및 핵심 원리 (원하는 것.md & 지시서.md 단일 정본 동기화):
-1. 실행 엔진 코어 (회귀 테스트 스위트만 `Defi_구현_test.py`로 분리), 외부 pip 패키지 0개 (Python 3.12 표준 라이브러리 전용).
+1. 실행 엔진 코어 (회귀 테스트 스위트만 `Defi_구현_self.py`로 분리), 외부 pip 패키지 0개 (Python 3.12 표준 라이브러리 전용).
 2. 실행기: tools/foundry/forge.exe·cast.exe·solc.exe 및 tools/duckdb/duckdb.exe 로컬 비데몬 바이너리 전용.
 3. 모든 산출물 및 캐시는 audit_artifacts/ 내부 격리, 외부 파일시스템 전역 불변 유지.
 4. CLI 진입점: `c:\\Defi\\python.exe -B -X utf8 Defi_구현.py {run [세션ID]|done [세션ID]|selftest [태그...]}` (`done`은 회귀 테스트 강제 재구동 없이 즉시 실전 게이트 종결).
@@ -37760,7 +37760,7 @@ _ALLOWED_ROOT_ENTRIES: FrozenSet[str] = frozenset(
         ".gitattributes",
         ".gitignore",
         "Defi_구현.py",
-        "Defi_구현_test.py",
+        "Defi_구현_self.py",
         "audit_artifacts",
         "game",
         "node_modules",
@@ -37836,7 +37836,7 @@ def _compute_runtime_selftest_seal_fp() -> str:
     h = hashlib.sha256()
     for p_doc in (
         SCRIPT_DIR / "Defi_구현.py",
-        SCRIPT_DIR / "Defi_구현_test.py",
+        SCRIPT_DIR / "Defi_구현_self.py",
         SCRIPT_DIR / "원하는 것.md",
         SCRIPT_DIR / "지시서.md",
     ):
@@ -38226,21 +38226,21 @@ def cmd_done(session_id: Optional[str] = None) -> int:
 
 
 def cmd_selftest(tags: Optional[Sequence[str]] = None) -> int:
-    """분리된 `Defi_구현_test.py` 회귀 테스트 스위트(전체 또는 선택 태그)를 동적 로드하여 실행한다."""
-    test_path = SCRIPT_DIR / "Defi_구현_test.py"
+    """분리된 `Defi_구현_self.py` 회귀 테스트 스위트(전체 또는 선택 태그)를 동적 로드하여 실행한다."""
+    test_path = SCRIPT_DIR / "Defi_구현_self.py"
     if not test_path.is_file():
         print(f"Missing separated test module: {test_path}", file=sys.stderr)
         return 2
-    spec = importlib.util.spec_from_file_location("Defi_구현_test", str(test_path))
+    spec = importlib.util.spec_from_file_location("Defi_구현_self", str(test_path))
     if spec is None or spec.loader is None:
         print(f"Cannot load separated test module: {test_path}", file=sys.stderr)
         return 2
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["Defi_구현_test"] = mod
+    sys.modules["Defi_구현_self"] = mod
     spec.loader.exec_module(mod)
     runner = getattr(mod, "run_selftest", None)
     if not callable(runner):
-        print("Defi_구현_test.py missing callable run_selftest", file=sys.stderr)
+        print("Defi_구현_self.py missing callable run_selftest", file=sys.stderr)
         return 2
     return int(runner(tags))
 
