@@ -1,0 +1,11 @@
+{
+  "audit_block": 134747385,
+  "chain": "bsc",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Patched-fork check with zero-state interaction and snap accounting showing no extraction",
+  "slug": "modeb-clone-bsc-143-4a97e6bbf9f5-9646fd43d337",
+  "verdict": "안전"
+}

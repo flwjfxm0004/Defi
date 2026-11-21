@@ -4709,6 +4709,7 @@ class RPCRouter:
                     if _classify_rpc_error(exc) != "revert":
                         failed_indices.add(i0)
                 del pending[:1]
+                time.sleep(0.25)
                 continue
             req_list = [
                 {"jsonrpc": "2.0", "id": k, "method": calls[i][0], "params": calls[i][1]}
@@ -4784,6 +4785,7 @@ class RPCRouter:
                                 self._batch_caps[url] = min(def_cap_ok, max(cur_c + 4, int(cur_c * 1.5)))
                 ok_rpc_count += len(chunk_idxs)
                 del pending[:len(chunk_idxs)]
+                time.sleep(0.25)
             except Exception as exc:
                 last_transport_err = str(exc)
                 kind = _classify_rpc_error(exc)

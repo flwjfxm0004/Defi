@@ -1,0 +1,6 @@
+{
+  "audit_block": 100946079,
+  "candidate_id": 1,
+  "notes": "Patched-fork check with zero-state interaction and snap accounting showing no extraction",
+  "verdict": "안전"
+}

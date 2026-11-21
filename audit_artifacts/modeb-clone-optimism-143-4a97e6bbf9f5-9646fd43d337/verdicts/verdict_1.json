@@ -1,5 +1,6 @@
 {
+  "audit_block": 159801219,
   "candidate_id": 1,
-  "verdict": "안전",
-  "notes": "동적 검증 결과 TARGET의 totalSupply/decimals/name 조회와 leg 0x0fddfc44 프로브를 실행했으나 ConservationGain 이벤트가 전혀 발생하지 않아 탈취 가능한 경로가 없음"
+  "notes": "동적 검증 결과 TARGET의 totalSupply/decimals/name 조회와 leg 0x0fddfc44 프로브를 실행했으나 ConservationGain 이벤트가 전혀 발생하지 않아 탈취 가능한 경로가 없음",
+  "verdict": "안전"
 }
