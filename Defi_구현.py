@@ -2393,7 +2393,7 @@ class SQLiteStore:
         chain_id: Union[int, str],
         vault_addr: str,
         slug: str,
-        net_krw: Union[int, Decimal, float] = 0,
+        net_krw: Union[int, Decimal] = 0,
         fully_exhausted: bool = True,
     ) -> None:
         addr = _norm_addr(vault_addr)
@@ -2929,7 +2929,7 @@ class SQLiteStore:
         slug: str,
         addresses: Sequence[str],
         chain: str = "",
-        tvl_usd: Union[Decimal, int, str, float] = 0,
+        tvl_usd: Union[Decimal, int, str] = 0,
         mode: str = "",
     ) -> None:
         now = time.time()
@@ -3130,7 +3130,7 @@ class SQLiteStore:
 
     def complete_queue_items_batch(
         self,
-        items: Sequence[Tuple[str, str, Union[int, Decimal, float]]],
+        items: Sequence[Tuple[str, str, Union[int, Decimal]]],
     ) -> int:
         if not items:
             return 0
@@ -3229,7 +3229,7 @@ class SQLiteStore:
                 )
         return len(norm_items)
 
-    def complete_queue_item(self, slug: str, verdict: str, net_krw: Union[int, Decimal, float] = 0) -> None:
+    def complete_queue_item(self, slug: str, verdict: str, net_krw: Union[int, Decimal] = 0) -> None:
         self.complete_queue_items_batch([(slug, verdict, net_krw)])
 
     def queue_counts(self) -> Dict[str, int]:
@@ -5221,6 +5221,19 @@ class RPCRouter:
         def _probe_one(u: str) -> Tuple[int, int, bool]:
             is_arch = u in arch_url_set
             uk_p = _endpoint_storage_key(u)
+
+            def _extract_probe_blk(blk_obj: Any, t_start: float) -> Optional[Tuple[int, int, bool]]:
+                if not isinstance(blk_obj, dict):
+                    return None
+                num_s = str(blk_obj.get("number") or "")
+                ts_s = str(blk_obj.get("timestamp") or "")
+                bn_v = int(num_s, 16) if num_s.startswith("0x") else int(num_s or 0)
+                ts_v = int(ts_s, 16) if ts_s.startswith("0x") else int(ts_s or 0)
+                if bn_v > 0:
+                    self._record_success(u, (time.perf_counter() - t_start) * 1000.0, cid=cid)
+                    return bn_v, max(0, ts_v), is_arch
+                return None
+
             with self._lock:
                 cid_already_ok = (cid <= 0) or ((cid, uk_p) in self._verified_chain_urls)
             if not cid_already_ok:
@@ -5245,15 +5258,9 @@ class RPCRouter:
                             with self._lock:
                                 self._verified_chain_urls.add((cid, uk_p))
                             cid_already_ok = True
-                            blk_r_b = (by_id_b.get(2) or {}).get("result")
-                            if isinstance(blk_r_b, dict):
-                                num_s = str(blk_r_b.get("number") or "")
-                                ts_s = str(blk_r_b.get("timestamp") or "")
-                                bn_v = int(num_s, 16) if num_s.startswith("0x") else int(num_s or 0)
-                                ts_v = int(ts_s, 16) if ts_s.startswith("0x") else int(ts_s or 0)
-                                if bn_v > 0:
-                                    self._record_success(u, (time.perf_counter() - t_b) * 1000.0, cid=cid)
-                                    return bn_v, max(0, ts_v), is_arch
+                            got_b = _extract_probe_blk((by_id_b.get(2) or {}).get("result"), t_b)
+                            if got_b is not None:
+                                return got_b
                 except Exception as _b_exc:
                     if _is_auth_denied_rpc_error(_b_exc):
                         self._record_failure(u, "auth_dead", cid=cid)
@@ -5272,15 +5279,9 @@ class RPCRouter:
                     timeout=min(4.0, timeout),
                 )
                 doc_blk = json.loads(raw_blk.decode("utf-8", errors="replace"))
-                res_blk = doc_blk.get("result") if isinstance(doc_blk, dict) else None
-                if isinstance(res_blk, dict):
-                    num_s = str(res_blk.get("number") or "")
-                    ts_s = str(res_blk.get("timestamp") or "")
-                    bn_v = int(num_s, 16) if num_s.startswith("0x") else int(num_s or 0)
-                    ts_v = int(ts_s, 16) if ts_s.startswith("0x") else int(ts_s or 0)
-                    if bn_v > 0:
-                        self._record_success(u, (time.perf_counter() - t0) * 1000.0, cid=cid)
-                        return bn_v, max(0, ts_v), is_arch
+                got_blk = _extract_probe_blk(doc_blk.get("result") if isinstance(doc_blk, dict) else None, t0)
+                if got_blk is not None:
+                    return got_blk
             except Exception as _blk_exc:
                 _emsg = str(_blk_exc).lower()
                 if any(tok in _emsg for tok in ("403", "429", "401", "timed out", "timeout", "refused", "getaddrinfo", "reset")):
@@ -5888,7 +5889,7 @@ MIN_SIZE_RATIO_NUM: int = 3
 MIN_SIZE_RATIO_DEN: int = 10
 
 
-def _to_bp(val: Union[int, float, Decimal, str]) -> int:
+def _to_bp(val: Union[int, Decimal, str]) -> int:
     if isinstance(val, int) and not isinstance(val, bool):
         return max(0, min(10000, val * 10000))
     return max(0, min(10000, int((_to_dec(val) * Decimal("10000")).to_integral_value(rounding=ROUND_HALF_EVEN))))
@@ -7188,7 +7189,7 @@ def _extract_seed_function_loci(
         if not loc_has_real_sink:
             continue
         loc_bytes = bytes(buf)
-        if len(loc_bytes) < 48 or len(loc_bytes) >= int(len(clean) * 0.90):
+        if len(loc_bytes) < 48 or len(loc_bytes) >= ((len(clean) * 9) // 10):
             continue
         loc_reloc, loc_ssg, _ = _canonicalize_reloc_and_ssg(loc_bytes, extra_jumpdests=known_jds)
         loc_r_grams = {b"\xfdR" + g for g in _extract_grams_clean(loc_reloc, sizes=(4, 8, 16))}
@@ -7891,7 +7892,7 @@ def _extract_cfg_entry_guard_profile(clean: bytes) -> Dict[str, Any]:
 def _assess_candidate_patch_delta(
     seed_ps: Optional[Mapping[str, Any]],
     cand_clean: bytes,
-    sim_score: Union[Decimal, float, int],
+    sim_score: Union[Decimal, int],
     *,
     seed_sources: Optional[Mapping[str, str]] = None,
     cand_sources: Optional[Mapping[str, str]] = None,
@@ -17046,9 +17047,9 @@ def _resolve_token_metadata_batch(
     chain: str,
     tokens: Sequence[str],
     block_pin: int,
-    native_price_usd: Union[float, Decimal],
+    native_price_usd: Union[Decimal, int, str],
     upper_prices_out: Optional[Dict[str, Decimal]] = None,
-    native_price_max_usd: Optional[Union[float, Decimal]] = None,
+    native_price_max_usd: Optional[Union[Decimal, int, str]] = None,
     *,
     prices_dec_out: Optional[Dict[str, Decimal]] = None,
     upper_prices_dec_out: Optional[Dict[str, Decimal]] = None,
@@ -17333,7 +17334,7 @@ def build_backward_trust_closure(
     chain: str,
     seed_addresses: List[str],
     block_pin: int,
-    protocol_tvl_hint_usd: Union[Decimal, int, str, float] = _DEC_ZERO,
+    protocol_tvl_hint_usd: Union[Decimal, int, str] = _DEC_ZERO,
     initial_resolutions: Optional[Mapping[str, ProxyResolution]] = None,
     *,
     slug: str = "",
@@ -24763,6 +24764,28 @@ def _try_encode_complex_abi_hex(
         return ""
 
 
+def _collect_complex_abi_witness_hex_pairs(
+    sel_hex: str,
+    abi_types: Sequence[str],
+    param_names: Sequence[str],
+    witness_values: Sequence[int],
+    caller_chk: str,
+    vault_chk: str,
+    token_addrs: Sequence[str],
+) -> List[Tuple[int, str]]:
+    out_pairs: List[Tuple[int, str]] = []
+    seen_w: Set[int] = set()
+    for w_v in (list(witness_values)[:6] or [10**18]):
+        wi = int(w_v)
+        if wi in seen_w:
+            continue
+        seen_w.add(wi)
+        hx = _try_encode_complex_abi_hex(sel_hex, abi_types, param_names, wi, caller_chk, vault_chk, token_addrs)
+        if hx:
+            out_pairs.append((wi, hx))
+    return out_pairs
+
+
 def _render_leg_invocation_solidity(
     target_expr: str,
     sel_hex: str,
@@ -24776,6 +24799,7 @@ def _render_leg_invocation_solidity(
     allow_generic_fallback: bool = False,
     complex_witness_int: int = 10**18,
     complex_caller_chk: str = "",
+    complex_witness_values: Sequence[int] = (),
 ) -> str:
     """
     단일 leg에 대해 역할 인식 ABI 시그니처(스칼라/배열/중첩·동적 튜플) 또는 다중 표준 인자 템플릿 생성.
@@ -39031,7 +39055,7 @@ def emit_address_discovery_request(
     slug: str,
     chain: str,
     block_pin: int,
-    tvl_usd: Union[Decimal, int, str, float],
+    tvl_usd: Union[Decimal, int, str],
     meta_hint: Optional[Dict[str, Any]] = None,
     router: Optional[RPCRouter] = None,
     session_id: str = "",
@@ -44268,7 +44292,7 @@ def _validate_bridge_events_for_entries(
     *,
     chain: str,
     decimals_map: Mapping[str, int],
-    prices_map: Optional[Mapping[str, Union[float, Decimal, str]]],
+    prices_map: Optional[Mapping[str, Union[Decimal, int, str]]],
     router: Optional[RPCRouter],
     block_pin: int,
     store: Optional[SQLiteStore] = None,
@@ -45274,7 +45298,7 @@ def _replay_and_judge_at_live_head(
     chain: str,
     block_pin: int,
     decimals_map: Dict[str, int],
-    prices_map: Mapping[str, Union[float, Decimal, str]],
+    prices_map: Mapping[str, Union[Decimal, int, str]],
     calldata_len: int = 0,
     default_fail_reason: str = "LIVE_HEAD_REPLAY_FAILED",
     session_id: str = "",
@@ -52059,17 +52083,33 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             if store.get_engine_meta("mode_a_seed_pending", "0") == "1":
                 _ensure_mode_a_seeded(store)
             c_phase = _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR)
-            if c_phase != "exhausted":
-                cursor_stats = _advance_mode_b_sourcify_cursor(router, store, max_wall_sec=4.5)
-                total_cursor_matched += int(cursor_stats.get("matched", 0))
+            need_sf_start = c_phase != "exhausted"
+            need_lw_start = int(store.queue_counts().get("pending", 0)) > 0
+            if need_sf_start and need_lw_start and _is_live_real_router(router):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex_st:
+                    fut_sf_st = ex_st.submit(_advance_mode_b_sourcify_cursor, router, store, max_wall_sec=4.5)
+                    fut_lw_st = ex_st.submit(
+                        _run_live_deploy_and_upgrade_watch,
+                        router, store, max_wall_sec=3.5, stragglers_out=straggler_futs,
+                    )
+                    cursor_stats = fut_sf_st.result()
+                    live_watch_stats = fut_lw_st.result()
+                total_cursor_matched += int(cursor_stats.get("matched", 0)) + int(
+                    live_watch_stats.get("enqueued_live", 0)
+                ) + int(live_watch_stats.get("enqueued_modeb", 0))
                 c_phase = str(cursor_stats.get("phase") or _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR))
-            if int(store.queue_counts().get("pending", 0)) > 0:
-                live_watch_stats = _run_live_deploy_and_upgrade_watch(
-                    router, store, max_wall_sec=3.5, stragglers_out=straggler_futs
-                )
-                total_cursor_matched += int(live_watch_stats.get("enqueued_live", 0)) + int(
-                    live_watch_stats.get("enqueued_modeb", 0)
-                )
+            else:
+                if need_sf_start:
+                    cursor_stats = _advance_mode_b_sourcify_cursor(router, store, max_wall_sec=4.5)
+                    total_cursor_matched += int(cursor_stats.get("matched", 0))
+                    c_phase = str(cursor_stats.get("phase") or _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR))
+                if need_lw_start:
+                    live_watch_stats = _run_live_deploy_and_upgrade_watch(
+                        router, store, max_wall_sec=3.5, stragglers_out=straggler_futs
+                    )
+                    total_cursor_matched += int(live_watch_stats.get("enqueued_live", 0)) + int(
+                        live_watch_stats.get("enqueued_modeb", 0)
+                    )
             _emit_progress(
                 "STARTUP_CURSORS_DONE",
                 slug="-",
@@ -52587,7 +52627,6 @@ _ALLOWED_ROOT_ENTRIES: FrozenSet[str] = frozenset(
         ".gitignore",
         "Defi_구현.py",
         "audit_artifacts",
-        "core_run_20261124",
         "game",
         "node_modules",
         "package.json",
@@ -53061,15 +53100,6 @@ def cmd_done(session_id: Optional[str] = None) -> int:
 
 
 def main() -> int:
-    if os.name == "nt" and _LOW_PRIO_MODE:
-        try:
-            _k32 = ctypes.windll.kernel32
-            _k32.GetCurrentProcess.restype = ctypes.c_void_p
-            _k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-            _k32.SetPriorityClass.restype = ctypes.c_int
-            _k32.SetPriorityClass(_k32.GetCurrentProcess(), 0x00004000)
-        except (OSError, AttributeError, ValueError):
-            pass
     for _stream in (sys.stdout, sys.stderr):
         _reconf = getattr(_stream, "reconfigure", None)
         if callable(_reconf):

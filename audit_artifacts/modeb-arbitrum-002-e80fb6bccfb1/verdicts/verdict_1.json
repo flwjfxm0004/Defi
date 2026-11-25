@@ -1,6 +1,0 @@
-{
-  "audit_block": 525840957,
-  "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=101604.83 similarity=0.0000 vuln_preserved=None",
-  "verdict": "안전"
-}

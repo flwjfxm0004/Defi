@@ -818,125 +818,339 @@ def _flush_relay_snapshot_before_push() -> None:
         log(f"[push] 이어달리기 스냅샷 참고 경고: {exc}")
 
 
+_PYCACHE_PRUNE_DIRS = frozenset({
+    ".git", "target", "out", "node_modules", ".venv", ".tmp", ".chrome-cdp",
+    "_cache", "_shared_cache", "sourcify_parquet", "foundry", "duckdb",
+})
+_NESTED_GIT_SKIP_ROOTS = frozenset({
+    ".git", "tools", "audit_artifacts", "node_modules", ".venv", ".tmp",
+    ".chrome-cdp", "sourcify_parquet",
+})
+_SECRET_EXACT_NAMES = frozenset({
+    ".env", "id_rsa", "id_ed25519", "secrets.yaml", "secrets.yml", ".npmrc", ".pypirc",
+})
+_SECRET_EXTS = frozenset({
+    ".pem", ".key", ".p12", ".pfx", ".keystore", ".token", ".asc", ".ovpn", ".jks",
+})
+_MAX_GITHUB_BLOB_BYTES = 95 * 1024 * 1024  # 95 MB safety guard below GitHub's 100 MB hard limit
+
+
+def _prune_pycache_fast(root: Path) -> int:
+    """무시 디렉터리(.git/target/out/_cache/node_modules 등)를 가지치기하며 __pycache__만 초고속 삭제."""
+    removed = 0
+    for cur_dir, dirs, _files in os.walk(root):
+        if "__pycache__" in dirs:
+            _safe_rmtree(Path(cur_dir) / "__pycache__")
+            removed += 1
+        dirs[:] = [
+            d for d in dirs
+            if d != "__pycache__" and d not in _PYCACHE_PRUNE_DIRS
+            and not (cur_dir == str(TOOLS_DIR) and d == "git")
+        ]
+    return removed
+
+
+def _find_nested_git_dirs(root: Path, max_depth: int = 2) -> list[Path]:
+    """game/, 초지능/, 작품/ 등 모든 하위 프로젝트의 중첩 .git 디렉터리를 깊이 제한으로 초고속 탐지."""
+    found: list[Path] = []
+    root_parts = len(root.parts)
+    for cur_dir, dirs, _files in os.walk(root):
+        cur_p = Path(cur_dir)
+        depth = len(cur_p.parts) - root_parts
+        if depth > 0 and ".git" in dirs:
+            found.append(cur_p / ".git")
+            dirs.remove(".git")
+        if depth >= max_depth:
+            dirs[:] = []
+            continue
+        if depth == 0:
+            dirs[:] = [d for d in dirs if d not in _NESTED_GIT_SKIP_ROOTS]
+        else:
+            dirs[:] = [d for d in dirs if d not in _PYCACHE_PRUNE_DIRS]
+    return sorted(found)
+
+
+def _is_secret_relpath(rel_posix: str) -> bool:
+    """실제 스테이징된 경로 단위 민감키 판별 (tools/git 내 합법 credential-manager 바이너리는 제외)."""
+    low = rel_posix.lower()
+    if low.startswith("tools/git/"):
+        return False
+    name = low.rsplit("/", 1)[-1]
+    if name in _SECRET_EXACT_NAMES or name.startswith(".env."):
+        return True
+    if any(name.endswith(ext) for ext in _SECRET_EXTS):
+        return True
+    if "secret" in name or "credential" in name:
+        return True
+    return False
+
+
+def _ensure_git_local_config(git_exe: Path, git_env: dict[str, str]) -> str:
+    """git config --local --list 1회 조회 후 누락/변경 키만 기록 (매 푸시 10+회 스폰 제거 + Windows 속도 플래그)."""
+    rc_l, cfg_out = run_cmd([str(git_exe), "config", "--local", "--list"], cwd=DEFI_DIR, env=git_env)
+    existing: dict[str, str] = {}
+    if rc_l == 0:
+        for line in cfg_out.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                existing[k.strip().lower()] = v.strip()
+
+    rem_url = existing.get("remote.origin.url", "")
+    if not rem_url:
+        _, rem_url = run_cmd([str(git_exe), "remote", "get-url", "origin"], cwd=DEFI_DIR, env=git_env)
+        rem_url = rem_url.strip()
+
+    desired: dict[str, str] = {
+        "credential.helper": "manager",
+        "credential.usehttppath": "true",
+        "core.quotepath": "false",
+        "core.autocrlf": "false",
+        "core.fscache": "true",
+        "core.preloadindex": "true",
+        "feature.manyfiles": "true",
+        "http.lowspeedlimit": "1000",
+        "http.lowspeedtime": "15",
+        "http.postbuffer": "524288000",
+    }
+    m_gh = re.match(r"https://github\.com/([^/\s]+)/", rem_url)
+    if m_gh:
+        desired["credential.https://github.com.username"] = m_gh.group(1)
+
+    for k, v in desired.items():
+        if existing.get(k) != v:
+            run_cmd([str(git_exe), "config", "--local", k, v], cwd=DEFI_DIR, env=git_env)
+
+    if not existing.get("user.name"):
+        rc_n, name_out = run_cmd([str(git_exe), "config", "--get", "user.name"], cwd=DEFI_DIR, env=git_env)
+        if rc_n != 0 or not name_out.strip():
+            run_cmd([str(git_exe), "config", "--local", "user.name", "flwjfxm0004"], cwd=DEFI_DIR, env=git_env)
+    if not existing.get("user.email"):
+        rc_e, email_out = run_cmd([str(git_exe), "config", "--get", "user.email"], cwd=DEFI_DIR, env=git_env)
+        if rc_e != 0 or not email_out.strip():
+            run_cmd(
+                [str(git_exe), "config", "--local", "user.email", "flwjfxm0004@users.noreply.github.com"],
+                cwd=DEFI_DIR,
+                env=git_env,
+            )
+    return rem_url
+
+
+def _git_output_bytes(cmd: Sequence[str], *, cwd: Path, env: dict[str, str], timeout: float = 60.0) -> tuple[int, bytes]:
+    try:
+        cp = subprocess.run(list(cmd), cwd=str(cwd), env=env, capture_output=True, timeout=timeout, check=False)
+        return cp.returncode, cp.stdout or b""
+    except Exception:
+        return 1, b""
+
+
 def git_push(message: str = "") -> int:
+    t0 = time.monotonic()
     git_exe, git_env = locate_git_env()
     if git_exe is None:
         log("[push] ERROR: git.exe를 찾을 수 없습니다.")
         return 1
 
-    # 스테이징 전 루트/하위 __pycache__ 제거 및 PC방 이어달리기 스냅샷 동기화
-    for pyc_dir in list(DEFI_DIR.rglob("__pycache__")):
-        if ".git" not in pyc_dir.parts:
-            _safe_rmtree(pyc_dir)
+    # 1) 가지치기 고속 __pycache__ 정리 + PC방 이어달리기 스냅샷 동기화 + 변경 시에만 .git/info/exclude 갱신
+    _prune_pycache_fast(DEFI_DIR)
     _flush_relay_snapshot_before_push()
     gitignore_p = DEFI_DIR / ".gitignore"
     exclude_p = DEFI_DIR / ".git" / "info" / "exclude"
     if gitignore_p.is_file() and (DEFI_DIR / ".git").is_dir():
         try:
-            exclude_p.parent.mkdir(parents=True, exist_ok=True)
-            exclude_p.write_text(gitignore_p.read_text(encoding="utf-8"), encoding="utf-8")
+            gi_bytes = gitignore_p.read_bytes()
+            if not exclude_p.is_file() or exclude_p.read_bytes() != gi_bytes:
+                exclude_p.parent.mkdir(parents=True, exist_ok=True)
+                exclude_p.write_bytes(gi_bytes)
         except OSError:
             pass
 
     if not sys.stdin or not sys.stdin.isatty():
         git_env["GIT_TERMINAL_PROMPT"] = "0"
-    run_cmd([str(git_exe), "config", "--local", "credential.helper", "manager"], cwd=DEFI_DIR, env=git_env)
-    run_cmd([str(git_exe), "config", "--local", "credential.useHttpPath", "true"], cwd=DEFI_DIR, env=git_env)
-    _, rem_url = run_cmd([str(git_exe), "remote", "get-url", "origin"], cwd=DEFI_DIR, env=git_env)
-    m_gh = re.match(r"https://github\.com/([^/\s]+)/", rem_url.strip())
-    if m_gh:
-        run_cmd(
-            [str(git_exe), "config", "--local", "credential.https://github.com.username", m_gh.group(1)],
-            cwd=DEFI_DIR,
-            env=git_env,
-        )
-    run_cmd([str(git_exe), "config", "--local", "core.quotepath", "false"], cwd=DEFI_DIR, env=git_env)
-    run_cmd([str(git_exe), "config", "--local", "core.autocrlf", "false"], cwd=DEFI_DIR, env=git_env)
-    run_cmd([str(git_exe), "config", "--local", "http.lowSpeedLimit", "1000"], cwd=DEFI_DIR, env=git_env)
-    run_cmd([str(git_exe), "config", "--local", "http.lowSpeedTime", "15"], cwd=DEFI_DIR, env=git_env)
 
-    rc_n, name_out = run_cmd([str(git_exe), "config", "--get", "user.name"], cwd=DEFI_DIR, env=git_env)
-    if rc_n != 0 or not name_out.strip():
-        run_cmd([str(git_exe), "config", "--local", "user.name", "flwjfxm0004"], cwd=DEFI_DIR, env=git_env)
-    rc_e, email_out = run_cmd([str(git_exe), "config", "--get", "user.email"], cwd=DEFI_DIR, env=git_env)
-    if rc_e != 0 or not email_out.strip():
-        run_cmd(
-            [str(git_exe), "config", "--local", "user.email", "flwjfxm0004@users.noreply.github.com"],
-            cwd=DEFI_DIR,
-            env=git_env,
-        )
+    # 2) 단일 조회 기반 로컬 config + Windows Git 가속 설정 동기화
+    _ensure_git_local_config(git_exe, git_env)
 
     _, br_out = run_cmd([str(git_exe), "rev-parse", "--abbrev-ref", "HEAD"], cwd=DEFI_DIR, env=git_env)
     branch = br_out.strip() if br_out.strip() and br_out.strip() != "HEAD" else "master"
 
-    # 중첩 game/.git가 있으면 상위 git이 빈 gitlink 서브모듈로 취급하여 새 PC에서 game/ 소스가 누락되므로,
-    # 스테이징/커밋 동안에만 _cache/_game_git_hold로 잠시 대피시킨 뒤 즉시 원복한다.
-    game_git_dir = GAME_DIR / ".git"
-    game_git_hold = CACHE_DIR / "_game_git_hold"
-    parked_game_git = False
+    # 이전 비정상 종료로 남아 있을 수 있는 구 _game_git_hold 안전 복구
+    legacy_hold = CACHE_DIR / "_game_git_hold"
+    if legacy_hold.is_dir() and not (GAME_DIR / ".git").exists():
+        shutil.move(str(legacy_hold), str(GAME_DIR / ".git"))
+
+    # 3) 모든 하위 프로젝트(game/, 초지능/, 작품/ 등)의 중첩 .git 자동 대피 -> 커밋 후 100% 원복
+    nested_hold_root = CACHE_DIR / "_nested_git_hold"
+    parked: list[tuple[Path, Path]] = []
     try:
-        if game_git_dir.is_dir():
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            if game_git_hold.exists():
-                _safe_rmtree(game_git_hold)
-            shutil.move(str(game_git_dir), str(game_git_hold))
-            parked_game_git = True
+        nested_gits = _find_nested_git_dirs(DEFI_DIR, max_depth=2)
+        if nested_gits:
+            nested_hold_root.mkdir(parents=True, exist_ok=True)
+            for idx, ng in enumerate(nested_gits):
+                dst = nested_hold_root / f"hold_{idx}"
+                if dst.exists():
+                    _safe_rmtree(dst)
+                shutil.move(str(ng), str(dst))
+                parked.append((ng, dst))
 
         rc_add, add_err = run_cmd([str(git_exe), "add", "-A"], cwd=DEFI_DIR, env=git_env, timeout=180.0)
         if rc_add != 0:
             log(f"[push] git add 실패: {add_err}")
             return 1
 
-        # 민감 키/인증서 패턴 및 미완결(pins.json 미생성) 감사 폴더 방어적 언스테이징
-        secret_globs = [
-            ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa", "id_ed25519",
-            "*secret*", "*credential*", "*.keystore", "*.token", "*.asc", "*.ovpn", "*.jks",
-            "secrets.yaml", "secrets.yml", ".npmrc", ".pypirc",
-        ]
-        run_cmd([str(git_exe), "reset", "-q", "HEAD", "--", *secret_globs], cwd=DEFI_DIR, env=git_env)
-        if (DEFI_DIR / "tools" / "git").is_dir():
-            run_cmd([str(git_exe), "add", "--", "tools/git"], cwd=DEFI_DIR, env=git_env)
+        # 4) 실제 스테이징된 파일만 정밀 검사 (-z NUL 구분): 민감키 / >95MB 대용량 / 미완결 audit 폴더 동시 차단
+        rc_st, st_raw = _git_output_bytes(
+            [str(git_exe), "diff", "--cached", "--name-status", "-z"],
+            cwd=DEFI_DIR,
+            env=git_env,
+        )
+        blocked_paths: list[str] = []
+        blocked_reasons: list[str] = []
         art_root_chk = DEFI_DIR / "audit_artifacts"
-        if art_root_chk.is_dir():
-            unsealed_rel = [
-                f"audit_artifacts/{d.name}"
-                for d in sorted(art_root_chk.iterdir())
-                if d.is_dir() and not d.name.startswith("_") and not (d / "pins.json").is_file()
-            ]
-            for off in range(0, len(unsealed_rel), 64):
-                run_cmd([str(git_exe), "reset", "-q", "HEAD", "--", *unsealed_rel[off : off + 64]], cwd=DEFI_DIR, env=git_env)
+        unsealed_cache: dict[str, bool] = {}
+        staged_entries: list[tuple[str, str]] = []
+
+        if rc_st == 0 and st_raw:
+            tokens = [t.decode("utf-8", errors="surrogateescape") for t in st_raw.split(b"\x00") if t]
+            i = 0
+            while i < len(tokens):
+                status = tokens[i]
+                if status.startswith(("R", "C")) and i + 2 < len(tokens):
+                    rel = tokens[i + 2]
+                    i += 3
+                elif i + 1 < len(tokens):
+                    rel = tokens[i + 1]
+                    i += 2
+                else:
+                    break
+                staged_entries.append((status, rel))
+
+        for status, rel in staged_entries:
+            if status.startswith("D"):
+                continue
+            rel_posix = rel.replace("\\", "/")
+            if _is_secret_relpath(rel_posix):
+                blocked_paths.append(rel_posix)
+                blocked_reasons.append(f"민감패턴:{rel_posix}")
+                continue
+            if rel_posix.startswith("audit_artifacts/"):
+                parts = rel_posix.split("/", 2)
+                if len(parts) >= 2:
+                    slug = parts[1]
+                    if slug and not slug.startswith("_"):
+                        is_unsealed = unsealed_cache.get(slug)
+                        if is_unsealed is None:
+                            slug_dir = art_root_chk / slug
+                            is_unsealed = slug_dir.is_dir() and not (slug_dir / "pins.json").is_file()
+                            unsealed_cache[slug] = is_unsealed
+                        if is_unsealed:
+                            blocked_paths.append(rel_posix)
+                            continue
+            abs_p = DEFI_DIR / Path(rel_posix)
+            try:
+                if abs_p.is_file():
+                    sz = abs_p.stat().st_size
+                    if sz > _MAX_GITHUB_BLOB_BYTES:
+                        blocked_paths.append(rel_posix)
+                        blocked_reasons.append(f"대용량({sz / (1024 * 1024):.1f}MB>95MB):{rel_posix}")
+            except OSError:
+                pass
+
+        if blocked_paths:
+            for off in range(0, len(blocked_paths), 64):
+                run_cmd(
+                    [str(git_exe), "reset", "-q", "HEAD", "--", *blocked_paths[off : off + 64]],
+                    cwd=DEFI_DIR,
+                    env=git_env,
+                )
+            if blocked_reasons:
+                log(f"[push] 보안/용량 자동 차단 {len(blocked_reasons)}건: {', '.join(blocked_reasons[:5])}")
+
+        # 5) 최종 스테이징 요약 및 커밋
+        blocked_set = set(blocked_paths)
+        final_entries = [(s, r) for s, r in staged_entries if r.replace("\\", "/") not in blocked_set]
+        acmr_cnt = sum(1 for s, _ in final_entries if not s.startswith("D"))
+        del_cnt = sum(1 for s, _ in final_entries if s.startswith("D"))
+        max_bytes = 0
+        for s, r in final_entries:
+            if not s.startswith("D"):
+                try:
+                    p = DEFI_DIR / Path(r)
+                    if p.is_file():
+                        sz = p.stat().st_size
+                        if sz > max_bytes:
+                            max_bytes = sz
+                except OSError:
+                    pass
 
         rc_diff, _ = run_cmd([str(git_exe), "diff", "--cached", "--quiet"], cwd=DEFI_DIR, env=git_env)
         if rc_diff == 1:
+            log(
+                f"[push] 스테이징 요약: 총 {len(final_entries)}개 "
+                f"(추가/수정 {acmr_cnt}, 삭제 {del_cnt}, 최대파일 {max_bytes / (1024 * 1024):.2f} MB)"
+            )
             commit_msg = message.strip() or time.strftime("Auto commit: %Y-%m-%d %H:%M:%S")
             rc_c, c_out = run_cmd([str(git_exe), "commit", "-m", commit_msg], cwd=DEFI_DIR, env=git_env, timeout=120.0)
             if rc_c != 0:
                 log(f"[push] 커밋 실패: {c_out}")
                 return 1
-            log(f"[push] 커밋 완료: {commit_msg}")
+            _, sha_out = run_cmd([str(git_exe), "rev-parse", "--short", "HEAD"], cwd=DEFI_DIR, env=git_env)
+            log(f"[push] 커밋 완료: {sha_out.strip()} | {commit_msg}")
         else:
-            log("[push] 신규 스테이징 변경 사항 없음 (원격 푸시 상태 확인)")
+            rc_ah, ah_out = run_cmd(
+                [str(git_exe), "rev-list", "--count", f"origin/{branch}..HEAD"],
+                cwd=DEFI_DIR,
+                env=git_env,
+            )
+            if rc_ah == 0 and ah_out.strip() == "0":
+                log(f"[push] 변경 사항 없음 — 이미 origin/{branch}와 최신 상태 ({time.monotonic() - t0:.2f}s)")
+                return 0
+            log("[push] 신규 커밋 없음 — 미푸시 로컬 커밋을 원격으로 전송합니다.")
     finally:
-        if parked_game_git and game_git_hold.exists() and not game_git_dir.exists():
-            shutil.move(str(game_git_hold), str(game_git_dir))
+        for orig, hold in reversed(parked):
+            if hold.exists() and not orig.exists():
+                shutil.move(str(hold), str(orig))
+        if nested_hold_root.is_dir():
+            try:
+                if not any(nested_hold_root.iterdir()):
+                    nested_hold_root.rmdir()
+            except OSError:
+                pass
 
+    # 6) 원인 분류형 고속 푸시 루프 (인증/용량 오류는 즉시 중단, 충돌은 리베이스, 네트워크는 백오프 재시도)
     for attempt in range(1, 4):
         log(f"[push] origin/{branch} 푸시 시도 ({attempt}/3)...")
         rc_p, p_out = run_cmd([str(git_exe), "push", "origin", branch], cwd=DEFI_DIR, env=git_env, timeout=600.0)
         if rc_p == 0:
-            log("[push] 푸시 성공!")
+            log(f"[push] 푸시 성공! (총 {time.monotonic() - t0:.2f}s)")
             return 0
+        low_err = p_out.lower()
         log(f"[push] 푸시 응답: {p_out[:300]}")
-        rc_rb, rb_out = run_cmd(
-            [str(git_exe), "pull", "--rebase", "--autostash", "origin", branch],
-            cwd=DEFI_DIR,
-            env=git_env,
-            timeout=300.0,
+
+        fatal_markers = (
+            "gh001", "exceeds github's file size limit", "large files detected",
+            "authentication failed", "permission denied", "403", "repository not found",
+            "push declined due to repository rule",
         )
-        if rc_rb != 0:
-            run_cmd([str(git_exe), "rebase", "--abort"], cwd=DEFI_DIR, env=git_env)
-            log(f"[push] 리베이스 충돌로 중단: {rb_out[:300]}")
+        if any(m in low_err for m in fatal_markers):
+            log("[push] 치명적 거절(인증/용량/규칙) 감지 — 불필요한 리베이스 없이 즉시 중단합니다.")
             return 1
+
+        diverge_markers = ("non-fast-forward", "fetch first", "updates were rejected", "[rejected]")
+        if any(m in low_err for m in diverge_markers):
+            rc_rb, rb_out = run_cmd(
+                [str(git_exe), "pull", "--rebase", "--autostash", "origin", branch],
+                cwd=DEFI_DIR,
+                env=git_env,
+                timeout=300.0,
+            )
+            if rc_rb != 0:
+                run_cmd([str(git_exe), "rebase", "--abort"], cwd=DEFI_DIR, env=git_env)
+                log(f"[push] 리베이스 충돌로 중단: {rb_out[:300]}")
+                return 1
+        elif attempt < 3:
+            wait_s = 2 * attempt
+            log(f"[push] 일시적 네트워크 오류 — {wait_s}초 후 재시도...")
+            time.sleep(wait_s)
     return 1
 
 
