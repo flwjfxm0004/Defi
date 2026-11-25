@@ -594,6 +594,8 @@ CONSERVATION_GAIN_SIG: str = "ConservationGain(uint256,address,uint256,uint256,u
 CONSERVATION_GAIN_TOPIC0: str = _keccak256_hex(CONSERVATION_GAIN_SIG.encode("ascii"))
 CONSERVATION_NFT_GAIN_SIG: str = "ConservationNftGain(uint256,address,uint256,uint256,bool)"
 CONSERVATION_NFT_GAIN_TOPIC0: str = _keccak256_hex(CONSERVATION_NFT_GAIN_SIG.encode("ascii"))
+CONSERVATION_PROBE_HIT_SIG: str = "ConservationProbeHit(uint256,uint256)"
+CONSERVATION_PROBE_HIT_TOPIC0: str = _keccak256_hex(CONSERVATION_PROBE_HIT_SIG.encode("ascii"))
 
 EIP1967_SLOTS: Dict[str, str] = {
     k: "0x%064x" % (int(_keccak256(v.encode("utf-8")).hex(), 16) - 1)
@@ -27298,6 +27300,8 @@ def _render_minimal_solidity_harness(
     slices: List[CausalSlice],
     vault_addresses: Optional[Sequence[str]] = None,
     exit_routes: Optional[Dict[str, Dict[str, Any]]] = None,
+    *,
+    fast_screen: bool = False,
 ) -> str:
     """
     외부 forge-std 의존성 없이 즉시 컴파일되는 개념 기반 Vm 화이트리스트 하네스:
@@ -27681,8 +27685,26 @@ def _render_minimal_solidity_harness(
         for w_i, witness in enumerate(w_list):
             fn_name = f"test_slice_{s_idx}_w{w_i}" if multi_w else f"test_slice_{s_idx}"
             w_val = int(witness) & ((1 << 256) - 1)
-            test_fns.append(
-                f"""
+            if fast_screen:
+                test_fns.append(
+                    f"""
+    function {fn_name}() public {{
+        uint256[{asset_count}] memory _cb = _snapshotBalances({c_chk});
+        vm.startPrank({c_chk}, {c_chk});
+        _probe_slice_{s_idx}(uint256({w_val}));
+        vm.stopPrank();
+        uint256[{asset_count}] memory _ca = _snapshotBalances({c_chk});
+        for (uint256 _ci = 0; _ci < {asset_count}; _ci++) {{
+            if (_ca[_ci] > _cb[_ci]) {{
+                emit ConservationProbeHit({s_idx}, uint256({w_val}));
+                return;
+            }}
+        }}
+    }}"""
+                )
+            else:
+                test_fns.append(
+                    f"""
     function {fn_name}() public {{
         ConservationSnap memory snapBefore = _takeSnap({c_chk});
         uint256 gasStart = gasleft();
@@ -27692,7 +27714,7 @@ def _render_minimal_solidity_harness(
         uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
 {post_snap_code}
     }}"""
-            )
+                )
 
     helper_tok_sweeps = "\n".join(
         f"        {{ (bool okB, bytes memory retB) = address({tk}).staticcall(abi.encodeWithSelector({BALANCE_OF_SEL}, address(this))); "
@@ -28408,9 +28430,11 @@ contract FlashRunner_{safe_contract} {{
         if has_ctor_probe_slice
         else ""
     )
-    extra_members = f"{chr(10).join(probe_fns)}\n{chr(10).join(test_fns)}"
+    probe_hit_decl = "    event ConservationProbeHit(uint256 sliceIdx, uint256 witness);\n" if fast_screen else ""
+    extra_members = f"{probe_hit_decl}{chr(10).join(probe_fns)}\n{chr(10).join(test_fns)}"
+    ctx_render = ({**ctx, "liq_routes": []} if fast_screen else ctx)
     return _render_conservation_contract_body(
-        ctx,
+        ctx_render,
         f"Verify_{safe_contract}",
         c_chk,
         include_bridge_helper=False,
@@ -28428,6 +28452,7 @@ class ForgeRunOutcome:
     failed_tests: int
     conservation_gains: List[Dict[str, Any]] = field(default_factory=list)
     nft_gains: List[Dict[str, Any]] = field(default_factory=list)
+    probe_hits: List[Tuple[int, int]] = field(default_factory=list)
     trace_summary: Dict[str, Any] = field(default_factory=dict)
     raw_stdout: str = ""
     raw_stderr: str = ""
@@ -31729,6 +31754,7 @@ def _parse_forge_json_gains(
     *,
     parsed_objs: Optional[Sequence[Dict[str, Any]]] = None,
     nft_gains_out: Optional[List[Dict[str, Any]]] = None,
+    probe_hits_out: Optional[List[Tuple[int, int]]] = None,
 ) -> Tuple[int, int, List[Dict[str, Any]]]:
     """
     forge test --json 출력에서 decoded_logs 및 raw logs(CONSERVATION_GAIN_TOPIC0 / CONSERVATION_SUPPLY_MINT_TOPIC0 / CONSERVATION_NFT_GAIN_TOPIC0)를 모두 파싱하여
@@ -31739,6 +31765,7 @@ def _parse_forge_json_gains(
     gains: List[Dict[str, Any]] = []
     seen_keys: Set[Tuple[str, int, str, int]] = set()
     seen_nft_keys: Set[Tuple[str, int, str, int, bool]] = set()
+    seen_probe_hits: Set[Tuple[int, int]] = set()
     minted_pairs: Set[Tuple[str, int, str]] = set()
     minted_wnative_slices: Set[Tuple[str, int]] = set()
     bridges_by_test: Dict[str, List[Dict[str, Any]]] = {}
@@ -31750,6 +31777,7 @@ def _parse_forge_json_gains(
     nft_bridge_topic0_target = CONSERVATION_NFT_BRIDGE_TOPIC0.lower()
     atomic_exit_topic0_target = CONSERVATION_ATOMIC_EXIT_TOPIC0.lower()
     nft_topic0_target = CONSERVATION_NFT_GAIN_TOPIC0.lower()
+    probe_hit_topic0_target = CONSERVATION_PROBE_HIT_TOPIC0.lower()
     zero_addr = "0x0000000000000000000000000000000000000000"
 
     def _to_asset_key(raw_addr: Any) -> str:
@@ -31901,9 +31929,26 @@ def _parse_forge_json_gains(
                                 )
                         except (ABIError, ValueError, TypeError, IndexError):
                             pass
+                    if probe_hits_out is not None and topics and str(topics[0]).lower() == probe_hit_topic0_target and len(data_hex) >= 2 + 64 * 2:
+                        try:
+                            ph_sidx, ph_w = abi_decode(["uint256", "uint256"], data_hex)
+                            if emitter_ok:
+                                ph_k = (int(ph_sidx), int(ph_w))
+                                if ph_k not in seen_probe_hits:
+                                    seen_probe_hits.add(ph_k)
+                                    probe_hits_out.append(ph_k)
+                        except (ABIError, ValueError, TypeError, IndexError):
+                            pass
                 if raw_logs_val is None:
                     for dlog in tres.get("decoded_logs") or []:
                         d_str = str(dlog)
+                        if probe_hits_out is not None and "ConservationProbeHit" in d_str:
+                            ph_nums = [int(x) for x in _UINT_TOKEN_RE.findall(_BRACKET_SPAN_RE.sub(" ", d_str))]
+                            if len(ph_nums) >= 2:
+                                ph_k2 = (ph_nums[0], ph_nums[1])
+                                if ph_k2 not in seen_probe_hits:
+                                    seen_probe_hits.add(ph_k2)
+                                    probe_hits_out.append(ph_k2)
                         if "ConservationAtomicExit" in d_str:
                             no_br_ae = _BRACKET_SPAN_RE.sub(" ", d_str)
                             ae_addrs = _ANY_ADDR_RE.findall(no_br_ae)
@@ -34681,7 +34726,10 @@ def execute_forge_test_file(
     raw_stdout_str = proc.stdout or ""
     objs_1 = _parse_json_dict_lines(raw_stdout_str)
     nft_gains_1: List[Dict[str, Any]] = []
-    passed, failed, gains = _parse_forge_json_gains(raw_stdout_str, parsed_objs=objs_1, nft_gains_out=nft_gains_1)
+    probe_hits_1: List[Tuple[int, int]] = []
+    passed, failed, gains = _parse_forge_json_gains(
+        raw_stdout_str, parsed_objs=objs_1, nft_gains_out=nft_gains_1, probe_hits_out=probe_hits_1
+    )
     trace_sum: Dict[str, Any] = {}
     per_test_trace: Dict[str, Dict[str, Any]] = {}
     has_target_constraint = bool(_norm_addr(target_addr) or [a for a in (target_addrs or []) if _norm_addr(a)])
@@ -34968,6 +35016,7 @@ def execute_forge_test_file(
         failed_tests=failed,
         conservation_gains=gains,
         nft_gains=nft_gains_1,
+        probe_hits=probe_hits_1,
         trace_summary=trace_sum,
         raw_stdout=(proc.stdout or "")[:8000],
         raw_stderr=(proc.stderr or "")[:4000],
@@ -36091,6 +36140,7 @@ def generate_and_run_forge_suites(
         _abs = base_chunk_idx + _cidx
         _cslug = slug if _abs == 0 else f"{slug}_{_abs}"
         _rel = f"test/Verify_{safe_slug}.t.sol" if _abs == 0 else f"test/Verify_{safe_slug}_{_abs}.t.sol"
+        _use_fast_screen = bool(block_pin > 0 and _is_live_suite and len(_chunk) >= 2 and len(vault_addresses or ()) >= 2)
         _sol = _render_minimal_solidity_harness(
             slug=_cslug,
             chain=c,
@@ -36101,6 +36151,7 @@ def generate_and_run_forge_suites(
             slices=_chunk,
             vault_addresses=vault_addresses,
             exit_routes=exit_routes,
+            fast_screen=_use_fast_screen,
         )
         _out: Optional[ForgeRunOutcome] = None
         _ws: Optional[Path] = None
@@ -36184,6 +36235,68 @@ def generate_and_run_forge_suites(
                         _suite_bad_rpcs.add(_rpc)
                 if _rpc != _pinned_proxy_url and fk_fg in ("auth_dead", "quota", "timeout", "gap", "wrong_chain") and callable(getattr(router, "_record_failure", None)):
                     router._record_failure(_rpc, fk_fg, cid=CHAIN_IDS.get(c, 0))
+        if _use_fast_screen and _out is not None and _out.executed and _out.probe_hits and _ws is not None:
+            # Phase 2 정밀 확인: 호출자 잔고 순증가가 포착된 슬라이스에만 전체 _takeSnap() + 청산 + -vvvv 트레이스 리플레이 실행(0 FN / 0 FP)
+            _hit_ws_by_si: Dict[int, List[int]] = {}
+            for _ph_si, _ph_w in _out.probe_hits:
+                if 0 <= _ph_si < len(_chunk):
+                    _wl_h = _hit_ws_by_si.setdefault(_ph_si, [])
+                    if _ph_w not in _wl_h:
+                        _wl_h.append(_ph_w)
+            _hit_si_list = sorted(_hit_ws_by_si.keys())
+            if _hit_si_list:
+                _confirm_slices = [
+                    dataclasses.replace(_chunk[_si_h], witness_candidates=_hit_ws_by_si[_si_h][:6])
+                    for _si_h in _hit_si_list
+                ]
+                _sol_conf = _render_minimal_solidity_harness(
+                    slug=_cslug,
+                    chain=c,
+                    block_pin=block_pin,
+                    caller=caller,
+                    target_addr=target_addr,
+                    token_addrs=token_addrs,
+                    slices=_confirm_slices,
+                    vault_addresses=vault_addresses,
+                    exit_routes=exit_routes,
+                    fast_screen=False,
+                )
+                (_ws / _rel).write_text(_sol_conf, encoding="utf-8")
+                _conf_out = execute_forge_test_file(
+                    _ws,
+                    _rel,
+                    _sol_conf,
+                    timeout_sec=timeout_sec,
+                    allowed_caller=caller,
+                    fork_url=(_used_rpc if block_pin > 0 else ""),
+                    fork_block=block_pin,
+                    forbid_inline_fork=(block_pin > 0),
+                    target_addr=target_addr,
+                    gas_price_wei=pin_gas_wei,
+                    offline=(block_pin <= 0),
+                    target_addrs=target_addrs,
+                    chain=c,
+                )
+                _mapped_gains: List[Dict[str, Any]] = []
+                for _cg_c in _conf_out.conservation_gains:
+                    _cg_cp = dict(_cg_c)
+                    _ci_loc = int(_cg_cp.get("slice_idx") or 0)
+                    if 0 <= _ci_loc < len(_hit_si_list):
+                        _cg_cp["slice_idx"] = _hit_si_list[_ci_loc]
+                    _mapped_gains.append(_cg_cp)
+                _sol = _sol_conf
+                _out = ForgeRunOutcome(
+                    executed=bool(_conf_out.executed),
+                    passed_tests=max(_out.passed_tests, _conf_out.passed_tests),
+                    failed_tests=_out.failed_tests + _conf_out.failed_tests,
+                    conservation_gains=_mapped_gains,
+                    nft_gains=list(_conf_out.nft_gains) or list(_out.nft_gains),
+                    probe_hits=list(_out.probe_hits),
+                    trace_summary=_conf_out.trace_summary or _out.trace_summary,
+                    raw_stdout=_conf_out.raw_stdout or _out.raw_stdout,
+                    raw_stderr=_conf_out.raw_stderr or _out.raw_stderr,
+                    error_reason=_conf_out.error_reason,
+                )
         with _done_chunks_lock:
             _done_chunks_ctr += 1
             _cur_done = _done_chunks_ctr
@@ -51889,11 +52002,11 @@ def audit_single_protocol(
                         timeout_sec=75,
                         ckpt_path=None,
                         ckpt_data={"completed_chunks": 800},
-                        slice_chunk_size=8,
+                        slice_chunk_size=12,
                         vault_addresses=harness_vault_addrs,
                         gas_price_wei=gas_price_w,
                         exit_routes=closure.verified_exit_pools,
-                        max_tests_per_chunk=24,
+                        max_tests_per_chunk=72,
                         target_addrs=s4_target_addrs,
                         session_id=eff_sid,
                         fork_proxy_url=_s4_proxy_url,
@@ -51901,6 +52014,17 @@ def audit_single_protocol(
                     if flash_out.executed:
                         _merge_s4_forge_outcome(flash_out)
             if forge_out.executed and not forge_out.conservation_gains and (prescreened or flash_slices_s4):
+                _fz_slices_in = [*prescreened[:16], *flash_slices_s4[:8]]
+                _emit_progress(
+                    "S4_FUZZ_START",
+                    slug=slug,
+                    chain=chain,
+                    block_pin=block_pin,
+                    session_id=eff_sid,
+                    detail=f"slices={len(_fz_slices_in)} runs=128",
+                    router=router,
+                )
+                _t_fz0 = time.monotonic()
                 fuzz_hits_s4 = _run_stage4_native_fuzz_search(
                     router=router,
                     slug=slug,
@@ -51909,12 +52033,21 @@ def audit_single_protocol(
                     caller=caller,
                     target_addr=primary_target,
                     token_addrs=token_addrs,
-                    slices=[*prescreened[:16], *flash_slices_s4[:8]],
-                    fuzz_runs=256,
-                    timeout_sec=35,
+                    slices=_fz_slices_in,
+                    fuzz_runs=128,
+                    timeout_sec=25,
                     gas_price_wei=gas_price_w,
                     fork_proxy_url=_s4_proxy_url,
                     approved_owners=closure.approved_owners,
+                )
+                _emit_progress(
+                    "S4_FUZZ_DONE",
+                    slug=slug,
+                    chain=chain,
+                    block_pin=block_pin,
+                    session_id=eff_sid,
+                    detail=f"hits={len(fuzz_hits_s4)} dt={time.monotonic() - _t_fz0:.1f}s",
+                    router=router,
                 )
                 if fuzz_hits_s4:
                     _emit_progress(

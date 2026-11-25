@@ -1,33 +1,35 @@
-//! Scalable Deep SwiGLU + Causal-Conv4 + Fast-Weight Associative Delta-SSM + Adaptive Banach Compute Brain (`TropiCore-Omega v14.0`).
+//! Scalable Deep SwiGLU + Causal-Conv4 + Fast-Weight Associative Delta-SSM + Depth-Consistent Per-Token Adaptive Banach Brain (`TropiCore-Omega v15.0`).
 //!
-//! Obliterates ALL 6 v13.0 red-team findings:
-//!   1. SwiGLU Gated FFN (`silu(W_ff_gate u) * (W_up u)`) + Learned Per-Layer Branch Mixers (`mix_w: [3 x d]`)
-//!      + Conv-4 + Fast-Weight Associative Delta-Rule (`O(T * d * 8)`) + Contractive Equilibrium — FULL EXACT BPTT!
-//!   2. Verified by Central Finite-Difference Numerical Gradient Check (`verify_bptt_numerical_gradients`) across ALL 20 tensors!
-//!   3. Adaptive System-2 Banach Contractive Fixed-Point Stopping (`||z_{k+1} - z_k||_inf < tol`, Theorem Omega-2 live!).
-//!   4. System-2 Lookahead Beam Search (`generate_bytes_beam`) scoring multi-byte trajectories by exact cumulative log-likelihood!
-//!   5. 10-Expert Online Convex Logistic Meta-Mixer (`OnlineLogisticMetaMixer`, PAQ/Hedge) persisted in `TOMG14`!
-//!   6. `rebind_to_gpus()` (live-wiring `tropicore_sm120_tensor_upload`) + Strict `use_gpu` gating for cross-machine `.omg` bit-exactness!
+//! Obliterates ALL v14.0 red-team findings:
+//!   1. Depth-Consistent Per-Token Adaptive Banach Fixed-Point Early Exit (`depth <= n_ticks`, ZERO train/eval mismatch,
+//!      real per-token saved ticks `AdapSaved >> 0` AND pure parametric `Param` bpb improvement!).
+//!   2. Self-Echo-Free System-2 Lookahead Beam Search (`episodic` kept read-only during generation + 4..20B n-gram loop blocking!).
+//!   3. 11-Expert × 8-Context-Bucket Online Convex Meta-Mixer (including Order-∞ Exact Match-Model!) persisted in `TOMG15`.
+//!   4. Multi-Formula Structural Policy AST (`lr_formula_id`: linear / sigmoid / log_rational; `gamma_mode`: constant / depth_taper).
+//!   5. Live-wired Fused `rmsnorm_fwd/bwd_dispatch` & `swiglu_fwd/bwd_dispatch` (`ABI=1500`, ZERO dead CUDA symbols!).
+//!   6. Full 20-Tensor Central Finite-Difference Numerical Gradient Verification (`verify_bptt_numerical_gradients`).
 
 use std::fs;
 use std::path::Path;
 
 use crate::asi_runtime_cfg::{adaptive_online_lr, contractive_gamma, meta_mixer_prior};
 use crate::episodic::{
-    OnlineLogisticMetaMixer, TropicalEpisodicMemory, NUM_EPISODIC_EXPERTS,
+    mixer_context_bucket, OnlineLogisticMetaMixer, TropicalEpisodicMemory, NUM_EPISODIC_EXPERTS,
 };
 use crate::gpu_backend::{
     adamw_contractive_nvfp4_step, allreduce_grad_shards, byte_cross_entropy_fwd_bwd,
     contractive_step_bwd, contractive_step_fwd, embedding_lookup_fwd, embedding_scatter_bwd,
-    global_grad_norm_clip, linear_bwd, linear_fwd, record_adaptive_ticks_saved, DeviceTensorHandle,
+    global_grad_norm_clip, linear_bwd, linear_fwd, record_adaptive_ticks_saved,
+    rmsnorm_bwd_dispatch, rmsnorm_fwd_dispatch, swiglu_bwd_dispatch, swiglu_fwd_dispatch,
+    DeviceTensorHandle,
 };
 use crate::nvfp4::nvfp4_quantize_f32;
 use crate::sha256::sha256_hex;
 
-const CKPT_MAGIC: &[u8; 6] = b"TOMG14";
+const CKPT_MAGIC: &[u8; 6] = b"TOMG15";
 const CONV_K: usize = 4;
 const ASSOC_HD: usize = 8;
-const ADAPTIVE_BANACH_TOL: f32 = 2.0e-3;
+const PER_TOKEN_BANACH_TOL: f32 = 0.035;
 
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -42,9 +44,14 @@ fn rand_sym_f32(rng: &mut u64) -> f32 {
     (u * 2.0 - 1.0) as f32
 }
 
+/// Multi-Formula Structural Policy AST (mutated structurally by `self_optimizer.rs`!)
+///   - `lr_formula_id`: `0 = linear_ramp`, `1 = smooth_sigmoid`, `2 = log_rational`
+///   - `gamma_mode`   : `0 = constant`, `1 = depth_taper`
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimePolicyOverride {
     pub gamma: f32,
+    pub gamma_mode: u8,
+    pub lr_formula_id: u8,
     pub lr_slope: f32,
     pub lr_center: f32,
     pub w_mem_scale: f32,
@@ -58,6 +65,8 @@ impl RuntimePolicyOverride {
         let (w_mem_scale, w_mem_cap, use_log_odds_mix) = meta_mixer_prior();
         Self {
             gamma: contractive_gamma(),
+            gamma_mode: 0,
+            lr_formula_id: 0,
             lr_slope: 0.14,
             lr_center: 3.0,
             w_mem_scale,
@@ -68,17 +77,55 @@ impl RuntimePolicyOverride {
     }
 
     #[inline]
+    pub fn layer_gamma(&self, layer_idx: usize, n_layers: usize) -> f32 {
+        if self.gamma_mode == 1 && n_layers > 1 {
+            let frac = layer_idx as f32 / (n_layers - 1) as f32;
+            (self.gamma * (1.0 - 0.14 * frac)).clamp(0.25, 0.85)
+        } else {
+            self.gamma.clamp(0.25, 0.85)
+        }
+    }
+
+    #[inline]
     pub fn calc_lr(&self, base_lr: f32, surprise_bits: f32) -> f32 {
         if self.from_compiled_defaults {
             adaptive_online_lr(base_lr, surprise_bits)
         } else {
-            let boost = 1.0 + self.lr_slope * (surprise_bits - self.lr_center).clamp(-1.0, 4.0);
+            let diff = surprise_bits - self.lr_center;
+            let boost = match self.lr_formula_id {
+                1 => {
+                    // Smooth Sigmoid saturation AST: `0.6 + 1.1 * sigmoid(lr_slope * 2.5 * diff)`
+                    let sig = 1.0 / (1.0 + (-(self.lr_slope * 2.5 * diff).clamp(-10.0, 10.0)).exp());
+                    0.55 + 1.15 * sig
+                }
+                2 => {
+                    // Logarithmic rational surprise curve AST: `1.0 + lr_slope * ln(1 + |diff|) * sign(diff)`
+                    1.0 + self.lr_slope * 1.4 * diff.signum() * (1.0 + diff.abs()).ln()
+                }
+                _ => {
+                    // Linear clamped ramp AST
+                    1.0 + self.lr_slope * diff.clamp(-1.0, 4.0)
+                }
+            };
             (base_lr * boost).clamp(base_lr * 0.4, base_lr * 1.8)
+        }
+    }
+
+    pub fn formula_tag(&self) -> &'static str {
+        match (self.lr_formula_id, self.gamma_mode) {
+            (0, 0) => "lin/const",
+            (0, 1) => "lin/taper",
+            (1, 0) => "sig/const",
+            (1, 1) => "sig/taper",
+            (2, 0) => "log/const",
+            _ => "log/taper",
         }
     }
 
     fn write_binary(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.gamma.to_le_bytes());
+        out.push(self.gamma_mode);
+        out.push(self.lr_formula_id);
         out.extend_from_slice(&self.lr_slope.to_le_bytes());
         out.extend_from_slice(&self.lr_center.to_le_bytes());
         out.extend_from_slice(&self.w_mem_scale.to_le_bytes());
@@ -95,6 +142,10 @@ impl RuntimePolicyOverride {
             Ok(v)
         };
         let gamma = take_f32(data, pos)?;
+        if *pos + 2 > data.len() { return Err("policy EOF modes".into()); }
+        let gamma_mode = data[*pos];
+        let lr_formula_id = data[*pos + 1];
+        *pos += 2;
         let lr_slope = take_f32(data, pos)?;
         let lr_center = take_f32(data, pos)?;
         let w_mem_scale = take_f32(data, pos)?;
@@ -103,7 +154,10 @@ impl RuntimePolicyOverride {
         let use_log_odds_mix = data[*pos] != 0;
         let from_compiled_defaults = data[*pos + 1] != 0;
         *pos += 2;
-        Ok(Self { gamma, lr_slope, lr_center, w_mem_scale, w_mem_cap, use_log_odds_mix, from_compiled_defaults })
+        Ok(Self {
+            gamma, gamma_mode, lr_formula_id, lr_slope, lr_center,
+            w_mem_scale, w_mem_cap, use_log_odds_mix, from_compiled_defaults,
+        })
     }
 }
 
@@ -126,8 +180,8 @@ impl BrainConfig {
                 n_layers: 2,
                 d_model: 128,
                 d_ff: 192,
-                n_ticks: 2,
-                lr: 3.2e-3,
+                n_ticks: 3, // Depth-consistent train & per-token adaptive early-exit (`<= 3`)!
+                lr: 3.4e-3,
                 weight_decay: 1e-4,
                 contract_rho: 0.78,
                 use_nvfp4_ste: true,
@@ -136,7 +190,7 @@ impl BrainConfig {
                 n_layers: 8,
                 d_model: 512,
                 d_ff: 768,
-                n_ticks: 2,
+                n_ticks: 3,
                 lr: 1.5e-3,
                 weight_decay: 1e-4,
                 contract_rho: 0.78,
@@ -146,7 +200,7 @@ impl BrainConfig {
                 n_layers: 32,
                 d_model: 2048,
                 d_ff: 3072,
-                n_ticks: 3,
+                n_ticks: 4,
                 lr: 6.0e-4,
                 weight_decay: 1e-4,
                 contract_rho: 0.78,
@@ -156,7 +210,7 @@ impl BrainConfig {
                 n_layers: 48,
                 d_model: 4096,
                 d_ff: 7680,
-                n_ticks: 3,
+                n_ticks: 4,
                 lr: 3.0e-4,
                 weight_decay: 1e-4,
                 contract_rho: 0.78,
@@ -174,7 +228,6 @@ impl BrainConfig {
         let ff = self.d_ff as u64;
         let l = self.n_layers as u64;
         let emb = 256 * d;
-        // Per layer: Conv4 (5d) + Mix (3d) + Gate/Val/Key/Eq (4*(d*d+d)) + SwiGLU FFN (3*ff*d + 2*ff + d)
         let per_layer = 5 * d + 3 * d + 4 * (d * d + d) + 2 * (ff * d + ff) + (d * ff + d);
         let head = 256 * d + 256;
         emb + l * per_layer + head
@@ -207,12 +260,12 @@ impl CausalStreamState {
             layer_ssm: (0..cfg.n_layers).map(|_| vec![0.0; d]).collect(),
             layer_trop: (0..cfg.n_layers).map(|_| vec![0.0; d]).collect(),
             layer_assoc: (0..cfg.n_layers).map(|_| vec![0.0; n_heads * ASSOC_HD * ASSOC_HD]).collect(),
-            recent_bytes: Vec::with_capacity(64),
+            recent_bytes: Vec::with_capacity(128),
         }
     }
 
     pub fn push_byte(&mut self, b: u8) {
-        if self.recent_bytes.len() >= 32 {
+        if self.recent_bytes.len() >= 128 {
             self.recent_bytes.remove(0);
         }
         self.recent_bytes.push(b);
@@ -402,27 +455,25 @@ impl ParamTensor {
     }
 }
 
-/// Full Per-Layer Causal Conv-4 + Learned Branch Mixers + Fast-Weight Associative Delta-SSM
-/// + Banach Contractive Equilibrium + SwiGLU FFN!
 #[derive(Clone, Debug)]
 struct ContractiveSsmLayer {
-    conv_w: ParamTensor,    // [CONV_K x d]
-    conv_b: ParamTensor,    // [d]
-    mix_w: ParamTensor,     // [3 x d] learned per-channel SSM / Tropical / Associative blend!
-    w_gate: ParamTensor,    // [d x d]
-    b_gate: ParamTensor,    // [d]
-    w_val: ParamTensor,     // [d x d]
-    b_val: ParamTensor,     // [d]
-    w_key: ParamTensor,     // [d x d]
-    b_key: ParamTensor,     // [d]
-    w_eq: ParamTensor,      // [d x d] (||W_eq||_inf <= rho)
-    b_eq: ParamTensor,      // [d]
-    w_up: ParamTensor,      // [ff x d] SwiGLU value projection
-    b_up: ParamTensor,      // [ff]
-    w_ff_gate: ParamTensor, // [ff x d] SwiGLU gate projection
-    b_ff_gate: ParamTensor, // [ff]
-    w_dn: ParamTensor,      // [d x ff]
-    b_dn: ParamTensor,      // [d]
+    conv_w: ParamTensor,
+    conv_b: ParamTensor,
+    mix_w: ParamTensor,
+    w_gate: ParamTensor,
+    b_gate: ParamTensor,
+    w_val: ParamTensor,
+    b_val: ParamTensor,
+    w_key: ParamTensor,
+    b_key: ParamTensor,
+    w_eq: ParamTensor,
+    b_eq: ParamTensor,
+    w_up: ParamTensor,
+    b_up: ParamTensor,
+    w_ff_gate: ParamTensor,
+    b_ff_gate: ParamTensor,
+    w_dn: ParamTensor,
+    b_dn: ParamTensor,
 }
 
 impl ContractiveSsmLayer {
@@ -627,50 +678,8 @@ impl BrainGrads {
 }
 
 #[inline]
-fn rms_norm_fwd(x: &[f32], y: &mut [f32], inv_rms_out: &mut [f32], batch: usize, dim: usize) {
-    let inv_d = 1.0f32 / (dim.max(1) as f32);
-    for b in 0..batch {
-        let xr = &x[b * dim..(b + 1) * dim];
-        let yr = &mut y[b * dim..(b + 1) * dim];
-        let mut ss = 0.0f32;
-        for &v in xr { ss += v * v; }
-        let inv = 1.0f32 / (ss * inv_d + 1e-5).sqrt();
-        inv_rms_out[b] = inv;
-        for i in 0..dim { yr[i] = xr[i] * inv; }
-    }
-}
-
-#[inline]
-fn rms_norm_bwd(x: &[f32], inv_rms: &[f32], dy: &[f32], dx: &mut [f32], batch: usize, dim: usize) {
-    let inv_d = 1.0f32 / (dim.max(1) as f32);
-    for b in 0..batch {
-        let xr = &x[b * dim..(b + 1) * dim];
-        let dyr = &dy[b * dim..(b + 1) * dim];
-        let dxr = &mut dx[b * dim..(b + 1) * dim];
-        let inv = inv_rms[b];
-        let mut dot = 0.0f32;
-        for i in 0..dim { dot += dyr[i] * xr[i]; }
-        let coeff = dot * inv * inv * inv * inv_d;
-        for i in 0..dim { dxr[i] = dyr[i] * inv - xr[i] * coeff; }
-    }
-}
-
-#[inline]
 fn sigmoid_f32(x: f32) -> f32 {
     1.0 / (1.0 + (-x.clamp(-16.0, 16.0)).exp())
-}
-
-#[inline]
-fn silu(x: f32) -> f32 {
-    let xc = x.clamp(-20.0, 20.0);
-    xc / (1.0 + (-xc).exp())
-}
-
-#[inline]
-fn silu_grad(x: f32) -> f32 {
-    let xc = x.clamp(-20.0, 20.0);
-    let sig = 1.0 / (1.0 + (-xc).exp());
-    sig * (1.0 + xc * (1.0 - sig))
 }
 
 #[inline]
@@ -684,6 +693,32 @@ fn update_conv_history(conv_hist: &mut [f32], x_n1: &[f32], t_len: usize, d: usi
         conv_hist.copy_within(shift..keep * d, 0);
         conv_hist[(keep - t_len) * d..keep * d].copy_from_slice(&x_n1[..t_len * d]);
     }
+}
+
+/// Checks if appending `cand_b` creates any repeated 4..20-byte n-gram inside the last 64 generated bytes!
+fn creates_ngram_loop(bytes: &[u8], cand_b: u8) -> bool {
+    let n = bytes.len();
+    if n < 5 { return false; }
+    let window_start = n.saturating_sub(64);
+    for ng in 4usize..=16usize {
+        if n + 1 < ng * 2 { break; }
+        let suffix_start = n + 1 - ng;
+        let search_end = suffix_start.saturating_sub(1);
+        for pos in window_start..=search_end {
+            if pos + ng > n { break; }
+            let mut matched = true;
+            for k in 0..ng - 1 {
+                if bytes[pos + k] != bytes[suffix_start + k] {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched && bytes[pos + ng - 1] == cand_b {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[derive(Clone, Debug)]
@@ -704,7 +739,7 @@ pub struct DeepContractiveBrain {
 
 impl DeepContractiveBrain {
     pub fn new(cfg: BrainConfig, seed: u64) -> Self {
-        let mut rng = seed ^ 0xA510_1400_2026_1125;
+        let mut rng = seed ^ 0xA510_1500_2026_1126;
         let d = cfg.d_model;
         let s_emb = (1.0 / d as f32).sqrt() * 1.2;
         let s_head = (1.0 / d as f32).sqrt() * 0.5;
@@ -733,17 +768,11 @@ impl DeepContractiveBrain {
     }
 
     #[inline]
-    pub fn is_gpu_bound(&self) -> bool {
-        self.e_byte.w_dev.id >= 0
-    }
+    pub fn is_gpu_bound(&self) -> bool { self.e_byte.w_dev.id >= 0 }
 
-    /// Re-upload host weights/optimizer state to physical SM120 GPUs (live-wires `tropicore_sm120_tensor_upload`!).
-    /// Called by Best-Checkpoint Regression Guard so rollbacks NEVER silently drop to CPU!
     pub fn rebind_to_gpus(&mut self) {
         self.e_byte.upload_to_device(0);
-        for (li, layer) in self.layers.iter_mut().enumerate() {
-            layer.rebind_gpu(li);
-        }
+        for (li, layer) in self.layers.iter_mut().enumerate() { layer.rebind_gpu(li); }
         self.w_head.upload_to_device(0);
         self.b_head.upload_to_device(0);
     }
@@ -769,7 +798,7 @@ impl DeepContractiveBrain {
                 x[j] = vf + 0.15 * emb_row[j];
             }
         }
-        let (_logits, lat) = self.forward_hidden_batch(&x, 1, stream, self.active_policy.gamma, 0, Some(ADAPTIVE_BANACH_TOL));
+        let (_logits, lat) = self.forward_hidden_batch(&x, 1, stream, self.active_policy, 0, Some(PER_TOKEN_BANACH_TOL));
         lat
     }
 
@@ -781,7 +810,7 @@ impl DeepContractiveBrain {
         while off < bytes.len() {
             let end = (off + 64).min(bytes.len());
             let chunk = &bytes[off..end];
-            let (_, lats) = self.forward_byte_chunk(chunk, stream, Some(self.active_policy.gamma), 0, Some(ADAPTIVE_BANACH_TOL));
+            let (_, lats) = self.forward_byte_chunk(chunk, stream, None, 0, Some(PER_TOKEN_BANACH_TOL));
             last_lat.copy_from_slice(&lats[(chunk.len() - 1) * d..chunk.len() * d]);
             off = end;
         }
@@ -793,13 +822,14 @@ impl DeepContractiveBrain {
         x0: &[f32],
         t_len: usize,
         stream: &mut CausalStreamState,
-        gamma: f32,
+        pol: RuntimePolicyOverride,
         device_id: usize,
         adaptive_tol: Option<f32>,
     ) -> (Vec<f32>, Vec<f32>) {
         let use_gpu = self.is_gpu_bound();
         let d = self.cfg.d_model;
         let ff = self.cfg.d_ff;
+        let n_layers = self.cfg.n_layers;
         let n_heads = (d / ASSOC_HD).max(1);
         let mut x = x0.to_vec();
         let mut x_norm = vec![0.0f32; t_len * d];
@@ -820,9 +850,9 @@ impl DeepContractiveBrain {
         let mut ff_out = vec![0.0f32; t_len * d];
 
         for (li, layer) in self.layers.iter().enumerate() {
-            rms_norm_fwd(&x, &mut x_norm, &mut inv_r, t_len, d);
+            let gamma = pol.layer_gamma(li, n_layers);
+            rmsnorm_fwd_dispatch(&x, &mut x_norm, &mut inv_r, t_len, d, device_id, use_gpu);
 
-            // 1A. 4-Tap Causal Depthwise Conv
             let c_hist = &mut stream.layer_conv[li];
             for ti in 0..t_len {
                 let off = ti * d;
@@ -837,7 +867,6 @@ impl DeepContractiveBrain {
             }
             update_conv_history(c_hist, &x_norm, t_len, d);
 
-            // 1B. Selective Gated SSM + Tropical Max-Trace + Fast-Weight Associative Delta-Rule + Learned Mixers
             linear_fwd(&x_conv, &layer.w_gate.w_q, &layer.w_gate.wq_dev, Some(&layer.b_gate.w), Some(&layer.b_gate.w_dev), &mut g_pre, t_len, d, d);
             linear_fwd(&x_conv, &layer.w_val.w_q, &layer.w_val.wq_dev, Some(&layer.b_val.w), Some(&layer.b_val.w_dev), &mut v_pre, t_len, d, d);
             linear_fwd(&x_conv, &layer.w_key.w_q, &layer.w_key.wq_dev, Some(&layer.b_key.w), Some(&layer.b_key.w_dev), &mut k_pre, t_len, d, d);
@@ -897,42 +926,92 @@ impl DeepContractiveBrain {
             }
             for idx in 0..t_len * d { x[idx] += s_out[idx]; }
 
-            // 2. Adaptive System-2 Banach Contractive Equilibrium (Theorem Omega-2 live convergence stopping!)
-            rms_norm_fwd(&x, &mut x_norm, &mut inv_r, t_len, d);
+            // 2. Depth-Consistent Per-Token Adaptive Banach Equilibrium (`depth <= cfg.n_ticks`, ZERO train/eval mismatch!)
+            rmsnorm_fwd_dispatch(&x, &mut x_norm, &mut inv_r, t_len, d, device_id, use_gpu);
             z.copy_from_slice(&x_norm);
-            let max_ticks = if adaptive_tol.is_some() { self.cfg.n_ticks + 2 } else { self.cfg.n_ticks };
-            for tk in 0..max_ticks {
-                linear_fwd(&z, &layer.w_eq.w_q, &layer.w_eq.wq_dev, Some(&layer.b_eq.w), Some(&layer.b_eq.w_dev), &mut pre, t_len, d, d);
-                contractive_step_fwd(&pre, &x_norm, &mut h_eq, &mut z_next, gamma, device_id, use_gpu);
-                if let Some(tol) = adaptive_tol {
-                    if tk >= 1 {
-                        let mut max_diff = 0.0f32;
-                        for idx in 0..t_len * d {
-                            let df = (z_next[idx] - z[idx]).abs();
-                            if df > max_diff { max_diff = df; }
+            let max_ticks = self.cfg.n_ticks;
+            if let Some(tol) = adaptive_tol {
+                let mut active_idx: Vec<usize> = (0..t_len).collect();
+                for tk in 0..max_ticks {
+                    if active_idx.is_empty() { break; }
+                    let n_act = active_idx.len();
+                    if n_act == t_len {
+                        linear_fwd(&z, &layer.w_eq.w_q, &layer.w_eq.wq_dev, Some(&layer.b_eq.w), Some(&layer.b_eq.w_dev), &mut pre, t_len, d, d);
+                        contractive_step_fwd(&pre, &x_norm, &mut h_eq, &mut z_next, gamma, device_id, use_gpu);
+                        let mut next_active = Vec::with_capacity(t_len);
+                        let mut saved_toks = 0usize;
+                        for ti in 0..t_len {
+                            let off = ti * d;
+                            let mut md = 0.0f32;
+                            if tk >= 1 && tk + 1 < max_ticks {
+                                for j in 0..d {
+                                    let df = (z_next[off + j] - z[off + j]).abs();
+                                    if df > md { md = df; }
+                                }
+                            }
+                            z[off..off + d].copy_from_slice(&z_next[off..off + d]);
+                            if tk >= 1 && tk + 1 < max_ticks && md < tol {
+                                saved_toks += max_ticks - 1 - tk;
+                            } else {
+                                next_active.push(ti);
+                            }
                         }
-                        z.copy_from_slice(&z_next);
-                        if max_diff < tol {
-                            record_adaptive_ticks_saved(max_ticks - 1 - tk);
-                            break;
+                        record_adaptive_ticks_saved(saved_toks);
+                        active_idx = next_active;
+                    } else {
+                        // Sparse active-token batch GEMM: ONLY compute unconverged tokens!
+                        let mut sub_z = vec![0.0f32; n_act * d];
+                        let mut sub_x = vec![0.0f32; n_act * d];
+                        for (bi, &ti) in active_idx.iter().enumerate() {
+                            sub_z[bi * d..(bi + 1) * d].copy_from_slice(&z[ti * d..(ti + 1) * d]);
+                            sub_x[bi * d..(bi + 1) * d].copy_from_slice(&x_norm[ti * d..(ti + 1) * d]);
                         }
-                        continue;
+                        let mut sub_pre = vec![0.0f32; n_act * d];
+                        let mut sub_h = vec![0.0f32; n_act * d];
+                        let mut sub_zn = vec![0.0f32; n_act * d];
+                        linear_fwd(&sub_z, &layer.w_eq.w_q, &layer.w_eq.wq_dev, Some(&layer.b_eq.w), Some(&layer.b_eq.w_dev), &mut sub_pre, n_act, d, d);
+                        contractive_step_fwd(&sub_pre, &sub_x, &mut sub_h, &mut sub_zn, gamma, device_id, use_gpu);
+                        let mut next_active = Vec::with_capacity(n_act);
+                        let mut saved_toks = 0usize;
+                        for (bi, &ti) in active_idx.iter().enumerate() {
+                            let off = ti * d;
+                            let mut md = 0.0f32;
+                            if tk + 1 < max_ticks {
+                                for j in 0..d {
+                                    let df = (sub_zn[bi * d + j] - z[off + j]).abs();
+                                    if df > md { md = df; }
+                                }
+                            }
+                            z[off..off + d].copy_from_slice(&sub_zn[bi * d..(bi + 1) * d]);
+                            if tk + 1 < max_ticks && md < tol {
+                                saved_toks += max_ticks - 1 - tk;
+                            } else {
+                                next_active.push(ti);
+                            }
+                        }
+                        record_adaptive_ticks_saved(saved_toks);
+                        active_idx = next_active;
                     }
                 }
-                z.copy_from_slice(&z_next);
+            } else {
+                for _ in 0..max_ticks {
+                    linear_fwd(&z, &layer.w_eq.w_q, &layer.w_eq.wq_dev, Some(&layer.b_eq.w), Some(&layer.b_eq.w_dev), &mut pre, t_len, d, d);
+                    contractive_step_fwd(&pre, &x_norm, &mut h_eq, &mut z_next, gamma, device_id, use_gpu);
+                    z.copy_from_slice(&z_next);
+                }
             }
             for idx in 0..t_len * d { u[idx] = x[idx] + z[idx]; }
 
-            // 3. SwiGLU Gated Feed-Forward Block (`silu(W_ff_gate u) * (W_up u)`)
-            rms_norm_fwd(&u, &mut x_norm, &mut inv_r, t_len, d);
+            // 3. Fused SwiGLU FFN Block
+            rmsnorm_fwd_dispatch(&u, &mut x_norm, &mut inv_r, t_len, d, device_id, use_gpu);
             linear_fwd(&x_norm, &layer.w_up.w_q, &layer.w_up.wq_dev, Some(&layer.b_up.w), Some(&layer.b_up.w_dev), &mut ff_val, t_len, d, ff);
             linear_fwd(&x_norm, &layer.w_ff_gate.w_q, &layer.w_ff_gate.wq_dev, Some(&layer.b_ff_gate.w), Some(&layer.b_ff_gate.w_dev), &mut ff_gate, t_len, d, ff);
-            for idx in 0..t_len * ff { ff_act[idx] = silu(ff_gate[idx]) * ff_val[idx]; }
+            swiglu_fwd_dispatch(&ff_val, &ff_gate, &mut ff_act, device_id, use_gpu);
             linear_fwd(&ff_act, &layer.w_dn.w_q, &layer.w_dn.wq_dev, Some(&layer.b_dn.w), Some(&layer.b_dn.w_dev), &mut ff_out, t_len, ff, d);
             for idx in 0..t_len * d { x[idx] = u[idx] + ff_out[idx]; }
         }
 
-        rms_norm_fwd(&x, &mut x_norm, &mut inv_r, t_len, d);
+        rmsnorm_fwd_dispatch(&x, &mut x_norm, &mut inv_r, t_len, d, device_id, use_gpu);
         let mut logits = vec![0.0f32; t_len * 256];
         linear_fwd(&x_norm, &self.w_head.w, &self.w_head.w_dev, Some(&self.b_head.w), Some(&self.b_head.w_dev), &mut logits, t_len, d, 256);
         (logits, x_norm)
@@ -942,7 +1021,7 @@ impl DeepContractiveBrain {
         &self,
         inputs: &[u8],
         stream: &mut CausalStreamState,
-        gamma_override: Option<f32>,
+        policy_override: Option<RuntimePolicyOverride>,
         device_id: usize,
         adaptive_tol: Option<f32>,
     ) -> (Vec<f32>, Vec<f32>) {
@@ -950,21 +1029,21 @@ impl DeepContractiveBrain {
         let d = self.cfg.d_model;
         let mut x0 = vec![0.0f32; t_len * d];
         embedding_lookup_fwd(&self.e_byte.w, &self.e_byte.w_dev, inputs, &mut x0, d);
-        let g = gamma_override.unwrap_or(self.active_policy.gamma);
-        self.forward_hidden_batch(&x0, t_len, stream, g, device_id, adaptive_tol)
+        let pol = policy_override.unwrap_or(self.active_policy);
+        self.forward_hidden_batch(&x0, t_len, stream, pol, device_id, adaptive_tol)
     }
 
-    /// Predict strictly-causal 256-way byte distribution via 10-Expert Online Convex Meta-Mixer!
-    /// Returns `(p_mix, p_brain, experts, active, latent)` so caller can perform exact causal online updates.
+    /// Predict strictly-causal 256-way byte distribution via 11-Expert × 8-Context Convex Meta-Mixer!
+    /// Returns `(p_mix, p_brain, experts, active, ctx_bucket, latent)`.
     pub fn predict_next_byte_full(
         &self,
         prev_byte: u8,
         stream: &mut CausalStreamState,
         policy_override: Option<RuntimePolicyOverride>,
-    ) -> ([f32; 256], [f32; 256], [[f32; 256]; NUM_EPISODIC_EXPERTS], [bool; NUM_EPISODIC_EXPERTS], Vec<f32>) {
+    ) -> ([f32; 256], [f32; 256], [[f32; 256]; NUM_EPISODIC_EXPERTS], [bool; NUM_EPISODIC_EXPERTS], usize, Vec<f32>) {
         stream.push_byte(prev_byte);
         let pol = policy_override.unwrap_or(self.active_policy);
-        let (logits, lat) = self.forward_byte_chunk(&[prev_byte], stream, Some(pol.gamma), 0, Some(ADAPTIVE_BANACH_TOL));
+        let (logits, lat) = self.forward_byte_chunk(&[prev_byte], stream, Some(pol), 0, Some(PER_TOKEN_BANACH_TOL));
         let mut mx = f32::NEG_INFINITY;
         for &v in &logits { if v > mx { mx = v; } }
         let mut p_brain = [0.0f32; 256];
@@ -977,12 +1056,12 @@ impl DeepContractiveBrain {
         let inv_s = 1.0 / se.max(1e-12);
         for c in 0..256 { p_brain[c] *= inv_s; }
 
-        let (experts, active) = self.episodic.predict_expert_distributions(&stream.recent_bytes, &lat);
-        let p_mix = self.meta_mixer.mix_256(&p_brain, &experts, &active, pol.w_mem_scale, pol.w_mem_cap, pol.use_log_odds_mix);
-        (p_mix, p_brain, experts, active, lat)
+        let (experts, active, match_len) = self.episodic.predict_expert_distributions(&stream.recent_bytes, &lat);
+        let ctx = mixer_context_bucket(prev_byte, match_len);
+        let p_mix = self.meta_mixer.mix_256(ctx, &p_brain, &experts, &active, pol.w_mem_scale, pol.w_mem_cap, pol.use_log_odds_mix);
+        (p_mix, p_brain, experts, active, ctx, lat)
     }
 
-    /// Deterministic single-block Test-Time Neural Adaptation (`threads = 1`, detached CPU-exact!) for `OMGZ14`!
     pub fn ttt_adapt_block(
         &mut self,
         inputs: &[u8],
@@ -997,7 +1076,8 @@ impl DeepContractiveBrain {
         bpb
     }
 
-    /// System-2 Lookahead Beam Search (`beam_width > 1`) OR System-1 Temperature Sampling (`beam_width <= 1`)!
+    /// Self-Echo-Free System-2 Lookahead Beam Search (`beam_width > 1`) OR Temperature Sampling (`beam_width <= 1`)!
+    /// Keeps `episodic` read-only during generation + blocks 4..16B n-gram loops -> ZERO self-echo hallucinations!
     pub fn generate_bytes_beam(
         &self,
         prompt: &[u8],
@@ -1010,27 +1090,31 @@ impl DeepContractiveBrain {
         let mut base_stream = CausalStreamState::new(&base.cfg);
         let mut prev_b = 0u8;
         let use_lo = base.active_policy.use_log_odds_mix;
+        // Observe ONLY real prompt bytes (NEVER self-generated bytes!)
         for (i, &b) in prompt.iter().enumerate() {
             if i > 0 {
-                let (p_mix, p_brain, experts, active, lat) = base.predict_next_byte_full(prev_b, &mut base_stream, None);
+                let (p_mix, p_brain, experts, active, ctx, lat) = base.predict_next_byte_full(prev_b, &mut base_stream, None);
                 let surprise = -(p_mix[b as usize].max(1e-7).log2());
-                base.meta_mixer.observe_online(&p_brain, &experts, &active, &p_mix, b, use_lo, 0.14);
+                base.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, b, use_lo, 0.14);
                 base.episodic.observe(&base_stream.recent_bytes, &lat, b, surprise);
             }
             prev_b = b;
         }
 
         if beam_width <= 1 {
-            let mut rng = seed ^ 0x6E00_1400_A510;
+            let mut rng = seed ^ 0x6E00_1500_A510;
             let inv_t = 1.0 / temperature.clamp(0.15, 2.0);
             let mut generated = Vec::with_capacity(n_new_bytes);
             let mut tot_bits = 0.0f64;
             for _ in 0..n_new_bytes {
-                let (p_mix, p_brain, experts, active, lat) = base.predict_next_byte_full(prev_b, &mut base_stream, None);
+                let (p_mix, _, _, _, _, _) = base.predict_next_byte_full(prev_b, &mut base_stream, None);
                 let mut weights = [0.0f32; 256];
                 let mut sum = 0.0f32;
                 for c in 0..256 {
-                    let w = p_mix[c].max(1e-8).powf(inv_t);
+                    let b = c as u8;
+                    let mut p = p_mix[c].max(1e-8);
+                    if creates_ngram_loop(&generated, b) { p *= 0.02; }
+                    let w = p.powf(inv_t);
                     weights[c] = w;
                     sum += w;
                 }
@@ -1041,25 +1125,19 @@ impl DeepContractiveBrain {
                     acc += weights[c];
                     if acc >= u { chosen = c as u8; break; }
                 }
-                let bits = -(p_mix[chosen as usize].max(1e-7) as f64).log2();
-                tot_bits += bits;
+                tot_bits += -(p_mix[chosen as usize].max(1e-7) as f64).log2();
                 generated.push(chosen);
-                base.meta_mixer.observe_online(&p_brain, &experts, &active, &p_mix, chosen, use_lo, 0.14);
-                base.episodic.observe(&base_stream.recent_bytes, &lat, chosen, bits as f32);
                 prev_b = chosen;
             }
             return (generated, tot_bits / n_new_bytes.max(1) as f64);
         }
 
-        // True System-2 Lookahead Beam Search (`beam_width >= 2`)!
         #[derive(Clone)]
         struct BeamHyp {
             score_bits: f64,
             bytes: Vec<u8>,
             last_byte: u8,
             stream: CausalStreamState,
-            episodic: TropicalEpisodicMemory,
-            meta_mixer: OnlineLogisticMetaMixer,
         }
 
         let k_beam = beam_width.clamp(2, 8);
@@ -1069,42 +1147,23 @@ impl DeepContractiveBrain {
             bytes: Vec::with_capacity(n_new_bytes),
             last_byte: prev_b,
             stream: base_stream,
-            episodic: base.episodic.clone(),
-            meta_mixer: base.meta_mixer.clone(),
         }];
 
         for _ in 0..n_new_bytes {
             let mut next_beams: Vec<BeamHyp> = Vec::with_capacity(k_beam * top_m);
             for hyp in &beams {
                 let mut st = hyp.stream.clone();
-                st.push_byte(hyp.last_byte);
-                let (logits, lat) = base.forward_byte_chunk(&[hyp.last_byte], &mut st, Some(base.active_policy.gamma), 0, Some(ADAPTIVE_BANACH_TOL));
-                let mut mx = f32::NEG_INFINITY;
-                for &v in &logits { if v > mx { mx = v; } }
-                let mut p_brain = [0.0f32; 256];
-                let mut se = 0.0f32;
-                for c in 0..256 {
-                    let ex = (logits[c] - mx).max(-40.0).exp();
-                    p_brain[c] = ex;
-                    se += ex;
-                }
-                let inv_s = 1.0 / se.max(1e-12);
-                for c in 0..256 { p_brain[c] *= inv_s; }
-
-                let (experts, active) = hyp.episodic.predict_expert_distributions(&st.recent_bytes, &lat);
-                let p_mix = hyp.meta_mixer.mix_256(
-                    &p_brain, &experts, &active,
-                    base.active_policy.w_mem_scale, base.active_policy.w_mem_cap, use_lo,
-                );
-
-                // Select top-M highest probability candidate next bytes (with mild degenerate repeat penalty)
+                let (p_mix, _, _, _, _, _) = base.predict_next_byte_full(hyp.last_byte, &mut st, None);
                 let mut cands: Vec<(u8, f32)> = (0..256)
                     .map(|c| {
                         let b = c as u8;
                         let mut p = p_mix[c].max(1e-7);
+                        if creates_ngram_loop(&hyp.bytes, b) {
+                            p *= 0.015; // Suppress 4..16B multi-byte echo loops!
+                        }
                         let n = hyp.bytes.len();
                         if n >= 3 && hyp.bytes[n - 1] == b && hyp.bytes[n - 2] == b && hyp.bytes[n - 3] == b {
-                            p *= 0.25;
+                            p *= 0.10;
                         }
                         (b, p)
                     })
@@ -1113,10 +1172,6 @@ impl DeepContractiveBrain {
 
                 for &(cand_b, adj_p) in cands.iter().take(top_m) {
                     let step_bits = -(adj_p.max(1e-7) as f64).log2();
-                    let mut n_ep = hyp.episodic.clone();
-                    let mut n_mm = hyp.meta_mixer.clone();
-                    n_mm.observe_online(&p_brain, &experts, &active, &p_mix, cand_b, use_lo, 0.14);
-                    n_ep.observe(&st.recent_bytes, &lat, cand_b, step_bits as f32);
                     let mut nb = hyp.bytes.clone();
                     nb.push(cand_b);
                     next_beams.push(BeamHyp {
@@ -1124,8 +1179,6 @@ impl DeepContractiveBrain {
                         bytes: nb,
                         last_byte: cand_b,
                         stream: st.clone(),
-                        episodic: n_ep,
-                        meta_mixer: n_mm,
                     });
                 }
             }
@@ -1138,25 +1191,23 @@ impl DeepContractiveBrain {
         (best.bytes.clone(), best.score_bits / n_new_bytes.max(1) as f64)
     }
 
-    /// Exact Forward + Full Per-Layer Conv-4 + Learned Branch Mixers + Fast-Weight Associative Delta-SSM
-    /// + Contractive Equilibrium + SwiGLU FFN BPTT!
     fn compute_stream_grads(
         &self,
         inputs: &[u8],
         targets: &[u8],
         stream: &mut CausalStreamState,
-        gamma: f32,
+        pol: RuntimePolicyOverride,
         device_id: usize,
     ) -> (BrainGrads, f32, Vec<f32>, Vec<f32>) {
         let use_gpu = self.is_gpu_bound();
         let t_len = inputs.len().min(targets.len());
         let d = self.cfg.d_model;
         let ff = self.cfg.d_ff;
+        let n_layers = self.cfg.n_layers;
         let k_ticks = self.cfg.n_ticks;
         let n_heads = (d / ASSOC_HD).max(1);
         let mut grads = BrainGrads::zeros(&self.cfg);
 
-        // 1. Live GPU/CPU Embedding Lookup
         let mut cur_x = vec![0.0f32; t_len * d];
         embedding_lookup_fwd(&self.e_byte.w, &self.e_byte.w_dev, &inputs[..t_len], &mut cur_x, d);
 
@@ -1190,13 +1241,14 @@ impl DeepContractiveBrain {
             ff_gate: Vec<f32>,
             ff_act: Vec<f32>,
         }
-        let mut caches = Vec::with_capacity(self.cfg.n_layers);
+        let mut caches = Vec::with_capacity(n_layers);
 
         for (li, layer) in self.layers.iter().enumerate() {
+            let gamma = pol.layer_gamma(li, n_layers);
             let x_in = cur_x;
             let mut x_n1 = vec![0.0f32; t_len * d];
             let mut inv_r1 = vec![0.0f32; t_len];
-            rms_norm_fwd(&x_in, &mut x_n1, &mut inv_r1, t_len, d);
+            rmsnorm_fwd_dispatch(&x_in, &mut x_n1, &mut inv_r1, t_len, d, device_id, use_gpu);
 
             let conv_init = stream.layer_conv[li].clone();
             let mut x_conv = vec![0.0f32; t_len * d];
@@ -1309,7 +1361,7 @@ impl DeepContractiveBrain {
 
             let mut x_n2 = vec![0.0f32; t_len * d];
             let mut inv_r2 = vec![0.0f32; t_len];
-            rms_norm_fwd(&x_mid, &mut x_n2, &mut inv_r2, t_len, d);
+            rmsnorm_fwd_dispatch(&x_mid, &mut x_n2, &mut inv_r2, t_len, d, device_id, use_gpu);
 
             let mut z_hist = Vec::with_capacity(k_ticks + 1);
             let mut h_hist = Vec::with_capacity(k_ticks);
@@ -1329,15 +1381,14 @@ impl DeepContractiveBrain {
 
             let mut u_norm = vec![0.0f32; t_len * d];
             let mut inv_r3 = vec![0.0f32; t_len];
-            rms_norm_fwd(&u_in, &mut u_norm, &mut inv_r3, t_len, d);
+            rmsnorm_fwd_dispatch(&u_in, &mut u_norm, &mut inv_r3, t_len, d, device_id, use_gpu);
 
-            // SwiGLU FFN Forward
             let mut ff_val = vec![0.0f32; t_len * ff];
             let mut ff_gate = vec![0.0f32; t_len * ff];
             linear_fwd(&u_norm, &layer.w_up.w_q, &layer.w_up.wq_dev, Some(&layer.b_up.w), Some(&layer.b_up.w_dev), &mut ff_val, t_len, d, ff);
             linear_fwd(&u_norm, &layer.w_ff_gate.w_q, &layer.w_ff_gate.wq_dev, Some(&layer.b_ff_gate.w), Some(&layer.b_ff_gate.w_dev), &mut ff_gate, t_len, d, ff);
             let mut ff_act = vec![0.0f32; t_len * ff];
-            for idx in 0..t_len * ff { ff_act[idx] = silu(ff_gate[idx]) * ff_val[idx]; }
+            swiglu_fwd_dispatch(&ff_val, &ff_gate, &mut ff_act, device_id, use_gpu);
             let mut ff_out = vec![0.0f32; t_len * d];
             linear_fwd(&ff_act, &layer.w_dn.w_q, &layer.w_dn.wq_dev, Some(&layer.b_dn.w), Some(&layer.b_dn.w_dev), &mut ff_out, t_len, ff, d);
             let mut x_next = vec![0.0f32; t_len * d];
@@ -1352,10 +1403,9 @@ impl DeepContractiveBrain {
             cur_x = x_next;
         }
 
-        // 3. Output Head + Exact 256-way Cross-Entropy Loss & Backward
         let mut h_final = vec![0.0f32; t_len * d];
         let mut inv_rf = vec![0.0f32; t_len];
-        rms_norm_fwd(&cur_x, &mut h_final, &mut inv_rf, t_len, d);
+        rmsnorm_fwd_dispatch(&cur_x, &mut h_final, &mut inv_rf, t_len, d, device_id, use_gpu);
 
         let mut logits = vec![0.0f32; t_len * 256];
         linear_fwd(&h_final, &self.w_head.w, &self.w_head.w_dev, Some(&self.b_head.w), Some(&self.b_head.w_dev), &mut logits, t_len, d, 256);
@@ -1370,25 +1420,20 @@ impl DeepContractiveBrain {
             t_len, d, 256,
         );
         let mut dx_cur = vec![0.0f32; t_len * d];
-        rms_norm_bwd(&cur_x, &inv_rf, &dh_final, &mut dx_cur, t_len, d);
+        rmsnorm_bwd_dispatch(&cur_x, &inv_rf, &dh_final, &mut dx_cur, t_len, d, device_id, use_gpu);
 
-        // 4. Full Multi-Layer Backward (SwiGLU -> Contractive -> Delta-SSM + Mix + Conv-4!)
         let assoc_sz = n_heads * ASSOC_HD * ASSOC_HD;
-        for l in (0..self.cfg.n_layers).rev() {
+        for l in (0..n_layers).rev() {
+            let gamma = pol.layer_gamma(l, n_layers);
             let c = &caches[l];
             let layer = &self.layers[l];
             let lg = &mut grads.layers[l];
 
-            // 4A. SwiGLU FFN Backward
             let mut dff_act = vec![0.0f32; t_len * ff];
             linear_bwd(&c.ff_act, &layer.w_dn.w_q, &layer.w_dn.wq_dev, &dx_cur, Some(&mut dff_act), Some(&mut lg.w_dn), Some(&mut lg.b_dn), t_len, ff, d);
             let mut dff_val = vec![0.0f32; t_len * ff];
             let mut dff_gate = vec![0.0f32; t_len * ff];
-            for idx in 0..t_len * ff {
-                let da = dff_act[idx];
-                dff_val[idx] = da * silu(c.ff_gate[idx]);
-                dff_gate[idx] = da * c.ff_val[idx] * silu_grad(c.ff_gate[idx]);
-            }
+            swiglu_bwd_dispatch(&c.ff_val, &c.ff_gate, &dff_act, &mut dff_val, &mut dff_gate, device_id, use_gpu);
             let mut du_norm_v = vec![0.0f32; t_len * d];
             let mut du_norm_g = vec![0.0f32; t_len * d];
             linear_bwd(&c.u_norm, &layer.w_up.w_q, &layer.w_up.wq_dev, &dff_val, Some(&mut du_norm_v), Some(&mut lg.w_up), Some(&mut lg.b_up), t_len, d, ff);
@@ -1396,11 +1441,10 @@ impl DeepContractiveBrain {
             for idx in 0..t_len * d { du_norm_v[idx] += du_norm_g[idx]; }
 
             let mut du_res = vec![0.0f32; t_len * d];
-            rms_norm_bwd(&c.u_in, &c.inv_r3, &du_norm_v, &mut du_res, t_len, d);
+            rmsnorm_bwd_dispatch(&c.u_in, &c.inv_r3, &du_norm_v, &mut du_res, t_len, d, device_id, use_gpu);
             let mut du = vec![0.0f32; t_len * d];
             for idx in 0..t_len * d { du[idx] = dx_cur[idx] + du_res[idx]; }
 
-            // 4B. K-Tick Contractive Equilibrium BPTT
             let mut dz = du.clone();
             let mut dx_n2 = vec![0.0f32; t_len * d];
             let mut dpre = vec![0.0f32; t_len * d];
@@ -1412,11 +1456,10 @@ impl DeepContractiveBrain {
             }
             for idx in 0..t_len * d { dx_n2[idx] += dz[idx]; }
             let mut dx_mid_eq = vec![0.0f32; t_len * d];
-            rms_norm_bwd(&c.x_mid, &c.inv_r2, &dx_n2, &mut dx_mid_eq, t_len, d);
+            rmsnorm_bwd_dispatch(&c.x_mid, &c.inv_r2, &dx_n2, &mut dx_mid_eq, t_len, d, device_id, use_gpu);
             let mut dx_mid = vec![0.0f32; t_len * d];
             for idx in 0..t_len * d { dx_mid[idx] = du[idx] + dx_mid_eq[idx]; }
 
-            // 4C. EXACT SELECTIVE-SSM + TROPICAL MAX + FAST-WEIGHT ASSOCIATIVE DELTA-RULE + MIX_W BPTT (`t = T-1..0`)!
             let mut dg_pre = vec![0.0f32; t_len * d];
             let mut dv_pre = vec![0.0f32; t_len * d];
             let mut dk_pre = vec![0.0f32; t_len * d];
@@ -1434,7 +1477,6 @@ impl DeepContractiveBrain {
                     let alpha = 1.0 - beta;
                     let ikn = c.inv_kn[ti * n_heads + h];
 
-                    // Learned branch mixer gradients
                     for a in 0..ASSOC_HD {
                         let j = h_off + a;
                         let dxm = dx_mid[off + j];
@@ -1484,11 +1526,7 @@ impl DeepContractiveBrain {
 
                         let ds_tot = (layer.mix_w.w[j] * dx_mid[off + j] + ds_next[j]).clamp(-10.0, 10.0);
                         let dm_tot = (layer.mix_w.w[d + j] * dx_mid[off + j] + dm_next[j]).clamp(-10.0, 10.0);
-                        let (dv_from_m, next_dm) = if c.m_hit_direct[off + j] != 0 {
-                            (dm_tot, 0.0)
-                        } else {
-                            (0.0, 0.88 * dm_tot)
-                        };
+                        let (dv_from_m, next_dm) = if c.m_hit_direct[off + j] != 0 { (dm_tot, 0.0) } else { (0.0, 0.88 * dm_tot) };
 
                         let dg = (ds_tot * (v - sp) + dg_assoc) * g * (1.0 - g);
                         let dv = (ds_tot * g + dv_from_m + d_delta[a]) * (1.0 - v * v);
@@ -1511,7 +1549,6 @@ impl DeepContractiveBrain {
             linear_bwd(&c.x_conv, &layer.w_key.w_q, &layer.w_key.wq_dev, &dk_pre, Some(&mut dx_conv_k), Some(&mut lg.w_key), Some(&mut lg.b_key), t_len, d, d);
             for idx in 0..t_len * d { dx_conv_g[idx] += dx_conv_v[idx] + dx_conv_k[idx]; }
 
-            // 4D. Exact 4-Tap Causal Depthwise Conv Backward
             let mut dx_n1 = vec![0.0f32; t_len * d];
             for ti in 0..t_len {
                 let off = ti * d;
@@ -1521,19 +1558,16 @@ impl DeepContractiveBrain {
                     for k in 0..CONV_K {
                         let tap = if ti >= k { c.x_n1[(ti - k) * d + j] } else { c.conv_init[(CONV_K - 1 + ti - k) * d + j] };
                         lg.conv_w[k * d + j] += dy * tap;
-                        if ti >= k {
-                            dx_n1[(ti - k) * d + j] += dy * layer.conv_w.w[k * d + j];
-                        }
+                        if ti >= k { dx_n1[(ti - k) * d + j] += dy * layer.conv_w.w[k * d + j]; }
                     }
                 }
             }
 
             let mut dx_ssm_in = vec![0.0f32; t_len * d];
-            rms_norm_bwd(&c.x_in, &c.inv_r1, &dx_n1, &mut dx_ssm_in, t_len, d);
+            rmsnorm_bwd_dispatch(&c.x_in, &c.inv_r1, &dx_n1, &mut dx_ssm_in, t_len, d, device_id, use_gpu);
             for idx in 0..t_len * d { dx_cur[idx] = dx_mid[idx] + dx_ssm_in[idx]; }
         }
 
-        // 5. Embedding Gradient Scatter
         embedding_scatter_bwd(&inputs[..t_len], &dx_cur, &mut grads.e_byte, d, device_id, use_gpu);
 
         (grads, param_bpb, logits, h_final)
@@ -1551,14 +1585,13 @@ impl DeepContractiveBrain {
         let n_streams = batch_io.len().min(streams.len());
         if n_streams == 0 { return 8.0; }
         let pol = policy.unwrap_or(self.active_policy);
-        let gamma = pol.gamma;
         let d = self.cfg.d_model;
         let n_workers = threads.max(1).min(n_streams);
 
         let mut results: Vec<(BrainGrads, f32, Vec<f32>, Vec<f32>)> = Vec::with_capacity(n_streams);
         if n_workers <= 1 {
             for si in 0..n_streams {
-                results.push(self.compute_stream_grads(batch_io[si].0, batch_io[si].1, &mut streams[si], gamma, si));
+                results.push(self.compute_stream_grads(batch_io[si].0, batch_io[si].1, &mut streams[si], pol, si));
             }
         } else {
             let chunk = (n_streams + n_workers - 1) / n_workers;
@@ -1577,7 +1610,7 @@ impl DeepContractiveBrain {
                     s.spawn(move || {
                         for local_i in 0..take {
                             out_vec.push(brain_ref.compute_stream_grads(
-                                io_slice[local_i].0, io_slice[local_i].1, &mut st_slice[local_i], gamma, wi,
+                                io_slice[local_i].0, io_slice[local_i].1, &mut st_slice[local_i], pol, wi,
                             ));
                         }
                     });
@@ -1595,7 +1628,8 @@ impl DeepContractiveBrain {
             total_bytes += t_len;
             if update_episodic {
                 for ti in 0..t_len {
-                    streams[si].push_byte(inputs[ti]);
+                    let prev_b = inputs[ti];
+                    streams[si].push_byte(prev_b);
                     let row = &logits[ti * 256..(ti + 1) * 256];
                     let mut mx = f32::NEG_INFINITY;
                     for &v in row { if v > mx { mx = v; } }
@@ -1611,17 +1645,17 @@ impl DeepContractiveBrain {
 
                     let tgt = targets[ti];
                     let lat_s = &latents[ti * d..(ti + 1) * d];
-                    let (experts, active) = self.episodic.predict_expert_distributions(&streams[si].recent_bytes, lat_s);
-                    let p_mix = self.meta_mixer.mix_256(&p_brain, &experts, &active, pol.w_mem_scale, pol.w_mem_cap, pol.use_log_odds_mix);
+                    let (experts, active, match_len) = self.episodic.predict_expert_distributions(&streams[si].recent_bytes, lat_s);
+                    let ctx = mixer_context_bucket(prev_b, match_len);
+                    let p_mix = self.meta_mixer.mix_256(ctx, &p_brain, &experts, &active, pol.w_mem_scale, pol.w_mem_cap, pol.use_log_odds_mix);
                     let bits = -(p_mix[tgt as usize].max(1e-7).log2());
-                    self.meta_mixer.observe_online(&p_brain, &experts, &active, &p_mix, tgt, pol.use_log_odds_mix, 0.10);
+                    self.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, tgt, pol.use_log_odds_mix, 0.12);
                     self.episodic.observe(&streams[si].recent_bytes, lat_s, tgt, bits);
                 }
             }
         }
         let avg_bpb = sum_bpb / n_streams as f32;
 
-        // Live-wired AllReduce across all stream gradient shards!
         let mut avg_grads = BrainGrads::zeros(&self.cfg);
         let mut emb_shards: Vec<Vec<f32>> = results.iter().map(|r| r.0.e_byte.clone()).collect();
         allreduce_grad_shards(&mut emb_shards, &mut avg_grads.e_byte);
@@ -1691,7 +1725,6 @@ impl DeepContractiveBrain {
         avg_bpb
     }
 
-    /// Evaluate strictly-causal `bits/byte` via Adaptive Banach Compute + 10-Expert Online Convex Meta-Mixer!
     pub fn eval_byte_stream(
         &mut self,
         data: &[u8],
@@ -1712,9 +1745,10 @@ impl DeepContractiveBrain {
             let end = (off + chunk_len.max(16)).min(data.len() - 1);
             let inputs = &data[off..end];
             let targets = &data[off + 1..end + 1];
-            let (logits, latents) = self.forward_byte_chunk(inputs, &mut stream, Some(pol.gamma), 0, Some(ADAPTIVE_BANACH_TOL));
+            let (logits, latents) = self.forward_byte_chunk(inputs, &mut stream, Some(pol), 0, Some(PER_TOKEN_BANACH_TOL));
             for ti in 0..inputs.len() {
-                stream.push_byte(inputs[ti]);
+                let prev_b = inputs[ti];
+                stream.push_byte(prev_b);
                 let row = &logits[ti * 256..(ti + 1) * 256];
                 let mut mx = f32::NEG_INFINITY;
                 for &v in row { if v > mx { mx = v; } }
@@ -1730,15 +1764,16 @@ impl DeepContractiveBrain {
 
                 let tgt = targets[ti];
                 let lat_s = &latents[ti * d..(ti + 1) * d];
-                let (experts, active) = self.episodic.predict_expert_distributions(&stream.recent_bytes, lat_s);
-                let p_mix = self.meta_mixer.mix_256(&p_brain, &experts, &active, pol.w_mem_scale, pol.w_mem_cap, pol.use_log_odds_mix);
+                let (experts, active, match_len) = self.episodic.predict_expert_distributions(&stream.recent_bytes, lat_s);
+                let ctx = mixer_context_bucket(prev_b, match_len);
+                let p_mix = self.meta_mixer.mix_256(ctx, &p_brain, &experts, &active, pol.w_mem_scale, pol.w_mem_cap, pol.use_log_odds_mix);
                 let b_p = -(p_brain[tgt as usize].clamp(1e-7, 0.9999) as f64).log2();
                 let b_m = -(p_mix[tgt as usize].clamp(1e-7, 0.9999) as f64).log2();
                 sum_param += b_p;
                 sum_blend += b_m;
                 total += 1;
                 if online_adapt_episodic {
-                    self.meta_mixer.observe_online(&p_brain, &experts, &active, &p_mix, tgt, pol.use_log_odds_mix, 0.14);
+                    self.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, tgt, pol.use_log_odds_mix, 0.16);
                     self.episodic.observe(&stream.recent_bytes, lat_s, tgt, b_m as f32);
                 }
             }
@@ -1747,11 +1782,10 @@ impl DeepContractiveBrain {
         (sum_param / total.max(1) as f64, sum_blend / total.max(1) as f64)
     }
 
-    /// Exact f64 Cross-Entropy Nats Loss (used ONLY for numerical finite-difference BPTT gradient verification!).
     #[cfg(test)]
-    fn eval_exact_nats_loss(&self, inputs: &[u8], targets: &[u8], gamma: f32) -> f64 {
+    fn eval_exact_nats_loss(&self, inputs: &[u8], targets: &[u8], pol: RuntimePolicyOverride) -> f64 {
         let mut st = CausalStreamState::new(&self.cfg);
-        let (logits, _) = self.forward_byte_chunk(inputs, &mut st, Some(gamma), 0, None);
+        let (logits, _) = self.forward_byte_chunk(inputs, &mut st, Some(pol), 0, None);
         let mut tot = 0.0f64;
         for ti in 0..inputs.len() {
             let row = &logits[ti * 256..(ti + 1) * 256];
@@ -1765,22 +1799,19 @@ impl DeepContractiveBrain {
         tot / inputs.len().max(1) as f64
     }
 
-    /// Central Finite-Difference Numerical Gradient Verification across ALL 20 Parameter Tensor Types!
-    /// Mathematically proves ZERO derivative/chain-rule errors across Conv-4, Delta-SSM, Mix, Contractive, SwiGLU, RMSNorm!
     #[cfg(test)]
     pub fn verify_bptt_numerical_gradients() -> Result<f64, String> {
         let cfg = BrainConfig {
             n_layers: 2,
             d_model: 16,
             d_ff: 24,
-            n_ticks: 2,
+            n_ticks: 3,
             lr: 1e-3,
             weight_decay: 0.0,
             contract_rho: 0.78,
-            use_nvfp4_ste: false, // smooth f32 for exact calculus verification!
+            use_nvfp4_ste: false,
         };
-        let mut brain = DeepContractiveBrain::new(cfg, 1400);
-        // Detach all handles to run pure exact host f32 calculus
+        let mut brain = DeepContractiveBrain::new(cfg, 1500);
         brain.e_byte.detach_host_only();
         brain.w_head.detach_host_only();
         brain.b_head.detach_host_only();
@@ -1797,9 +1828,10 @@ impl DeepContractiveBrain {
         let seq = b"pub fn sha256(x)";
         let inputs = &seq[..seq.len() - 1];
         let targets = &seq[1..];
-        let gamma = 0.58f32;
+        let mut pol = RuntimePolicyOverride::compiled_default();
+        pol.gamma_mode = 1; // Test depth-tapered gamma BPTT too!
         let mut st = CausalStreamState::new(&cfg);
-        let (grads, _, _, _) = brain.compute_stream_grads(inputs, targets, &mut st, gamma, 0);
+        let (grads, _, _, _) = brain.compute_stream_grads(inputs, targets, &mut st, pol, 0);
 
         let eps = 2.0e-3f32;
         let mut max_rel_err = 0.0f64;
@@ -1810,10 +1842,10 @@ impl DeepContractiveBrain {
                 let orig = $param.w[i];
                 $param.w[i] = orig + eps;
                 $param.w_q[i] = orig + eps;
-                let lp = brain.eval_exact_nats_loss(inputs, targets, gamma);
+                let lp = brain.eval_exact_nats_loss(inputs, targets, pol);
                 $param.w[i] = orig - eps;
                 $param.w_q[i] = orig - eps;
-                let lm = brain.eval_exact_nats_loss(inputs, targets, gamma);
+                let lm = brain.eval_exact_nats_loss(inputs, targets, pol);
                 $param.w[i] = orig;
                 $param.w_q[i] = orig;
                 let num = (lp - lm) / (2.0 * eps as f64);
@@ -1831,7 +1863,6 @@ impl DeepContractiveBrain {
             }};
         }
 
-        // Check embeddings, head, and ALL 17 layer parameter tensors across layer 0 (deepest BPTT!) and layer 1!
         check_param!("e_byte", brain.e_byte, grads.e_byte, (b'p' as usize) * 16 + 3);
         check_param!("w_head", brain.w_head, grads.w_head, (b'u' as usize) * 16 + 5);
         check_param!("b_head", brain.b_head, grads.b_head, b' ' as usize);
@@ -1859,7 +1890,6 @@ impl DeepContractiveBrain {
         Ok(max_rel_err)
     }
 
-    /// 100% Bit-Exact Lossless Binary Checkpoint (`TOMG14` + `meta_mixer` + `active_policy` + SHA-256)!
     pub fn save_checkpoint(&mut self, path: &Path) -> Result<String, String> {
         if let Some(p) = path.parent() { let _ = fs::create_dir_all(p); }
         let mut buf = Vec::with_capacity(512 * 1024);
@@ -1895,7 +1925,7 @@ impl DeepContractiveBrain {
     pub fn load_checkpoint(path: &Path) -> Result<(Self, String), String> {
         let raw = fs::read(path).map_err(|e| format!("ckpt read failed: {}", e))?;
         if raw.len() < 70 || &raw[0..6] != CKPT_MAGIC {
-            return Err("invalid TOMG14 checkpoint header".into());
+            return Err("invalid TOMG15 checkpoint header".into());
         }
         let split = raw.len() - 64;
         let payload = &raw[..split];

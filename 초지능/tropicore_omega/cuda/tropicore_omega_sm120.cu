@@ -1,19 +1,20 @@
 // ==============================================================================
-// TropiCore-Omega ASI-Zero v14.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
+// TropiCore-Omega ASI-Zero v15.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
 // Target Node (`장비.md` Track A):
 //   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 7.168 TB/s, 14.044 PFLOPS FP4)
 //   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5) + 1,000 GB DDR5-6400 ECC
 //
-// ABI = 1400 (100% Thread-Safe, Hardware-Exact NVFP4 RNE Ties-to-Even, ZERO Dead Symbols!):
+// ABI = 1500 (100% Thread-Safe, Hardware-Exact NVFP4 RNE, Fused RMSNorm/SwiGLU, ZERO Dead Symbols!):
 //   1. Thread-Safe Persistent GDDR7 Tensor Handle Pool (`g_pool_mtx` + per-GPU `ctx.mtx`):
 //      `tensor_create / tensor_upload / tensor_download / tensor_free` across GPUs `0..N-1`
-//   2. `tropicore_sm120_embedding_fwd` / `bwd`      : Live GPU-Resident Byte Embedding Lookup & Scatter!
-//   3. `tropicore_sm120_linear_fwd_resident`        : Batched Forward GEMM (`cublasSgemm` TF32/FP4 TensorOp)
-//   4. `tropicore_sm120_linear_bwd_resident`        : Batched Backward `dX`, `dW`, `db` GEMMs
-//   5. `tropicore_sm120_contractive_step_fwd` / `bwd`: Live-wired Input-Anchored Contractive Equilibrium
-//   6. `tropicore_sm120_byte_ce_fwd_bwd`            : Exact 256-way Byte Cross-Entropy (`bits/byte`) + Softmax Grad
-//   7. `tropicore_sm120_adamw_resident_inplace`     : Fused GPU AdamW + Banach Row-L_inf + Exact NVFP4 RNE STE
-//   8. `tropicore_sm120_allreduce_mean`             : Multi-Shard / 4-GPU Gradient AllReduce Averaging
+//   2. `tropicore_sm120_embedding_fwd` / `bwd`      : Live GPU-Resident Byte Embedding Lookup & Scatter
+//   3. `tropicore_sm120_linear_fwd/bwd_resident`    : Batched Forward & Backward `dX`/`dW`/`db` GEMMs
+//   4. `tropicore_sm120_rmsnorm_fwd` / `bwd`        : Fused Per-Token RMSNorm Forward & Backward
+//   5. `tropicore_sm120_swiglu_fwd` / `bwd`         : Fused SwiGLU `silu(gate)*val` Forward & Backward
+//   6. `tropicore_sm120_contractive_step_fwd` / `bwd`: Live-wired Input-Anchored Contractive Equilibrium
+//   7. `tropicore_sm120_byte_ce_fwd_bwd`            : Exact 256-way Byte Cross-Entropy + Softmax Grad
+//   8. `tropicore_sm120_adamw_resident_inplace`     : Fused GPU AdamW + Banach Row-L_inf + Exact NVFP4 RNE STE
+//   9. `tropicore_sm120_allreduce_mean`             : Multi-Shard / 4-GPU Gradient AllReduce Averaging
 // ==============================================================================
 
 #include <cuda_runtime.h>
@@ -24,7 +25,7 @@
 #include <mutex>
 #include <vector>
 
-static constexpr int32_t TROPICORE_SM120_ABI = 1400;
+static constexpr int32_t TROPICORE_SM120_ABI = 1500;
 static constexpr int MAX_GPUS = 4;
 static constexpr int MAX_DEV_TENSORS = 16384;
 
@@ -160,6 +161,82 @@ __global__ void sum_grad_bias_kernel(const float* __restrict__ dy, float* __rest
         float acc = 0.0f;
         for (int b = 0; b < batch; ++b) acc += dy[b * out_dim + o];
         db[o] += acc;
+    }
+}
+
+__global__ void rmsnorm_fwd_kernel(
+    const float* __restrict__ x, float* __restrict__ y, float* __restrict__ inv_rms_out, int batch, int dim
+) {
+    int b = blockIdx.x;
+    if (b >= batch) return;
+    const float* xr = x + b * dim;
+    float* yr = y + b * dim;
+    int tid = threadIdx.x;
+    float local_ss = 0.0f;
+    for (int i = tid; i < dim; i += blockDim.x) {
+        float v = xr[i];
+        local_ss += v * v;
+    }
+    __shared__ float s_ss[256];
+    s_ss[tid] = local_ss;
+    __syncthreads();
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1) {
+        if (tid < s) s_ss[tid] += s_ss[tid + s];
+        __syncthreads();
+    }
+    float inv = rsqrtf(s_ss[0] / static_cast<float>(dim) + 1e-5f);
+    if (tid == 0) inv_rms_out[b] = inv;
+    for (int i = tid; i < dim; i += blockDim.x) yr[i] = xr[i] * inv;
+}
+
+__global__ void rmsnorm_bwd_kernel(
+    const float* __restrict__ x, const float* __restrict__ inv_rms,
+    const float* __restrict__ dy, float* __restrict__ dx, int batch, int dim
+) {
+    int b = blockIdx.x;
+    if (b >= batch) return;
+    const float* xr = x + b * dim;
+    const float* dyr = dy + b * dim;
+    float* dxr = dx + b * dim;
+    int tid = threadIdx.x;
+    float local_dot = 0.0f;
+    for (int i = tid; i < dim; i += blockDim.x) local_dot += dyr[i] * xr[i];
+    __shared__ float s_dot[256];
+    s_dot[tid] = local_dot;
+    __syncthreads();
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1) {
+        if (tid < s) s_dot[tid] += s_dot[tid + s];
+        __syncthreads();
+    }
+    float inv = inv_rms[b];
+    float coeff = s_dot[0] * inv * inv * inv / static_cast<float>(dim);
+    for (int i = tid; i < dim; i += blockDim.x) dxr[i] = dyr[i] * inv - xr[i] * coeff;
+}
+
+__global__ void swiglu_fwd_kernel(
+    const float* __restrict__ val, const float* __restrict__ gate, float* __restrict__ act, int total
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        float g = fminf(fmaxf(gate[idx], -20.0f), 20.0f);
+        float sg = g / (1.0f + expf(-g));
+        act[idx] = sg * val[idx];
+    }
+}
+
+__global__ void swiglu_bwd_kernel(
+    const float* __restrict__ val, const float* __restrict__ gate, const float* __restrict__ dact,
+    float* __restrict__ dval, float* __restrict__ dgate, int total
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        float g = fminf(fmaxf(gate[idx], -20.0f), 20.0f);
+        float sig = 1.0f / (1.0f + expf(-g));
+        float sg = g * sig;
+        float dsg = sig * (1.0f + g * (1.0f - sig));
+        float da = dact[idx];
+        dval[idx] = da * sg;
+        dgate[idx] = da * val[idx] * dsg;
     }
 }
 
@@ -637,6 +714,84 @@ int32_t tropicore_sm120_byte_ce_fwd_bwd(
     double acc = 0.0;
     for (float lb : h_losses) acc += static_cast<double>(lb);
     *h_avg_bits_out = static_cast<float>(acc / (batch > 0 ? batch : 1));
+    return 0;
+}
+
+int32_t tropicore_sm120_rmsnorm_fwd(
+    const float* h_x, float* h_y, float* h_inv_rms, int32_t batch, int32_t dim, int32_t device_id
+) {
+    int gpu = pick_gpu(device_id);
+    if (gpu < 0) return -1;
+    std::lock_guard<std::mutex> lk(g_ctx[gpu].mtx);
+    if (!ensure_ctx_locked(gpu)) return -1;
+    auto& ctx = g_ctx[gpu];
+    size_t sz = static_cast<size_t>(batch) * dim;
+    if (!ensure_buf(ctx.d_buf_a, ctx.cap_a, sz) || !ensure_buf(ctx.d_buf_b, ctx.cap_b, sz) ||
+        !ensure_buf(ctx.d_buf_c, ctx.cap_c, static_cast<size_t>(batch))) return -2;
+    cudaMemcpy(ctx.d_buf_a, h_x, sz * sizeof(float), cudaMemcpyHostToDevice);
+    rmsnorm_fwd_kernel<<<batch, 256>>>(ctx.d_buf_a, ctx.d_buf_b, ctx.d_buf_c, batch, dim);
+    cudaMemcpy(h_y, ctx.d_buf_b, sz * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_inv_rms, ctx.d_buf_c, static_cast<size_t>(batch) * sizeof(float), cudaMemcpyDeviceToHost);
+    return 0;
+}
+
+int32_t tropicore_sm120_rmsnorm_bwd(
+    const float* h_x, const float* h_inv_rms, const float* h_dy, float* h_dx,
+    int32_t batch, int32_t dim, int32_t device_id
+) {
+    int gpu = pick_gpu(device_id);
+    if (gpu < 0) return -1;
+    std::lock_guard<std::mutex> lk(g_ctx[gpu].mtx);
+    if (!ensure_ctx_locked(gpu)) return -1;
+    auto& ctx = g_ctx[gpu];
+    size_t sz = static_cast<size_t>(batch) * dim;
+    if (!ensure_buf(ctx.d_buf_a, ctx.cap_a, sz) || !ensure_buf(ctx.d_buf_b, ctx.cap_b, sz) ||
+        !ensure_buf(ctx.d_buf_c, ctx.cap_c, static_cast<size_t>(batch)) || !ensure_buf(ctx.d_buf_d, ctx.cap_d, sz)) return -2;
+    cudaMemcpy(ctx.d_buf_a, h_x, sz * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(ctx.d_buf_b, h_dy, sz * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(ctx.d_buf_c, h_inv_rms, static_cast<size_t>(batch) * sizeof(float), cudaMemcpyHostToDevice);
+    rmsnorm_bwd_kernel<<<batch, 256>>>(ctx.d_buf_a, ctx.d_buf_c, ctx.d_buf_b, ctx.d_buf_d, batch, dim);
+    cudaMemcpy(h_dx, ctx.d_buf_d, sz * sizeof(float), cudaMemcpyDeviceToHost);
+    return 0;
+}
+
+int32_t tropicore_sm120_swiglu_fwd(
+    const float* h_val, const float* h_gate, float* h_act, int32_t total, int32_t device_id
+) {
+    int gpu = pick_gpu(device_id);
+    if (gpu < 0) return -1;
+    std::lock_guard<std::mutex> lk(g_ctx[gpu].mtx);
+    if (!ensure_ctx_locked(gpu)) return -1;
+    auto& ctx = g_ctx[gpu];
+    size_t sz = static_cast<size_t>(total);
+    if (!ensure_buf(ctx.d_buf_a, ctx.cap_a, sz) || !ensure_buf(ctx.d_buf_b, ctx.cap_b, sz) ||
+        !ensure_buf(ctx.d_buf_c, ctx.cap_c, sz)) return -2;
+    cudaMemcpy(ctx.d_buf_a, h_val, sz * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(ctx.d_buf_b, h_gate, sz * sizeof(float), cudaMemcpyHostToDevice);
+    swiglu_fwd_kernel<<<(total + 255) / 256, 256>>>(ctx.d_buf_a, ctx.d_buf_b, ctx.d_buf_c, total);
+    cudaMemcpy(h_act, ctx.d_buf_c, sz * sizeof(float), cudaMemcpyDeviceToHost);
+    return 0;
+}
+
+int32_t tropicore_sm120_swiglu_bwd(
+    const float* h_val, const float* h_gate, const float* h_dact,
+    float* h_dval, float* h_dgate, int32_t total, int32_t device_id
+) {
+    int gpu = pick_gpu(device_id);
+    if (gpu < 0) return -1;
+    std::lock_guard<std::mutex> lk(g_ctx[gpu].mtx);
+    if (!ensure_ctx_locked(gpu)) return -1;
+    auto& ctx = g_ctx[gpu];
+    size_t sz = static_cast<size_t>(total);
+    if (!ensure_buf(ctx.d_buf_a, ctx.cap_a, sz) || !ensure_buf(ctx.d_buf_b, ctx.cap_b, sz) ||
+        !ensure_buf(ctx.d_buf_c, ctx.cap_c, sz) || !ensure_buf(ctx.d_buf_d, ctx.cap_d, sz) ||
+        !ensure_buf(ctx.d_buf_e, ctx.cap_e, sz)) return -2;
+    cudaMemcpy(ctx.d_buf_a, h_val, sz * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(ctx.d_buf_b, h_gate, sz * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(ctx.d_buf_c, h_dact, sz * sizeof(float), cudaMemcpyHostToDevice);
+    swiglu_bwd_kernel<<<(total + 255) / 256, 256>>>(ctx.d_buf_a, ctx.d_buf_b, ctx.d_buf_c, ctx.d_buf_d, ctx.d_buf_e, total);
+    cudaMemcpy(h_dval, ctx.d_buf_d, sz * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_dgate, ctx.d_buf_e, sz * sizeof(float), cudaMemcpyDeviceToHost);
     return 0;
 }
 

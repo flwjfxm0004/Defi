@@ -1,16 +1,15 @@
-//! Pure-Rust Zero-Dependency Exact 32-Bit Arithmetic Bitstream Codec (`OMGZ14`)
-//! Powered by 10-Expert Online Convex Meta-Mixer + Deterministic 64-Byte Test-Time Neural Adaptation!
-//!
-//! 100% Cross-Machine Deterministic (`work_brain = brain.clone()` uses detached CPU-exact arithmetic on BOTH
-//! encoder and decoder -> compress on 4x Blackwell GPU, decompress bit-for-bit identically on ANY CPU!).
+//! Pure-Rust Zero-Dependency Exact 32-Bit Arithmetic Bitstream Codec (`OMGZ15`)
+//! Powered by 11-Expert × 8-Context Online Convex Meta-Mixer (Order-∞ Match-Model + CTW 1..8 + Tropical-L1
+//! + Deep SwiGLU Conv4 Delta-SSM Brain) + Deterministic 64-Byte Test-Time Neural Adaptation!
 
 use std::fs;
 use std::path::Path;
 
 use crate::brain::{CausalStreamState, DeepContractiveBrain};
+use crate::episodic::NUM_EPISODIC_EXPERTS;
 use crate::sha256::sha256_hex;
 
-const OMG_MAGIC: &[u8; 6] = b"OMGZ14";
+const OMG_MAGIC: &[u8; 6] = b"OMGZ15";
 const FULL_RANGE: u64 = 0xFFFF_FFFF;
 const HALF: u64 = 0x8000_0000;
 const QUARTER: u64 = 0x4000_0000;
@@ -191,7 +190,7 @@ pub fn compress_bytes_with_brain(
     enable_ttt: bool,
 ) -> (Vec<u8>, PhysicalCompressReport) {
     let orig_sha = sha256_hex(raw);
-    let mut work_brain = brain.clone(); // detached host-exact for 100% cross-machine determinism!
+    let mut work_brain = brain.clone();
     let mut stream = CausalStreamState::new(&work_brain.cfg);
     let mut ttt_stream = CausalStreamState::new(&work_brain.cfg);
     let mut enc = ArithmeticEncoder::new(raw.len() / 2 + 64);
@@ -203,9 +202,9 @@ pub fn compress_bytes_with_brain(
     let mut prev_byte = 0u8;
 
     for (idx, &actual) in raw.iter().enumerate() {
-        let (p_mix, p_brain, experts, active, lat) = if idx == 0 {
+        let (p_mix, p_brain, experts, active, ctx, lat) = if idx == 0 {
             let unif = [1.0f32 / 256.0; 256];
-            (unif, unif, [unif; 9], [false; 9], vec![0.0f32; work_brain.cfg.d_model])
+            (unif, unif, [unif; NUM_EPISODIC_EXPERTS], [false; NUM_EPISODIC_EXPERTS], 0usize, vec![0.0f32; work_brain.cfg.d_model])
         } else {
             work_brain.predict_next_byte_full(prev_byte, &mut stream, None)
         };
@@ -214,7 +213,7 @@ pub fn compress_bytes_with_brain(
 
         if idx > 0 {
             let surprise = -(p_mix[actual as usize].max(1e-7).log2());
-            work_brain.meta_mixer.observe_online(&p_brain, &experts, &active, &p_mix, actual, use_lo, 0.14);
+            work_brain.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, actual, use_lo, 0.16);
             work_brain.episodic.observe(&stream.recent_bytes, &lat, actual, surprise);
             if enable_ttt {
                 blk_in.push(prev_byte);
@@ -253,7 +252,7 @@ pub fn compress_bytes_with_brain(
 
 pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8]) -> Result<Vec<u8>, String> {
     if archive.len() < 79 || &archive[0..6] != OMG_MAGIC {
-        return Err("invalid OMGZ14 archive header".into());
+        return Err("invalid OMGZ15 archive header".into());
     }
     let enable_ttt = (archive[6] & 1) != 0;
     let mut len_arr = [0u8; 8];
@@ -274,9 +273,9 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
     let mut prev_byte = 0u8;
 
     for idx in 0..orig_len {
-        let (p_mix, p_brain, experts, active, lat) = if idx == 0 {
+        let (p_mix, p_brain, experts, active, ctx, lat) = if idx == 0 {
             let unif = [1.0f32 / 256.0; 256];
-            (unif, unif, [unif; 9], [false; 9], vec![0.0f32; work_brain.cfg.d_model])
+            (unif, unif, [unif; NUM_EPISODIC_EXPERTS], [false; NUM_EPISODIC_EXPERTS], 0usize, vec![0.0f32; work_brain.cfg.d_model])
         } else {
             work_brain.predict_next_byte_full(prev_byte, &mut stream, None)
         };
@@ -286,7 +285,7 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
 
         if idx > 0 {
             let surprise = -(p_mix[sym as usize].max(1e-7).log2());
-            work_brain.meta_mixer.observe_online(&p_brain, &experts, &active, &p_mix, sym, use_lo, 0.14);
+            work_brain.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, sym, use_lo, 0.16);
             work_brain.episodic.observe(&stream.recent_bytes, &lat, sym, surprise);
             if enable_ttt {
                 blk_in.push(prev_byte);

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# TropiCore-Omega ASI-Zero v14.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
+# TropiCore-Omega ASI-Zero v15.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
 # Target Hardware (`장비.md` Track A):
 #   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 14.044 PFLOPS FP4 2:4)
 #   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5, 384 MB L3)
 #   - 1,000 GB DDR5-6400 ECC + 4x Samsung 9100 PRO 4TB (RAID1 OS + 15.2 TB RAID0)
-#   - PURE ZERO-TOY, ZERO-LLM, THREAD-SAFE MULTI-GPU SM120 ARCHITECTURE (`ABI = 1400`):
-#       * SwiGLU + Causal Conv-4 + Learned Branch Mixers + Fast-Weight Associative Delta-SSM + Adaptive Banach Compute
-#       * Verified by Central Finite-Diff Numerical Gradient Check across ALL 20 tensor types (`max_rel_err=0.00396`)
-#       * Hardware Bit-Isomorphic Blackwell NVFP4 (`E2M1` RNE ties-to-even + `.ue4m3` subnormal `2^-9` floor)
-#       * Thread-Safe Multi-GPU GDDR7 Tensor Pool (`g_pool_mtx` + per-GPU `ctx.mtx`, `tensor_upload` live-wired!)
-#       * 10-Expert Online Convex Logistic Meta-Mixer (`PAQ/Hedge`) + 2-Way LRU Episodic Memory
+#   - PURE ZERO-TOY, ZERO-LLM, THREAD-SAFE MULTI-GPU FUSED SM120 ARCHITECTURE (`ABI = 1500`):
+#       * SwiGLU + Causal Conv-4 + Learned Mixers + Fast-Weight Associative Delta-SSM + Depth-Consistent Banach
+#       * Fused CUDA 13 RMSNorm + SwiGLU + Resident GEMM + Embedding + Contractive + Byte-CE + Exact NVFP4 RNE AdamW
+#       * Verified by Central Finite-Diff Gradient Check across ALL 20 tensor types + Lean 4 Omega-1..Omega-5
+#       * 11-Expert x 8-Context Online Convex Meta-Mixer (Order-inf Exact Match-Model + CTW 1..8 + Tropical-L1 + Neural)
 #       * Dynamic Scaling Presets: `laptop` (0.35M) | `mid` (18.15M) | `blackwell-1b` (1.14B) | `blackwell-8b` (7.76B)
-#       * Cross-Machine Deterministic `OMGZ14` Lossless Codec with 64-Byte TTT Neural Adaptation (`TOTAL_FREQ=65536`)
-#       * System-2 Lookahead Beam Search (`generate --beam K`) + GPU-Rebinding Best-Checkpoint Regression Guard
-#       * Lean 4.36.0 Formal Proofs (`proofs/omega_proof.lean`, Theorems Omega-1..Omega-5, ZERO sorry)
+#       * Cross-Machine Deterministic `OMGZ15` Lossless Codec with 64-Byte TTT Neural Adaptation (`TOTAL_FREQ=65536`)
+#       * Self-Echo-Free System-2 Lookahead Beam Search (`generate --beam K`)
+#       * Structural Multi-Formula AST Self-Optimizer with Whole-Crate `cargo check --release` Safety Gate
+#       * Stateful Polyak-Target-TD + Prioritized-Replay `UniversalAgent` (`TOMA15`, closed-loop reward proven!)
 #
 # Day-1 Turnkey Usage:
 #   chmod +x deploy/deploy_4x_blackwell.sh
@@ -45,7 +45,7 @@ done
 
 CPU_THREADS="$(nproc)"
 echo "========================================================================="
-echo " TropiCore-Omega ASI-Zero v14.0.0 — 4x RTX PRO 6000 Blackwell SM120"
+echo " TropiCore-Omega ASI-Zero v15.0.0 — 4x RTX PRO 6000 Blackwell SM120"
 echo " Preset: ${PRESET} | Corpus: ${CORPUS_PATH} | Power: ${POWER_LIMIT}W/GPU | Threads: ${CPU_THREADS}"
 echo "========================================================================="
 
@@ -64,17 +64,17 @@ echo "[2/5] Checking Toolchain (nvcc CUDA 13, cublas/cublasLt, rustc)..."
 nvcc --version
 rustc --version
 
-echo "[3/5] Compiling Thread-Safe Multi-GPU SM120 CUDA 13 Kernels (Exact NVFP4 RNE, ABI=1400)..."
+echo "[3/5] Compiling Thread-Safe Multi-GPU Fused SM120 CUDA 13 Kernels (RMSNorm+SwiGLU+NVFP4 RNE, ABI=1500)..."
 nvcc -O3 -std=c++17 -arch=sm_120a -Xcompiler -fPIC \
   -c cuda/tropicore_omega_sm120.cu -o cuda/tropicore_omega_sm120.o
 ar rcs cuda/libtropicore_omega_sm120.a cuda/tropicore_omega_sm120.o
 ls -lh cuda/libtropicore_omega_sm120.a
 
-echo "[4/5] Building & Testing tropicore_omega v14.0 --release --features cuda_sm120 (-D warnings)..."
+echo "[4/5] Building & Testing tropicore_omega v15.0 --release --features cuda_sm120 (-D warnings)..."
 RUSTFLAGS="-C target-cpu=native -D warnings" cargo build --release --features cuda_sm120
 RUSTFLAGS="-C target-cpu=native -D warnings" cargo test --release --features cuda_sm120 -- --nocapture
 
-echo "[5/5] Launching TropiCore-Omega ASI-Zero v14.0 Status & Autonomous Real-World Daemon..."
+echo "[5/5] Launching TropiCore-Omega ASI-Zero v15.0 Status & Autonomous Real-World Daemon..."
 ./target/release/tropicore_omega status
 
 APPLY_FLAG=""
@@ -88,10 +88,10 @@ if [[ "$CYCLES" -gt 0 ]]; then
     --cycles "$CYCLES" \
     --epochs "$EPOCHS" \
     --threads "$CPU_THREADS" \
-    --ckpt "out/asi_zero_v14_${PRESET}.tomg" \
+    --ckpt "out/asi_zero_v15_${PRESET}.tomg" \
     ${APPLY_FLAG}
 fi
 
 echo "========================================================================="
-echo " TropiCore-Omega ASI-Zero v14.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
+echo " TropiCore-Omega ASI-Zero v15.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
 echo "========================================================================="

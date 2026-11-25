@@ -1,13 +1,12 @@
-//! Persistent Evolutionary Zero-Free-Rider End-to-End Self-Optimizer (`TropiCore-Omega v13.0`).
+//! Structural Multi-Formula AST + Whole-Crate Verified Evolutionary Self-Optimizer (`TropiCore-Omega v15.0`).
 //!
-//! Obliterates ALL v12.0 self-opt flaws:
-//!   1. Evolutionary Elitism: mutates around the brain's LIVE `active_policy` (preserving prior cycles' gains!)
-//!      plus global exploration candidates (both exact-normalized `log_odds` AND `linear` mixing!).
-//!   2. Exact 256-Way Normalized Log-Odds / Product-of-Experts Scoring (`mix_256` -> `sum == 1.0`, zero bias!).
-//!   3. Zero Free-Riders: EVERY candidate runs real training steps with its `gamma` & `lr_slope`/`lr_center`
-//!      on real corpus bytes and measures strictly-causal real held-out `bits/byte` end-to-end!
-//!   4. Returns `winning_policy` so the live running brain IMMEDIATELY installs & persists it in `TOMG13`,
-//!      AND under `--apply` atomically patches live `src/asi_runtime_cfg.rs` after `rustc -O -D warnings`!
+//! Beyond 6-float hyperparameter tuning:
+//!   1. Mutates REAL algorithmic formula structures (`lr_formula_id`: linear ramp / smooth sigmoid / log-rational;
+//!      `gamma_mode`: constant / layer-depth-tapered) AND continuous parameters around the current active elite!
+//!   2. Zero Free-Riders: EVERY candidate runs real training steps with its structural formula & gamma mode on real
+//!      corpus bytes and measures strictly-causal held-out `bits/byte` end-to-end!
+//!   3. Emits the actual chosen Rust formula code into `src/asi_runtime_cfg.rs`, verifies with `rustc -O -D warnings`,
+//!      AND under `--apply` runs a WHOLE-CRATE `cargo check --release` safety gate (auto-rolling back on any failure!).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,14 +28,12 @@ fn rand_uniform(rng: &mut u64) -> f32 {
     ((splitmix64(rng) >> 11) as f64 / ((1u64 << 53) as f64)) as f32
 }
 
-fn find_rustc_bin() -> String {
+fn find_bin(name: &str) -> String {
     if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        let win = format!("{}\\.cargo\\bin\\rustc.exe", home);
-        if Path::new(&win).exists() {
-            return win;
-        }
+        let win = format!("{}\\.cargo\\bin\\{}.exe", home, name);
+        if Path::new(&win).exists() { return win; }
     }
-    "rustc".to_string()
+    name.to_string()
 }
 
 fn find_live_cfg_path() -> Option<PathBuf> {
@@ -48,8 +45,25 @@ fn find_live_cfg_path() -> Option<PathBuf> {
 }
 
 fn emit_runtime_cfg_rs(g: RuntimePolicyOverride) -> String {
+    let lr_body = match g.lr_formula_id {
+        1 => format!(
+            "let diff = surprise_bits - ({ct:.4}f32);\n    let sig = 1.0 / (1.0 + (-({sl:.4}f32 * 2.5 * diff).clamp(-10.0, 10.0)).exp());\n    let boost = 0.55 + 1.15 * sig;\n    (base_lr * boost).clamp(base_lr * 0.4, base_lr * 1.8)",
+            sl = g.lr_slope,
+            ct = g.lr_center
+        ),
+        2 => format!(
+            "let diff = surprise_bits - ({ct:.4}f32);\n    let boost = 1.0 + ({sl:.4}f32) * 1.4 * diff.signum() * (1.0 + diff.abs()).ln();\n    (base_lr * boost).clamp(base_lr * 0.4, base_lr * 1.8)",
+            sl = g.lr_slope,
+            ct = g.lr_center
+        ),
+        _ => format!(
+            "let boost = 1.0 + ({sl:.4}f32) * (surprise_bits - ({ct:.4}f32)).clamp(-1.0, 4.0);\n    (base_lr * boost).clamp(base_lr * 0.4, base_lr * 1.8)",
+            sl = g.lr_slope,
+            ct = g.lr_center
+        ),
+    };
     format!(
-        r#"//! Evolved Live Self-Optimizing Runtime Policy (`TropiCore-Omega v14.0`).
+        r#"//! Evolved Live Structural AST Runtime Policy (`TropiCore-Omega v15.0`, `{tag}`).
 
 #[inline]
 pub fn contractive_gamma() -> f32 {{
@@ -58,8 +72,7 @@ pub fn contractive_gamma() -> f32 {{
 
 #[inline]
 pub fn adaptive_online_lr(base_lr: f32, surprise_bits: f32) -> f32 {{
-    let boost = 1.0 + ({sl:.4}f32) * (surprise_bits - ({ct:.4}f32)).clamp(-1.0, 4.0);
-    (base_lr * boost).clamp(base_lr * 0.4, base_lr * 1.8)
+    {lr_body}
 }}
 
 #[inline]
@@ -67,9 +80,9 @@ pub fn meta_mixer_prior() -> (f32, f32, bool) {{
     ({ws:.4}f32, {wc:.4}f32, {lo})
 }}
 "#,
+        tag = g.formula_tag(),
         gamma = g.gamma,
-        sl = g.lr_slope,
-        ct = g.lr_center,
+        lr_body = lr_body,
         ws = g.w_mem_scale,
         wc = g.w_mem_cap,
         lo = g.use_log_odds_mix
@@ -84,7 +97,7 @@ fn verify_rust_lib_zero_warnings(source: &str) -> Result<(), String> {
     let lib_p = base.with_extension("rlib");
     fs::write(&rs_p, source).map_err(|e| format!("io write err: {}", e))?;
 
-    let rustc = find_rustc_bin();
+    let rustc = find_bin("rustc");
     let out = Command::new(&rustc)
         .args(["--crate-type", "lib", "-O", "-D", "warnings"])
         .arg(&rs_p)
@@ -99,6 +112,20 @@ fn verify_rust_lib_zero_warnings(source: &str) -> Result<(), String> {
         Ok(o) => Err(String::from_utf8_lossy(&o.stderr).chars().take(240).collect()),
         Err(e) => Err(format!("rustc spawn err: {}", e)),
     }
+}
+
+/// Whole-Crate `cargo check --release` safety gate before finalizing `--apply` live source mutation!
+fn verify_whole_crate_cargo_check(cfg_path: &Path) -> bool {
+    let crate_root = cfg_path.parent().and_then(|p| p.parent()).unwrap_or_else(|| Path::new("."));
+    let cargo = find_bin("cargo");
+    Command::new(&cargo)
+        .current_dir(crate_root)
+        .env("RUSTFLAGS", "-D warnings")
+        .env("CARGO_BUILD_JOBS", "2")
+        .args(["check", "--release"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn evaluate_policy_end_to_end(
@@ -163,40 +190,40 @@ pub fn run_real_self_optimization(
     let train_probe = &real_train_bytes[..real_train_bytes.len().min(512)];
     let eval_probe = &real_heldout_bytes[..real_heldout_bytes.len().min(2048)];
 
-    // 1. Measure current LIVE active policy baseline end-to-end!
     let base_pol = brain.active_policy;
     let baseline_bpb = evaluate_policy_end_to_end(brain, train_probe, eval_probe, base_pol);
 
-    // 2. Evolutionary Elitist Search (4 local mutations around active elite + 4 global explorers, balanced linear/log_odds!)
-    let mut rng = seed ^ 0x5E1F_1300_A510;
+    // 8 diverse structural AST + continuous candidates (4 local elite mutations + 4 structural AST explorers!)
+    let mut rng = seed ^ 0x5E1F_1500_A510;
     let mut cands = Vec::with_capacity(8);
     for idx in 0..8usize {
         if idx < 4 {
-            // Local elitist perturbation around current best `base_pol`!
             cands.push(RuntimePolicyOverride {
                 gamma: (base_pol.gamma + (rand_uniform(&mut rng) - 0.5) * 0.16).clamp(0.32, 0.84),
-                lr_slope: (base_pol.lr_slope + (rand_uniform(&mut rng) - 0.5) * 0.12).clamp(0.02, 0.35),
+                gamma_mode: if idx % 2 == 0 { base_pol.gamma_mode } else { 1 - base_pol.gamma_mode.min(1) },
+                lr_formula_id: ((base_pol.lr_formula_id as usize + idx) % 3) as u8,
+                lr_slope: (base_pol.lr_slope + (rand_uniform(&mut rng) - 0.5) * 0.12).clamp(0.03, 0.36),
                 lr_center: (base_pol.lr_center + (rand_uniform(&mut rng) - 0.5) * 0.8).clamp(1.8, 4.5),
-                w_mem_scale: (base_pol.w_mem_scale + (rand_uniform(&mut rng) - 0.5) * 0.40).clamp(0.35, 1.50),
-                w_mem_cap: (base_pol.w_mem_cap + (rand_uniform(&mut rng) - 0.5) * 0.18).clamp(0.55, 0.92),
-                use_log_odds_mix: if idx % 2 == 0 { base_pol.use_log_odds_mix } else { !base_pol.use_log_odds_mix },
+                w_mem_scale: (base_pol.w_mem_scale + (rand_uniform(&mut rng) - 0.5) * 0.40).clamp(0.40, 1.60),
+                w_mem_cap: (base_pol.w_mem_cap + (rand_uniform(&mut rng) - 0.5) * 0.16).clamp(0.60, 0.94),
+                use_log_odds_mix: if idx == 3 { !base_pol.use_log_odds_mix } else { base_pol.use_log_odds_mix },
                 from_compiled_defaults: false,
             });
         } else {
-            // Global explorer candidates (covering normalized Log-Odds PoE + Linear!)
             cands.push(RuntimePolicyOverride {
-                gamma: 0.35 + 0.45 * rand_uniform(&mut rng),
-                lr_slope: 0.04 + 0.26 * rand_uniform(&mut rng),
+                gamma: 0.36 + 0.44 * rand_uniform(&mut rng),
+                gamma_mode: (idx % 2) as u8,
+                lr_formula_id: ((idx - 4) % 3) as u8,
+                lr_slope: 0.05 + 0.28 * rand_uniform(&mut rng),
                 lr_center: 2.0 + 2.2 * rand_uniform(&mut rng),
-                w_mem_scale: 0.55 + 0.90 * rand_uniform(&mut rng),
-                w_mem_cap: 0.65 + 0.28 * rand_uniform(&mut rng),
+                w_mem_scale: 0.55 + 0.95 * rand_uniform(&mut rng),
+                w_mem_cap: 0.68 + 0.25 * rand_uniform(&mut rng),
                 use_log_odds_mix: idx % 2 == 1,
                 from_compiled_defaults: false,
             });
         }
     }
 
-    // 3. Parallel End-to-End Evaluation across `threads`
     let n_threads = threads.max(1).min(cands.len());
     let chunk_sz = (cands.len() + n_threads - 1) / n_threads;
     let mut scores = vec![f64::INFINITY; cands.len()];
@@ -238,22 +265,20 @@ pub fn run_real_self_optimization(
             winning_policy = Some(win);
             final_src = src.clone();
             upgrade_desc = format!(
-                "mix={} w_mem={:.2}(cap={:.2}) gamma={:.2} lr_sl={:.2}",
+                "ast={} mix={} w_mem={:.2}(cap={:.2}) gamma={:.2} lr_sl={:.2}",
+                win.formula_tag(),
                 if win.use_log_odds_mix { "log_odds_norm" } else { "linear" },
-                win.w_mem_scale,
-                win.w_mem_cap,
-                win.gamma,
-                win.lr_slope
+                win.w_mem_scale, win.w_mem_cap, win.gamma, win.lr_slope
             );
             let _ = fs::write(&staged_path, &src);
 
             if apply_live {
                 if let Some(ref lp) = live_path_opt {
                     if fs::write(lp, &src).is_ok() {
-                        if verify_rust_lib_zero_warnings(&src).is_ok() {
+                        if verify_whole_crate_cargo_check(lp) {
                             applied_live = true;
                         } else {
-                            let _ = fs::write(lp, &live_src);
+                            let _ = fs::write(lp, &live_src); // atomic rollback on whole-crate failure!
                         }
                     }
                 }
@@ -264,7 +289,7 @@ pub fn run_real_self_optimization(
     let accepted = improved && rustc_ok;
     let new_sha = sha256_hex(final_src.as_bytes());
     let payload = format!(
-        "{{\"engine\":\"ASI-Zero-v13\",\"prev_sha\":\"{}\",\"new_sha\":\"{}\",\"base_bpb\":{:.5},\"best_bpb\":{:.5},\"accepted\":{},\"applied_live\":{},\"upgrade\":\"{}\"}}",
+        "{{\"engine\":\"ASI-Zero-v15\",\"prev_sha\":\"{}\",\"new_sha\":\"{}\",\"base_bpb\":{:.5},\"best_bpb\":{:.5},\"accepted\":{},\"applied_live\":{},\"upgrade\":\"{}\"}}",
         &live_sha[..16], &new_sha[..16], baseline_bpb, best_bpb, accepted, applied_live, upgrade_desc
     );
     let ledger_digest = sha256_hex(payload.as_bytes());

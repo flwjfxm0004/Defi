@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::nvfp4::nvfp4_quantize_f32;
 
-pub const SM120_TRAINING_ABI: i32 = 1400;
+pub const SM120_TRAINING_ABI: i32 = 1500;
 
 static FWD_GEMM_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
 static BWD_GEMM_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
@@ -59,6 +59,20 @@ extern "C" {
     fn tropicore_sm120_byte_ce_fwd_bwd(
         h_logits: *const f32, h_targets: *const u8, h_dlogits: *mut f32,
         h_avg_bits_out: *mut f32, batch: i32, device_id: i32,
+    ) -> i32;
+    fn tropicore_sm120_rmsnorm_fwd(
+        h_x: *const f32, h_y: *mut f32, h_inv_rms: *mut f32, batch: i32, dim: i32, device_id: i32,
+    ) -> i32;
+    fn tropicore_sm120_rmsnorm_bwd(
+        h_x: *const f32, h_inv_rms: *const f32, h_dy: *const f32, h_dx: *mut f32,
+        batch: i32, dim: i32, device_id: i32,
+    ) -> i32;
+    fn tropicore_sm120_swiglu_fwd(
+        h_val: *const f32, h_gate: *const f32, h_act: *mut f32, total: i32, device_id: i32,
+    ) -> i32;
+    fn tropicore_sm120_swiglu_bwd(
+        h_val: *const f32, h_gate: *const f32, h_dact: *const f32,
+        h_dval: *mut f32, h_dgate: *mut f32, total: i32, device_id: i32,
     ) -> i32;
     fn tropicore_sm120_allreduce_mean(
         shard_grads: *const *mut f32, out_grad: *mut f32, n_shards: i32, n_elems: i32,
@@ -188,9 +202,9 @@ pub fn backend_telemetry() -> BackendTelemetry {
     let gpus = detect_physical_gpus();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
     let backend_name = if cfg!(feature = "cuda_sm120") && gpus > 0 {
-        format!("CUDA13_SM120_MULTIGPU_RESIDENT ({}x GPU, ABI=1400)", gpus)
+        format!("CUDA13_SM120_MULTIGPU_FUSED ({}x GPU, ABI=1500)", gpus)
     } else {
-        format!("CPU_SIMD4_MULTISTREAM_NVFP4 ({}T; SM120 Multi-GPU ABI=1400 ready)", cpus)
+        format!("CPU_SIMD4_MULTISTREAM_NVFP4 ({}T; SM120 Multi-GPU Fused ABI=1500 ready)", cpus)
     };
     BackendTelemetry {
         backend_name,
@@ -659,6 +673,111 @@ pub fn allreduce_grad_shards(shards: &mut [Vec<f32>], out: &mut [f32]) {
             acc += sh[i];
         }
         out[i] = acc * inv;
+    }
+}
+
+pub fn rmsnorm_fwd_dispatch(
+    x: &[f32], y: &mut [f32], inv_rms_out: &mut [f32], batch: usize, dim: usize, device_id: usize, use_gpu: bool,
+) {
+    #[cfg(feature = "cuda_sm120")]
+    {
+        if use_gpu && detect_physical_gpus() > 0 && batch * dim >= 4096 {
+            let rc = unsafe {
+                tropicore_sm120_rmsnorm_fwd(
+                    x.as_ptr(), y.as_mut_ptr(), inv_rms_out.as_mut_ptr(),
+                    batch as i32, dim as i32, device_id as i32,
+                )
+            };
+            if rc == 0 { return; }
+        }
+    }
+    let _ = (device_id, use_gpu);
+    let inv_d = 1.0f32 / (dim.max(1) as f32);
+    for b in 0..batch {
+        let xr = &x[b * dim..(b + 1) * dim];
+        let yr = &mut y[b * dim..(b + 1) * dim];
+        let mut ss = 0.0f32;
+        for &v in xr { ss += v * v; }
+        let inv = 1.0f32 / (ss * inv_d + 1e-5).sqrt();
+        inv_rms_out[b] = inv;
+        for i in 0..dim { yr[i] = xr[i] * inv; }
+    }
+}
+
+pub fn rmsnorm_bwd_dispatch(
+    x: &[f32], inv_rms: &[f32], dy: &[f32], dx: &mut [f32], batch: usize, dim: usize, device_id: usize, use_gpu: bool,
+) {
+    #[cfg(feature = "cuda_sm120")]
+    {
+        if use_gpu && detect_physical_gpus() > 0 && batch * dim >= 4096 {
+            let rc = unsafe {
+                tropicore_sm120_rmsnorm_bwd(
+                    x.as_ptr(), inv_rms.as_ptr(), dy.as_ptr(), dx.as_mut_ptr(),
+                    batch as i32, dim as i32, device_id as i32,
+                )
+            };
+            if rc == 0 { return; }
+        }
+    }
+    let _ = (device_id, use_gpu);
+    let inv_d = 1.0f32 / (dim.max(1) as f32);
+    for b in 0..batch {
+        let xr = &x[b * dim..(b + 1) * dim];
+        let dyr = &dy[b * dim..(b + 1) * dim];
+        let dxr = &mut dx[b * dim..(b + 1) * dim];
+        let inv = inv_rms[b];
+        let mut dot = 0.0f32;
+        for i in 0..dim { dot += dyr[i] * xr[i]; }
+        let coeff = dot * inv * inv * inv * inv_d;
+        for i in 0..dim { dxr[i] = dyr[i] * inv - xr[i] * coeff; }
+    }
+}
+
+pub fn swiglu_fwd_dispatch(
+    val: &[f32], gate: &[f32], act: &mut [f32], device_id: usize, use_gpu: bool,
+) {
+    let n = val.len();
+    #[cfg(feature = "cuda_sm120")]
+    {
+        if use_gpu && detect_physical_gpus() > 0 && n >= 4096 {
+            let rc = unsafe {
+                tropicore_sm120_swiglu_fwd(val.as_ptr(), gate.as_ptr(), act.as_mut_ptr(), n as i32, device_id as i32)
+            };
+            if rc == 0 { return; }
+        }
+    }
+    let _ = (device_id, use_gpu);
+    for i in 0..n {
+        let g = gate[i].clamp(-20.0, 20.0);
+        act[i] = (g / (1.0 + (-g).exp())) * val[i];
+    }
+}
+
+pub fn swiglu_bwd_dispatch(
+    val: &[f32], gate: &[f32], dact: &[f32], dval: &mut [f32], dgate: &mut [f32], device_id: usize, use_gpu: bool,
+) {
+    let n = val.len();
+    #[cfg(feature = "cuda_sm120")]
+    {
+        if use_gpu && detect_physical_gpus() > 0 && n >= 4096 {
+            let rc = unsafe {
+                tropicore_sm120_swiglu_bwd(
+                    val.as_ptr(), gate.as_ptr(), dact.as_ptr(),
+                    dval.as_mut_ptr(), dgate.as_mut_ptr(), n as i32, device_id as i32,
+                )
+            };
+            if rc == 0 { return; }
+        }
+    }
+    let _ = (device_id, use_gpu);
+    for i in 0..n {
+        let g = gate[i].clamp(-20.0, 20.0);
+        let sig = 1.0 / (1.0 + (-g).exp());
+        let sg = g * sig;
+        let dsg = sig * (1.0 + g * (1.0 - sig));
+        let da = dact[i];
+        dval[i] = da * sg;
+        dgate[i] = da * val[i] * dsg;
     }
 }
 
