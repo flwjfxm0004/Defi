@@ -1,14 +1,16 @@
-//! Build script for TropiCore-Omega ASI-Zero (Zero-Toy Deep Contractive NVFP4 Engine).
-//! Links `cuda/libtropicore_omega_sm120.a` (Forward + Backward + AdamW + 4-GPU AllReduce SM120 kernels)
-//! when `--features cuda_sm120` is enabled on 4x RTX PRO 6000 Blackwell Linux workstations.
+//! Build script for TropiCore-Omega ASI-Zero v14.0 (ABI=1400, SM120 Blackwell CUDA 13).
+//! Automatically rebuilds `cuda/libtropicore_omega_sm120.a` whenever `cuda/tropicore_omega_sm120.cu`
+//! is newer than the archive (fixing stale-archive ABI mismatch bugs!).
 
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=cuda/tropicore_omega_sm120.cu");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
+    println!("cargo:rerun-if-env-changed=NVCC");
 
     if env::var("CARGO_FEATURE_CUDA_SM120").is_err() {
         return;
@@ -20,7 +22,15 @@ fn main() {
     let obj_path = lib_dir.join("tropicore_omega_sm120.o");
     let lib_path = lib_dir.join("libtropicore_omega_sm120.a");
 
-    if !lib_path.exists() {
+    let need_rebuild = match (fs::metadata(&cu_path), fs::metadata(&lib_path)) {
+        (Ok(cu_m), Ok(lib_m)) => match (cu_m.modified(), lib_m.modified()) {
+            (Ok(ct), Ok(lt)) => ct > lt,
+            _ => true,
+        },
+        _ => true,
+    };
+
+    if need_rebuild {
         let nvcc = env::var("NVCC").unwrap_or_else(|_| "nvcc".to_string());
         let status = Command::new(&nvcc)
             .args([

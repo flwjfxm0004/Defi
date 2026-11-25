@@ -1,8 +1,8 @@
 -- ============================================================================
--- TropiCore-Omega (v8.0): Constructive Pure Lean 4.36.0 Formal Proofs
+-- TropiCore-Omega (v14.0): Constructive Pure Lean 4.36.0 Formal Proofs
 -- Zero external imports (`Init` only), ZERO `sorry`, ZERO `admit`, ZERO `axiom`.
 --
--- Formally proves all four core mathematical invariants of `UniversalEnergyCore`:
+-- Formally proves all five core mathematical invariants of `TropiCore-Omega ASI-Zero`:
 --   Theorem Omega-1 : CEGIS Repulsive-Barrier Oracle Soundness & Strictly
 --                     Shrinking Hypothesis Space (no false-accept, strict decay)
 --   Theorem Omega-2 : Weight-Tied Contractive NVFP4 Relaxation Capture Ball
@@ -11,6 +11,8 @@
 --                     & Inductive `OmegaOp` AST Canonical Compression (`BoundedFixedPoint`)
 --   Theorem Omega-4 : Exact 3D Pareto Hypervolume Dominance Invariance,
 --                     Monotonicity, and Strict Growth (`B -> 2B -> 4B` Scaling)
+--   Theorem Omega-5 : Fast-Weight Associative Delta-Rule Contractive Invariance
+--                     & Exponential Forgetting Stability (`|S_t| <= M`, `B^T d(T) <= (B-b)^T d(0)`)
 -- ============================================================================
 
 namespace TropiCoreOmega
@@ -556,5 +558,61 @@ theorem omega_hv3d_strict_growth (p : Point3D) (front : List Point3D) (cx cy cz 
         have hrec := ih hlt
         have hpt := countXY_insert_mono p front X k Y
         omega
+
+-- ============================================================================
+-- Section 5: Theorem Omega-5 — Fast-Weight Associative Delta-Rule Contraction
+--            & Exponential Forgetting Stability (`TropiCore-Omega v14.0`)
+-- ============================================================================
+
+/-- Fast-Weight Associative Delta-Rule Forward-Invariance (`|S_t| <= M` for ALL infinite stream steps `T`):
+    In exact division-free integer form with denominator `B > 0` and write gate `0 < b <= B`:
+    If each associative update satisfies `B * s(t + 1) <= (B - b) * s(t) + b * M` (convex contraction
+    under unit-norm keys `||k_t||_2 <= 1` and bounded values `|v_t| <= M`), and `s(0) <= M`,
+    then `s(T) <= M` for ALL `T : Nat` (ZERO unbounded memory blow-up on infinite streams!). -/
+theorem omega_delta_rule_state_bounded
+    (s : Nat -> Nat) (B b M : Nat)
+    (hB : 0 < B) (hb : b <= B)
+    (hstep : ∀ t, B * s (t + 1) <= (B - b) * s t + b * M)
+    (h0 : s 0 <= M) :
+    ∀ T, s T <= M := by
+  intro T
+  induction T with
+  | zero => exact h0
+  | succ k ih =>
+      have hk : B * s (k + 1) <= (B - b) * s k + b * M := hstep k
+      have hmul : (B - b) * s k <= (B - b) * M := Nat.mul_le_mul_left (B - b) ih
+      have hsum : (B - b) * M + b * M = B * M := by
+        rw [← Nat.add_mul, Nat.sub_add_cancel hb]
+      have hle : B * s (k + 1) <= B * M := by omega
+      exact Nat.le_of_mul_le_mul_left hle hB
+
+/-- Fast-Weight Associative Delta-Rule Exponential Forgetting / Perturbation Decay:
+    If the difference `d(t)` between two associative trajectories receiving identical inputs obeys
+      `B * d(t + 1) <= (B - b) * d(t)`
+    then for ALL finite horizons `T : Nat`:
+      `B^T * d(T) <= (B - b)^T * d(0)`
+    (exponentially forgets initial state perturbations at exact rate `((B - b)/B)^T`!). -/
+theorem omega_delta_rule_exponential_forgetting
+    (d : Nat -> Nat) (B b : Nat)
+    (hstep : ∀ t, B * d (t + 1) <= (B - b) * d t) :
+    ∀ T, powNat B T * d T <= powNat (B - b) T * d 0 := by
+  intro T
+  induction T with
+  | zero =>
+      simp [powNat]
+  | succ k ih =>
+      have hk : B * d (k + 1) <= (B - b) * d k := hstep k
+      have h1 : powNat B k * (B * d (k + 1)) <= powNat B k * ((B - b) * d k) :=
+        Nat.mul_le_mul_left (powNat B k) hk
+      have h2 : (B - b) * (powNat B k * d k) <= (B - b) * (powNat (B - b) k * d 0) :=
+        Nat.mul_le_mul_left (B - b) ih
+      have h_lhs : powNat B (k + 1) * d (k + 1) = powNat B k * (B * d (k + 1)) := by
+        simp only [powNat]
+        rw [Nat.mul_comm B (powNat B k), Nat.mul_assoc]
+      have h_mid : powNat B k * ((B - b) * d k) = (B - b) * (powNat B k * d k) := by
+        rw [Nat.mul_left_comm]
+      have h_rhs : (B - b) * (powNat (B - b) k * d 0) = powNat (B - b) (k + 1) * d 0 := by
+        simp only [powNat, Nat.mul_assoc]
+      omega
 
 end TropiCoreOmega

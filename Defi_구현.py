@@ -94,11 +94,11 @@ QUEUE_LOCK_PATH: Path = AUDIT_ROOT / "_queue.lock"
 
 
 _CPU_COUNT: int = max(2, int(os.cpu_count() or 8))
-_S4_CHUNK_WORKERS: int = min(6, max(2, _CPU_COUNT // 2))
 _DUCKDB_THREADS: int = min(4, max(2, _CPU_COUNT // 3))
 _DUCKDB_SUBPROC_SEM: threading.BoundedSemaphore = threading.BoundedSemaphore(2)
 _SINGLE_SESSION_PROTO_WORKERS: int = min(6, max(3, _CPU_COUNT // 2))
-_FORGE_MAX_CONCURRENT: int = min(4, max(2, _CPU_COUNT // 4))
+_FORGE_MAX_CONCURRENT: int = min(6, max(3, _CPU_COUNT // 2))
+_S4_CHUNK_WORKERS: int = min(2, max(1, _FORGE_MAX_CONCURRENT // 3))
 _BG_SUBPROC_THREADS: int = max(2, min(4, _CPU_COUNT // max(2, _FORGE_MAX_CONCURRENT)))
 _FORGE_SUBPROC_SEM: threading.BoundedSemaphore = threading.BoundedSemaphore(_FORGE_MAX_CONCURRENT)
 _MODE_B_HEAVY_S2_SEM: threading.BoundedSemaphore = threading.BoundedSemaphore(2)
@@ -4889,6 +4889,8 @@ class RPCRouter:
         self._demote_until: Dict[str, float] = {}
         self._quarantine_until: Dict[Tuple[int, str], float] = {}
         self._auth_fail_streak: Dict[Tuple[int, str], int] = {}
+        self._auth_dead_key_cids: Dict[Tuple[str, str], Set[int]] = {}
+        self._auth_dead_key_until: Dict[Tuple[str, str], float] = {}
         self._last_persisted_at: Dict[str, float] = {}
         self._last_shared_sync_at: float = 0.0
         self._verified_chain_urls: Set[Tuple[int, str]] = set()
@@ -4920,6 +4922,12 @@ class RPCRouter:
                     if int(row.get("quarantined") or 0) == 1:
                         if du > now and rcid > 0:
                             self._quarantine_until[(rcid, u)] = max(self._quarantine_until.get((rcid, u), 0.0), du)
+                            kfp_r = self._provider_key_fp(str(row.get("url") or ""))
+                            if kfp_r is not None:
+                                cset_r = self._auth_dead_key_cids.setdefault(kfp_r, set())
+                                cset_r.add(rcid)
+                                if len(cset_r) >= 2:
+                                    self._auth_dead_key_until[kfp_r] = max(self._auth_dead_key_until.get(kfp_r, 0.0), du)
                     elif du > now:
                         self._demote_until[u] = max(self._demote_until.get(u, 0.0), du)
                     bcap = int(row.get("batch_cap") or 0)
@@ -5117,6 +5125,14 @@ class RPCRouter:
                     continue
                 if qu > 0.0:
                     self._quarantine_until.pop((cid, uk), None)
+                kfp_u = self._provider_key_fp(u)
+                if kfp_u is not None:
+                    kqu = self._auth_dead_key_until.get(kfp_u, 0.0)
+                    if kqu > now:
+                        quarantined_pool.append(u)
+                        continue
+                    if kqu > 0.0:
+                        self._auth_dead_key_until.pop(kfp_u, None)
                 if self._cool_until.get(uk, 0.0) > now:
                     cooled.append(u)
                     continue
@@ -5212,14 +5228,35 @@ class RPCRouter:
         except _RECOVERABLE_IO_EXC:
             pass
 
+    @staticmethod
+    def _provider_key_fp(url: str) -> Optional[Tuple[str, str]]:
+        """멀티체인 공용 키 기반 RPC 제공자(ankr/nodereal/blockreq)의 비가역 키 지문을 산출한다(원문 미보관)."""
+        p = urllib.parse.urlparse(url)
+        host = p.netloc.lower()
+        segs = [s for s in p.path.split("/") if s]
+        if len(segs) < 2:
+            return None
+        key_seg = segs[-1]
+        if key_seg == "public" or len(key_seg) < 16:
+            return None
+        for dom in ("ankr.com", "nodereal.io", "blockreq.com"):
+            if host == dom or host.endswith("." + dom):
+                return dom, hashlib.sha256(key_seg.encode("utf-8")).hexdigest()[:16]
+        return None
+
     def _record_success(self, url: str, elapsed_ms: float, cid: int = 0) -> None:
         uk = _endpoint_storage_key(url)
+        kfp = self._provider_key_fp(url)
         with self._lock:
             prev = self._rtt_ms.get(uk)
             self._rtt_ms[uk] = elapsed_ms if prev is None else (0.7 * prev + 0.3 * elapsed_ms)
             if cid > 0:
                 self._quarantine_until.pop((cid, uk), None)
                 self._auth_fail_streak.pop((cid, uk), None)
+            if kfp is not None:
+                self._auth_dead_key_until.pop(kfp, None)
+                if cid > 0 and kfp in self._auth_dead_key_cids:
+                    self._auth_dead_key_cids[kfp].discard(cid)
         if cid > 0:
             self._persist_endpoint_if_due(url, cid, force=False)
 
@@ -5227,6 +5264,7 @@ class RPCRouter:
         now = time.time()
         force_save = False
         uk = _endpoint_storage_key(url)
+        kfp = self._provider_key_fp(url) if kind == "auth_dead" else None
         with self._lock:
             if kind == "auth_dead":
                 is_keyed_u = _is_keyed_rpc_url(url)
@@ -5237,6 +5275,11 @@ class RPCRouter:
                         self._quarantine_until[(cid, uk)] = now + self._QUARANTINE_TTL_SEC
                     self._demote_until[uk] = now + self._QUARANTINE_TTL_SEC
                     self._cool_until[uk] = now + self._QUARANTINE_TTL_SEC
+                    if kfp is not None and cid > 0:
+                        cset = self._auth_dead_key_cids.setdefault(kfp, set())
+                        cset.add(cid)
+                        if len(cset) >= 2:
+                            self._auth_dead_key_until[kfp] = now + self._QUARANTINE_TTL_SEC
                 else:
                     # Single transient 403/WAF burst on keyless public RPC: short cool+demote instead of 1h quarantine
                     self._demote_until[uk] = now + 300.0
@@ -10966,6 +11009,7 @@ _BLOCKSCOUT_HOSTS: Dict[int, str] = {
 _VERIFIED_SRC_MEM_CACHE: Dict[Tuple[int, str], Tuple[float, Dict[str, Any]]] = {}
 _VERIFIED_SRC_MEM_LOCK = threading.Lock()
 _ETHERSCAN_V2_UNSUPPORTED_CIDS: Set[int] = set()
+_SOURCIFY_REST_FAIL_SEQ: List[int] = [0]
 
 
 def fetch_verified_contract(
@@ -11106,22 +11150,32 @@ def fetch_verified_contract(
         except Exception:
             return None, False
 
+    sf_api_responded: List[bool] = [False]
+
     def _probe_sourcify_api() -> Tuple[Optional[Dict[str, Any]], bool]:
         try:
             sf_url = f"https://sourcify.dev/server/v2/contract/{cid}/{_checksum(addr)}?fields=abi,sources"
             sf_doc = router.http_get_json(sf_url, timeout=5.0)
-            if isinstance(sf_doc, dict) and (sf_doc.get("abi") or sf_doc.get("sources")):
-                abi_s = sf_doc.get("abi") if isinstance(sf_doc.get("abi"), list) else []
-                smap_s: Dict[str, str] = {}
-                for fn, fobj in (sf_doc.get("sources") or {}).items():
-                    if isinstance(fobj, dict) and fobj.get("content"):
-                        smap_s[str(fn)] = str(fobj["content"])
-                cname_s = next(iter(smap_s.keys()), "Contract").rsplit("/", 1)[-1].replace(".sol", "")
-                return {"verified": True, "provider": "sourcify_v2", "contract_name": cname_s, "abi": abi_s, "sources": smap_s}, False
-            return None, isinstance(sf_doc, dict)
+            if isinstance(sf_doc, dict):
+                sf_api_responded[0] = True
+                if sf_doc.get("abi") or sf_doc.get("sources"):
+                    abi_s = sf_doc.get("abi") if isinstance(sf_doc.get("abi"), list) else []
+                    smap_s: Dict[str, str] = {}
+                    for fn, fobj in (sf_doc.get("sources") or {}).items():
+                        if isinstance(fobj, dict) and fobj.get("content"):
+                            smap_s[str(fn)] = str(fobj["content"])
+                    cname_s = next(iter(smap_s.keys()), "Contract").rsplit("/", 1)[-1].replace(".sol", "")
+                    return {"verified": True, "provider": "sourcify_v2", "contract_name": cname_s, "abi": abi_s, "sources": smap_s}, False
+                return None, True
+            with _VERIFIED_SRC_MEM_LOCK:
+                _SOURCIFY_REST_FAIL_SEQ[0] += 1
+            return None, False
         except _DeterministicHTTPClientError:
+            sf_api_responded[0] = True
             return None, True
         except Exception:
+            with _VERIFIED_SRC_MEM_LOCK:
+                _SOURCIFY_REST_FAIL_SEQ[0] += 1
             return None, False
 
     def _probe_routescan() -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -11195,7 +11249,7 @@ def fetch_verified_contract(
         _put_verified_mem(chosen_hit)
         return chosen_hit
     definitive_unverified = (not es_had_transient_err) and (es_definitive_unv or _es_skip) and all_fb_unv
-    if _defer_giant_local_sf and not definitive_unverified:
+    if _defer_giant_local_sf and not definitive_unverified and not sf_api_responded[0]:
         _fb_loc_sf = _query_local_sourcify_verified(cid, addr)
         if isinstance(_fb_loc_sf, dict) and _fb_loc_sf.get("verified"):
             if r_store is not None:
@@ -27209,6 +27263,31 @@ contract {contract_name} {{
 """
 
 
+def _effective_slice_witnesses(
+    sl: CausalSlice,
+    *,
+    use_flash: bool = False,
+    use_7702: bool = False,
+) -> List[int]:
+    """
+    S4 포크 하네스 witness 세트 선택 (0 FN 보존):
+    - `active`·멀티레그·플래시론·미드프레임·EIP-7702·위임 대상·미프리스크린 슬라이스는 전체 6개 witness 유지.
+    - 핀 블록 프리스크린에서 이미 전 변형 리버트(`status == "reverted"`)가 확인된 단순 1-leg 슬라이스만
+      양극단 경계 2개(`[ws[0], ws[-1]]`)로 압축해 전수 포크 실행은 유지하면서 불필요한 중복 리버트를 감축한다.
+    """
+    ws = [int(w) for w in sl.witness_candidates[:6]] if sl.witness_candidates else [1]
+    if (
+        len(ws) > 2
+        and len(sl.legs) == 1
+        and not use_flash
+        and not use_7702
+        and sl.channel != "CH_MIDFRAME"
+        and str((sl.prescreen_diagnostics or {}).get("status") or "") == "reverted"
+    ):
+        return list(dict.fromkeys([ws[0], ws[-1]]))
+    return ws
+
+
 def _render_minimal_solidity_harness(
     slug: str,
     chain: str,
@@ -27259,7 +27338,6 @@ def _render_minimal_solidity_harness(
     has_7702_slice = False
     has_ctor_probe_slice = False
     for s_idx, sl in enumerate(slices[:24]):
-        w_list = sl.witness_candidates[:6] if sl.witness_candidates else [1]
         rep_max = max(sl.repeat_counts) if sl.repeat_counts else 1
         use_compact_loop = rep_max >= 4 and len(sl.legs) <= 2
         rep_cnt = min(rep_max, 3) if (len(sl.legs) == 1 and not use_compact_loop) else 1
@@ -27281,6 +27359,7 @@ def _render_minimal_solidity_harness(
         use_flash_7702 = bool(use_flash and is_eoa_7702)
         use_7702 = bool((not use_flash) and is_eoa_7702)
         is_midframe = (sl.channel == "CH_MIDFRAME") and not use_flash and not use_7702
+        w_list = _effective_slice_witnesses(sl, use_flash=use_flash, use_7702=use_7702)
 
         def _resolve_sl_abi(sel_key: str) -> Tuple[List[str], List[str], bool]:
             ver_l = sl.abi_inputs_by_sel.get(sel_key) or sl.abi_inputs_by_sel.get(sel_key.lower()) or []
@@ -27584,11 +27663,12 @@ def _render_minimal_solidity_harness(
                 f"        ConservationSnap memory snapMid = _takeSnap({c_chk});\n"
                 f"        uint256 liqGasStart = gasleft();\n"
                 f"        (uint256[{asset_count}] memory liqCredit, uint256[{asset_count}] memory liqDebited) = _tryLiquidateGains(snapBefore, snapMid);\n"
+                f"        bool _anyLiq = false;\n"
                 f"        {{\n"
                 f"            uint256 liqGasUsed = liqGasStart > gasleft() ? (liqGasStart - gasleft()) : 0;\n"
-                f"            for (uint256 li = 0; li < {asset_count}; li++) {{ if (liqDebited[li] > 0) {{ gasUsed += liqGasUsed; break; }} }}\n"
+                f"            for (uint256 li = 0; li < {asset_count}; li++) {{ if (liqDebited[li] > 0) {{ _anyLiq = true; gasUsed += liqGasUsed; break; }} }}\n"
                 f"        }}\n"
-                f"        ConservationSnap memory snapAfter = _takeSnap({c_chk});\n"
+                f"        ConservationSnap memory snapAfter = _anyLiq ? _takeSnap({c_chk}) : snapMid;\n"
                 f"        _assertConservationLiq({s_idx}, snapBefore, snapAfter, liqCredit, liqDebited, gasUsed);"
             )
         else:
@@ -35795,11 +35875,11 @@ def generate_and_run_forge_suites(
     timeout_sec: int = 120,
     ckpt_path: Optional[Path] = None,
     ckpt_data: Optional[Dict[str, Any]] = None,
-    slice_chunk_size: int = 12,
+    slice_chunk_size: int = 24,
     vault_addresses: Optional[Sequence[str]] = None,
     gas_price_wei: int = 0,
     exit_routes: Optional[Dict[str, Dict[str, Any]]] = None,
-    max_tests_per_chunk: int = 48,
+    max_tests_per_chunk: int = 144,
     target_addrs: Optional[Sequence[str]] = None,
     session_id: str = "",
     fork_proxy_url: str = "",
@@ -35956,13 +36036,16 @@ def generate_and_run_forge_suites(
         )
 
     safe_slug = _safe_solidity_ident(slug)
-    chunk_sz = max(1, min(16, int(slice_chunk_size or 12)))
-    max_tests = max(1, int(max_tests_per_chunk or 48))
+    chunk_sz = max(1, min(24, int(slice_chunk_size or 24)))
+    max_tests = max(1, int(max_tests_per_chunk or 144))
     chunks: List[List[CausalSlice]] = []
     cur_chunk: List[CausalSlice] = []
     cur_tests = 0
     for sl_rem in remaining:
-        sl_tests = len(sl_rem.witness_candidates[:6]) if sl_rem.witness_candidates else 1
+        _fh_rem = sl_rem.flash_loan_hint if isinstance(sl_rem.flash_loan_hint, dict) else None
+        _uf_rem = bool(_fh_rem and int(_fh_rem.get("mode") or 0) in _STAGE4_FLASH_MODES and _norm_addr(str(_fh_rem.get("vault") or "")) and _norm_addr(str(_fh_rem.get("token") or "")) and sl_rem.legs)
+        _u7_rem = bool((not _uf_rem) and sl_rem.legs and ((sl_rem.prescreen_diagnostics or {}).get("eoa_only_gate_eip7702_delegatable") or (sl_rem.prescreen_diagnostics or {}).get("eoa_only_gate_eip7702_bypassable")))
+        sl_tests = len(_effective_slice_witnesses(sl_rem, use_flash=_uf_rem, use_7702=_u7_rem))
         if cur_chunk and (len(cur_chunk) >= chunk_sz or cur_tests + sl_tests > max_tests):
             chunks.append(cur_chunk)
             cur_chunk = []
@@ -36142,47 +36225,18 @@ def generate_and_run_forge_suites(
         if _use_own_proxy
         else contextlib.nullcontext(fork_proxy_url)
     )
-    with _own_proxy_cm as _active_proxy_url:
-        if _active_proxy_url:
-            _pinned_proxy_url = _active_proxy_url
-            urls = [_active_proxy_url, *[u for u in urls if u != _active_proxy_url]]
-            _rpc_busy[_active_proxy_url] = 0
-            _rpc_est_dt[_active_proxy_url] = 1.0
-        if len(_chunk_jobs) >= 2 and _is_live_suite:
-            _max_ch_workers = min(_S4_CHUNK_WORKERS, len(_chunk_jobs))
-            _chunk_results: List[Any] = [None] * len(_chunk_jobs)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_ch_workers) as ex_ch:
-                _fut_map = {ex_ch.submit(_run_one_chunk, _j): _ji for _ji, _j in enumerate(_chunk_jobs)}
-                for _df in concurrent.futures.as_completed(_fut_map):
-                    _ji = _fut_map[_df]
-                    _res_ch = _df.result()
-                    _chunk_results[_ji] = _res_ch
-                    _out_ch = _res_ch[0] if isinstance(_res_ch, tuple) and _res_ch else None
-                    if _out_ch is not None and "CHEATCODE" in str(_out_ch.error_reason or ""):
-                        _chunk_abort_ev.set()
-                        for _of in _fut_map:
-                            _of.cancel()
-            for _ji, _r_ch in enumerate(_chunk_results):
-                if _r_ch is None:
-                    _chunk_results[_ji] = (None, None, "", "", _chunk_jobs[_ji][1])
-        else:
-            _chunk_results = []
-            for _j in _chunk_jobs:
-                _r_ch = _run_one_chunk(_j)
-                _chunk_results.append(_r_ch)
-                _out_ch = _r_ch[0] if isinstance(_r_ch, tuple) and _r_ch else None
-                if _out_ch is not None and "CHEATCODE" in str(_out_ch.error_reason or ""):
-                    _chunk_abort_ev.set()
-    for chunk_idx, chunk in enumerate(chunks):
-        chunk_outcome, last_ws, rel_path, sol_code, _chunk = _chunk_results[chunk_idx]
+    def _commit_chunk_result(chunk_idx: int, res_tuple: Any) -> Optional[ForgeRunOutcome]:
+        nonlocal last_err, total_passed, total_failed, merged_trace, gain_chunk_called_target, gain_chunk_causal_target
+        chunk = chunks[chunk_idx]
+        chunk_outcome, last_ws, rel_path, _sol_code, _chunk = res_tuple
         abs_idx = base_chunk_idx + chunk_idx
         if chunk_outcome is None or not chunk_outcome.executed:
             cur_err = chunk_outcome.error_reason if chunk_outcome else "FORGE_ALL_RPCS_FAILED"
             if not last_err:
                 last_err = cur_err
             if "CHEATCODE" in cur_err:
-                return chunk_outcome  # type: ignore[return-value]
-            continue
+                return chunk_outcome
+            return None
 
         if abs_idx > 0 and last_ws is not None and not chunk_outcome.conservation_gains:
             try:
@@ -36264,17 +36318,49 @@ def generate_and_run_forge_suites(
             ckpt_data.update(
                 {
                     "stage": "S4_FORGE_PARTIAL",
-                    "completed_slice_ids": completed_ids,
-                    "completed_chunks": abs_idx + 1,
+                    "completed_slice_ids": list(completed_ids),
+                    "completed_chunks": max(int(ckpt_data.get("completed_chunks") or 0), abs_idx + 1),
                     "partial_passed": total_passed,
                     "partial_failed": total_failed,
-                    "partial_gains": all_gains,
-                    "partial_nft_gains": all_nft_gains,
-                    "partial_trace_summary": merged_trace,
+                    "partial_gains": list(all_gains),
+                    "partial_nft_gains": list(all_nft_gains),
+                    "partial_trace_summary": dict(merged_trace),
                     "updated_at": time.time(),
                 }
             )
             _write_json_atomic(ckpt_path, ckpt_data)
+        return None
+
+    _early_cheat_ret: Optional[ForgeRunOutcome] = None
+    with _own_proxy_cm as _active_proxy_url:
+        if _active_proxy_url:
+            _pinned_proxy_url = _active_proxy_url
+            urls = [_active_proxy_url, *[u for u in urls if u != _active_proxy_url]]
+            _rpc_busy[_active_proxy_url] = 0
+            _rpc_est_dt[_active_proxy_url] = 1.0
+        if len(_chunk_jobs) >= 2 and _is_live_suite:
+            _max_ch_workers = min(_S4_CHUNK_WORKERS, len(_chunk_jobs))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_ch_workers) as ex_ch:
+                _fut_map = {ex_ch.submit(_run_one_chunk, _j): _ji for _ji, _j in enumerate(_chunk_jobs)}
+                for _df in concurrent.futures.as_completed(_fut_map):
+                    _ji = _fut_map[_df]
+                    _res_ch = _df.result()
+                    _cheat_out = _commit_chunk_result(_ji, _res_ch)
+                    if _cheat_out is not None:
+                        _early_cheat_ret = _cheat_out
+                        _chunk_abort_ev.set()
+                        for _of in _fut_map:
+                            _of.cancel()
+        else:
+            for _ji, _j in enumerate(_chunk_jobs):
+                _r_ch = _run_one_chunk(_j)
+                _cheat_out = _commit_chunk_result(_ji, _r_ch)
+                if _cheat_out is not None:
+                    _early_cheat_ret = _cheat_out
+                    _chunk_abort_ev.set()
+                    break
+    if _early_cheat_ret is not None:
+        return _early_cheat_ret
 
     all_completed = bool(slices) and all(s.slice_id in completed_set for s in slices)
     return ForgeRunOutcome(
@@ -51213,6 +51299,8 @@ def audit_single_protocol(
 
                 if remote_fetch_targets and not _offline_src_guard:
                     _skip_sf_rem = _live_online_s3 or (local_sf_batch is not None)
+                    with _VERIFIED_SRC_MEM_LOCK:
+                        _sf_fail_before = _SOURCIFY_REST_FAIL_SEQ[0]
 
                     def _fetch_one_src(target_a: str) -> Tuple[str, Dict[str, Any]]:
                         return target_a, fetch_verified_contract(
@@ -51225,19 +51313,23 @@ def audit_single_protocol(
                                 prev_v = verified_sources.get(t_a)
                                 if not isinstance(prev_v, dict) or vinfo.get("sources") or not prev_v.get("abi"):
                                     verified_sources[t_a] = vinfo
-                    if _live_online_s3 and not any(t_a in verified_sources for t_a in remote_fetch_targets):
-                        # 원격 3단 HTTP 전원 일시 장애 시 로컬 배치 Fail-Open 폴백
-                        _fb_need = [
-                            t_a for t_a in remote_fetch_targets
-                            if (store is None or store.get_verified_source(cid_target, t_a) is None)
-                        ]
-                        if _fb_need:
-                            _fb_batch = _query_local_sourcify_verified_batch(
-                                cid_target, _fb_need, include_sources=True
-                            )
-                            for t_a, ldoc in (_fb_batch or {}).items():
-                                if isinstance(ldoc, dict) and ldoc.get("verified"):
-                                    verified_sources[t_a] = ldoc
+                    with _VERIFIED_SRC_MEM_LOCK:
+                        _sf_rest_failed = _SOURCIFY_REST_FAIL_SEQ[0] > _sf_fail_before
+                    if _live_online_s3 and _sf_rest_failed and not any(t_a in verified_sources for t_a in remote_fetch_targets):
+                        # 소규모 로컬 코퍼스(<=64파일)에서만 즉시 폴백(38.7GB 비정렬 거대 Parquet 34s 타임아웃 방지)
+                        _fc_s3_fb, _ = _unpack_sourcify_v2_meta(SOURCIFY_PARQUET_DIR)
+                        if int(_fc_s3_fb.get("compiled_contracts", 0)) <= 64:
+                            _fb_need = [
+                                t_a for t_a in remote_fetch_targets
+                                if (store is None or store.get_verified_source(cid_target, t_a) is None)
+                            ]
+                            if _fb_need:
+                                _fb_batch = _query_local_sourcify_verified_batch(
+                                    cid_target, _fb_need, include_sources=True
+                                )
+                                for t_a, ldoc in (_fb_batch or {}).items():
+                                    if isinstance(ldoc, dict) and ldoc.get("verified"):
+                                        verified_sources[t_a] = ldoc
             remediation_exhausted["source_3tier_tried"] = True
 
             peer_dep_targets: List[Tuple[str, str, List[str]]] = []
@@ -51720,14 +51812,14 @@ def audit_single_protocol(
                 target_addr=primary_target,
                 token_addrs=token_addrs,
                 slices=prescreened[:48],
-                timeout_sec=75,
+                timeout_sec=105,
                 ckpt_path=ckpt_path,
                 ckpt_data=ckpt,
-                slice_chunk_size=12,
+                slice_chunk_size=24,
                 vault_addresses=harness_vault_addrs,
                 gas_price_wei=gas_price_w,
                 exit_routes=closure.verified_exit_pools,
-                max_tests_per_chunk=48,
+                max_tests_per_chunk=144,
                 target_addrs=s4_target_addrs,
                 session_id=eff_sid,
                 fork_proxy_url=_s4_proxy_url,

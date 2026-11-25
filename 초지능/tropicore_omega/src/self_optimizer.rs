@@ -48,21 +48,8 @@ fn find_live_cfg_path() -> Option<PathBuf> {
 }
 
 fn emit_runtime_cfg_rs(g: RuntimePolicyOverride) -> String {
-    let blend_body = if g.use_log_odds_mix {
-        format!(
-            "let w_mem = ({ws:.4}f32 * mem_conf).clamp(0.0, {wc:.4}f32);\n    let lb = p_brain.max(1e-7).ln();\n    let lm = p_mem.max(1e-7).ln();\n    ((1.0 - w_mem) * lb + w_mem * lm).exp().max(1e-7)",
-            ws = g.w_mem_scale,
-            wc = g.w_mem_cap
-        )
-    } else {
-        format!(
-            "let w_mem = ({ws:.4}f32 * mem_conf).clamp(0.0, {wc:.4}f32);\n    ((1.0 - w_mem) * p_brain + w_mem * p_mem).max(1e-7)",
-            ws = g.w_mem_scale,
-            wc = g.w_mem_cap
-        )
-    };
     format!(
-        r#"//! Evolved Live Self-Optimizing Runtime Policy (`TropiCore-Omega v13.0`).
+        r#"//! Evolved Live Self-Optimizing Runtime Policy (`TropiCore-Omega v14.0`).
 
 #[inline]
 pub fn contractive_gamma() -> f32 {{
@@ -76,14 +63,16 @@ pub fn adaptive_online_lr(base_lr: f32, surprise_bits: f32) -> f32 {{
 }}
 
 #[inline]
-pub fn blend_byte_probs(p_brain: f32, p_mem: f32, mem_conf: f32) -> f32 {{
-    {blend_body}
+pub fn meta_mixer_prior() -> (f32, f32, bool) {{
+    ({ws:.4}f32, {wc:.4}f32, {lo})
 }}
 "#,
         gamma = g.gamma,
         sl = g.lr_slope,
         ct = g.lr_center,
-        blend_body = blend_body
+        ws = g.w_mem_scale,
+        wc = g.w_mem_cap,
+        lo = g.use_log_odds_mix
     )
 }
 

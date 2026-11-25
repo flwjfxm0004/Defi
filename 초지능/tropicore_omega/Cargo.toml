@@ -1,8 +1,8 @@
 [package]
 name = "tropicore_omega"
-version = "13.0.0"
+version = "14.0.0"
 edition = "2021"
-description = "TropiCore-Omega ASI-Zero v13.0: Zero-Toy, Zero-LLM, First-Principles Selective-SSM + Fast-Weight Associative Delta-Rule + Contractive NVFP4 General Superintelligence Engine (4x RTX PRO 6000 Blackwell SM120 Ready)"
+description = "TropiCore-Omega ASI-Zero v14.0: Zero-Toy, Zero-LLM, SwiGLU + Conv4 + Fast-Weight Associative Delta-SSM + Adaptive Banach Compute + 10-Expert Online Convex Meta-Mixer + Hardware-Exact NVFP4 General Superintelligence Engine (4x RTX PRO 6000 Blackwell SM120 Ready)"
 
 [features]
 default = []

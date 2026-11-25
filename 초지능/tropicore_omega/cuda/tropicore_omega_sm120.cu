@@ -1,10 +1,10 @@
 // ==============================================================================
-// TropiCore-Omega ASI-Zero v13.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
+// TropiCore-Omega ASI-Zero v14.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
 // Target Node (`장비.md` Track A):
 //   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 7.168 TB/s, 14.044 PFLOPS FP4)
 //   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5) + 1,000 GB DDR5-6400 ECC
 //
-// ABI = 1300 (100% Thread-Safe, Multi-GPU Isolated, ZERO Dead Kernels!):
+// ABI = 1400 (100% Thread-Safe, Hardware-Exact NVFP4 RNE Ties-to-Even, ZERO Dead Symbols!):
 //   1. Thread-Safe Persistent GDDR7 Tensor Handle Pool (`g_pool_mtx` + per-GPU `ctx.mtx`):
 //      `tensor_create / tensor_upload / tensor_download / tensor_free` across GPUs `0..N-1`
 //   2. `tropicore_sm120_embedding_fwd` / `bwd`      : Live GPU-Resident Byte Embedding Lookup & Scatter!
@@ -12,7 +12,7 @@
 //   4. `tropicore_sm120_linear_bwd_resident`        : Batched Backward `dX`, `dW`, `db` GEMMs
 //   5. `tropicore_sm120_contractive_step_fwd` / `bwd`: Live-wired Input-Anchored Contractive Equilibrium
 //   6. `tropicore_sm120_byte_ce_fwd_bwd`            : Exact 256-way Byte Cross-Entropy (`bits/byte`) + Softmax Grad
-//   7. `tropicore_sm120_adamw_resident_inplace`     : Fused GPU AdamW + Banach Row-L_inf + Block-16 NVFP4 STE
+//   7. `tropicore_sm120_adamw_resident_inplace`     : Fused GPU AdamW + Banach Row-L_inf + Exact NVFP4 RNE STE
 //   8. `tropicore_sm120_allreduce_mean`             : Multi-Shard / 4-GPU Gradient AllReduce Averaging
 // ==============================================================================
 
@@ -24,7 +24,7 @@
 #include <mutex>
 #include <vector>
 
-static constexpr int32_t TROPICORE_SM120_ABI = 1300;
+static constexpr int32_t TROPICORE_SM120_ABI = 1400;
 static constexpr int MAX_GPUS = 4;
 static constexpr int MAX_DEV_TENSORS = 16384;
 
@@ -237,18 +237,32 @@ __global__ void byte_ce_fwd_bwd_kernel(
     }
 }
 
-__device__ __forceinline__ float quantize_e2m1_dev(float u) {
-    const float tbl[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+// Exact SM120 PTX `cvt.rn.satfinite.e2m1x2` RNE ties-to-even (matches `src/nvfp4.rs` bit-for-bit!)
+__device__ __forceinline__ float quantize_e2m1_rne_dev(float u) {
+    if (!isfinite(u)) return 0.0f;
     float sign = (u < 0.0f) ? -1.0f : 1.0f;
-    float ax = fminf(fabsf(u), 6.0f);
-    float best = 0.0f;
-    float best_d = ax;
-    #pragma unroll
-    for (int i = 1; i < 8; ++i) {
-        float d = fabsf(ax - tbl[i]);
-        if (d < best_d) { best_d = d; best = tbl[i]; }
+    float ax = fabsf(u);
+    float q;
+    if (ax <= 0.25f)      q = 0.0f;
+    else if (ax < 0.75f)  q = 0.5f;
+    else if (ax <= 1.25f) q = 1.0f;
+    else if (ax < 1.75f)  q = 1.5f;
+    else if (ax <= 2.50f) q = 2.0f;
+    else if (ax < 3.50f)  q = 3.0f;
+    else if (ax <= 5.00f) q = 4.0f;
+    else                  q = 6.0f;
+    return sign * q;
+}
+
+__device__ __forceinline__ float quantize_ue4m3_rne_dev(float s_raw) {
+    if (!isfinite(s_raw) || s_raw <= 0.0f) return 0.0f;
+    float cl = fminf(s_raw, 448.0f);
+    if (cl < (1.0f / 64.0f)) {
+        return rintf(cl * 512.0f) * (1.0f / 512.0f);
     }
-    return sign * best;
+    float e = fminf(fmaxf(floorf(log2f(cl)), -6.0f), 8.0f);
+    float stp = exp2f(e - 3.0f);
+    return fminf(rintf(cl / stp) * stp, 448.0f);
 }
 
 __global__ void adamw_row_contractive_nvfp4_kernel(
@@ -322,17 +336,14 @@ __global__ void adamw_row_contractive_nvfp4_kernel(
                 int c1 = min(c0 + 16, cols);
                 float bmax = 0.0f;
                 for (int c = c0; c < c1; ++c) bmax = fmaxf(bmax, fabsf(w[base + c]));
-                float s_raw = fminf(fmaxf(bmax / denom_block, 0.0f), 448.0f);
-                if (s_raw <= 1e-30f) {
+                float s_blk = quantize_ue4m3_rne_dev(bmax / denom_block);
+                if (s_blk <= 0.0f) {
                     for (int c = c0; c < c1; ++c) w_q[base + c] = 0.0f;
                 } else {
-                    float e = floorf(log2f(s_raw));
-                    float stp = exp2f(e - 3.0f);
-                    float s_blk = roundf(s_raw / stp) * stp;
                     float sc = s_global * s_blk;
                     float inv_sc = 1.0f / fmaxf(sc, 1e-30f);
                     for (int c = c0; c < c1; ++c) {
-                        w_q[base + c] = quantize_e2m1_dev(w[base + c] * inv_sc) * sc;
+                        w_q[base + c] = quantize_e2m1_rne_dev(w[base + c] * inv_sc) * sc;
                     }
                 }
             }

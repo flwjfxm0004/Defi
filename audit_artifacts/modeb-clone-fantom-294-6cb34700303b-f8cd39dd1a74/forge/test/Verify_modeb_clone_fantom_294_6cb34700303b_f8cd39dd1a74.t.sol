@@ -1039,6 +1039,304 @@ contract Verify_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 {
         }
     }
 
+    function _probe_slice_8(uint256 _w) internal {
+        _w;
+        {
+            for (uint256 _it = 0; _it < 16; _it++) {
+            { (bool _ok, ) = 0x3d3094Aec3b63C744b9fe56397D36bE568faEBdF.call(abi.encodeWithSelector(bytes4(hex"55ee1fe1"), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28)); _ok; }
+            }
+        }
+    }
+
+    function _probe_slice_9(uint256 _w) internal {
+        _w;
+        {
+            for (uint256 _it = 0; _it < 16; _it++) {
+            { (bool _ok, ) = 0x50f05B91c5d5718A65A1233683748E98a3428F4b.call(abi.encodeWithSelector(bytes4(hex"55ee1fe1"), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28)); _ok; }
+            }
+        }
+    }
+
+    function _probe_slice_10(uint256 _w) internal {
+        _w;
+        {
+            {
+                (bool _ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(hex"112cdab9");
+                if (!_ok) { (_ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(abi.encodeWithSelector(bytes4(hex"112cdab9"), uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(abi.encodeWithSelector(bytes4(hex"112cdab9"), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(abi.encodeWithSelector(bytes4(hex"112cdab9"), uint256(_w), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28)); }
+            }
+            {
+                (bool _ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(hex"112cdab9");
+                if (!_ok) { (_ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(abi.encodeWithSelector(bytes4(hex"112cdab9"), uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(abi.encodeWithSelector(bytes4(hex"112cdab9"), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0xfB4bdDf8059c65FB01628267ecD0C1eAc0c94CFA.call(abi.encodeWithSelector(bytes4(hex"112cdab9"), uint256(_w), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28)); }
+            }
+        }
+    }
+
+    function _probe_slice_11(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0x4FE2eA6a1985515259C0e06D348FE8b0c1F9e049, bytes4(hex"23b872dd"), abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w)));
+            }
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0x4FE2eA6a1985515259C0e06D348FE8b0c1F9e049;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+        {
+            legTgts[1] = 0x4FE2eA6a1985515259C0e06D348FE8b0c1F9e049;
+            legCds[1] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(11, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_12(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0x4fEd0e73f836112029Fb740d5730F0782789C349, bytes4(hex"23b872dd"), abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w)));
+            }
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0x4fEd0e73f836112029Fb740d5730F0782789C349;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+        {
+            legTgts[1] = 0x4fEd0e73f836112029Fb740d5730F0782789C349;
+            legCds[1] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(12, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_13(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xb681F4928658a8d54bd4773F5B5DEAb35d63c3CF, bytes4(hex"23b872dd"), abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w)));
+            }
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xb681F4928658a8d54bd4773F5B5DEAb35d63c3CF;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+        {
+            legTgts[1] = 0xb681F4928658a8d54bd4773F5B5DEAb35d63c3CF;
+            legCds[1] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(13, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_14(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xB7982A8EB703d1D5e28a294e1f5a3C9a0161F36C, bytes4(hex"23b872dd"), abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w)));
+            }
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xB7982A8EB703d1D5e28a294e1f5a3C9a0161F36C;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+        {
+            legTgts[1] = 0xB7982A8EB703d1D5e28a294e1f5a3C9a0161F36C;
+            legCds[1] = abi.encodeWithSelector(bytes4(hex"23b872dd"), address(_helper), address(_helper), uint256(_w));
+        }
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(14, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_15(uint256 _w) internal {
+        _w;
+        {
+            {
+                (bool _ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(hex"2191f92a");
+                if (!_ok) { (_ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"2191f92a"), uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"2191f92a"), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"2191f92a"), uint256(_w), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28)); }
+            }
+            {
+                (bool _ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(hex"2191f92a");
+                if (!_ok) { (_ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"2191f92a"), uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"2191f92a"), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, uint256(_w))); }
+                if (!_ok) { (_ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"2191f92a"), uint256(_w), 0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28)); }
+            }
+        }
+    }
+
+    function _probe_slice_16(uint256 _w) internal {
+        _w;
+        {
+            { (bool _ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"6e71e2d8"), uint256(_w), uint256(_w), uint256(_w))); _ok; }
+            { (bool _ok, ) = 0x07cd6250f3d2897d449f4bdbCf5A5eb2a2AA596F.call(abi.encodeWithSelector(bytes4(hex"6e71e2d8"), uint256(_w), uint256(_w), uint256(_w))); _ok; }
+        }
+    }
+
+    function _probe_slice_17(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        {
+            legTgts[1] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+            legCds[1] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(17, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_18(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+            _helper.prepareAltCallback(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, abi.encodeWithSelector(bytes4(hex"0718473b"), _w));
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        legTgts[1] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+        legCds[1] = abi.encodeWithSelector(bytes4(hex"0718473b"), _w);
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(18, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_19(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+            _helper.prepareAltCallback(0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74, abi.encodeWithSelector(bytes4(hex"0718473b"), _w));
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        legTgts[1] = 0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74;
+        legCds[1] = abi.encodeWithSelector(bytes4(hex"0718473b"), _w);
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(19, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_20(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+            _helper.prepareAltCallback(0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74, abi.encodeWithSelector(bytes4(hex"2e1a7d4d"), _w));
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        legTgts[1] = 0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74;
+        legCds[1] = abi.encodeWithSelector(bytes4(hex"2e1a7d4d"), _w);
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(20, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_21(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+            _helper.prepareAltCallback(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, abi.encodeWithSelector(bytes4(hex"2e1a7d4d"), _w));
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        legTgts[1] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+        legCds[1] = abi.encodeWithSelector(bytes4(hex"2e1a7d4d"), _w);
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(21, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_22(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+            _helper.prepareAltCallback(0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74, abi.encodeWithSelector(bytes4(hex"3659cfe6"), _w));
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        legTgts[1] = 0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74;
+        legCds[1] = abi.encodeWithSelector(bytes4(hex"3659cfe6"), _w);
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(22, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
+    function _probe_slice_23(uint256 _w) internal {
+        _w;
+        MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 _helper = new MidframeHelper_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74();
+        {
+            {
+                _helper.prepareCallbackData(0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74, bytes4(hex"7d7c2a1c"), abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w)));
+            }
+            _helper.prepareAltCallback(0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5, abi.encodeWithSelector(bytes4(hex"3659cfe6"), _w));
+        address[] memory legTgts = new address[](2);
+        bytes[] memory legCds = new bytes[](2);
+        {
+            legTgts[0] = 0xf8Cd39A56EfF59883B7cD8b26FF1Ff0c36dD1a74;
+            legCds[0] = abi.encodeWithSelector(bytes4(hex"7d7c2a1c"), uint256(_w), uint256(_w), uint256(_w));
+        }
+        legTgts[1] = 0xC59E47b8a9ba04c4E5100Cc5AfEdfDADC9eD94c5;
+        legCds[1] = abi.encodeWithSelector(bytes4(hex"3659cfe6"), _w);
+            _helper.execBatch(legTgts, legCds);
+        }
+        { (address _mNc, uint256 _mNid, uint256 _mNamt, bool _mN1155) = _helper.sweepTo(0xAD71fF296c9A76501A00F96d25c83c59547B9a28); if (_mNc != address(0) && _mNamt > 0) { emit ConservationNftGain(23, _mNc, _mNid, _mNamt, _mN1155); } }
+    }
+
     function test_slice_0_w0() public {
         ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
         uint256 gasStart = gasleft();
@@ -1565,5 +1863,1061 @@ contract Verify_modeb_clone_fantom_294_6cb34700303b_f8cd39dd1a74 {
         uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
         ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
         _assertConservation(7, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_8_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_8(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(8, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_8_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_8(uint256(10));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(8, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_8_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_8(uint256(11));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(8, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_8_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_8(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(8, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_8_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_8(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(8, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_8_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_8(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(8, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_9_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_9(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(9, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_9_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_9(uint256(10));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(9, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_9_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_9(uint256(11));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(9, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_9_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_9(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(9, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_9_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_9(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(9, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_9_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_9(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(9, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_10_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_10(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(10, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_10_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_10(uint256(256));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(10, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_10_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_10(uint256(257));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(10, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_10_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_10(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(10, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_10_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_10(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(10, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_10_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_10(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(10, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_11_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_11(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(11, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_11_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_11(uint256(32));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(11, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_11_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_11(uint256(33));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(11, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_11_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_11(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(11, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_11_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_11(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(11, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_11_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_11(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(11, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_12_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_12(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(12, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_12_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_12(uint256(32));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(12, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_12_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_12(uint256(33));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(12, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_12_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_12(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(12, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_12_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_12(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(12, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_12_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_12(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(12, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_13_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_13(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(13, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_13_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_13(uint256(32));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(13, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_13_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_13(uint256(33));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(13, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_13_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_13(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(13, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_13_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_13(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(13, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_13_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_13(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(13, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_14_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_14(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(14, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_14_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_14(uint256(32));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(14, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_14_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_14(uint256(33));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(14, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_14_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_14(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(14, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_14_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_14(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(14, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_14_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_14(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(14, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_15_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_15(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(15, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_15_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_15(uint256(1070));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(15, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_15_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_15(uint256(1071));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(15, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_15_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_15(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(15, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_15_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_15(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(15, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_15_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_15(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(15, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_16_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_16(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(16, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_16_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_16(uint256(1070));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(16, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_16_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_16(uint256(1071));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(16, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_16_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_16(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(16, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_16_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_16(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(16, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_16_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_16(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(16, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_17_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_17(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(17, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_17_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_17(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(17, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_17_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_17(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(17, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_17_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_17(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(17, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_17_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_17(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(17, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_17_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_17(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(17, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_18_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_18(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(18, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_18_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_18(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(18, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_18_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_18(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(18, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_18_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_18(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(18, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_18_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_18(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(18, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_18_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_18(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(18, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_19_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_19(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(19, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_19_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_19(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(19, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_19_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_19(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(19, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_19_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_19(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(19, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_19_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_19(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(19, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_19_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_19(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(19, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_20_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_20(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(20, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_20_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_20(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(20, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_20_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_20(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(20, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_20_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_20(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(20, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_20_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_20(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(20, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_20_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_20(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(20, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_21_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_21(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(21, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_21_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_21(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(21, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_21_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_21(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(21, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_21_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_21(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(21, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_21_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_21(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(21, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_21_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_21(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(21, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_22_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_22(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(22, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_22_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_22(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(22, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_22_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_22(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(22, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_22_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_22(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(22, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_22_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_22(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(22, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_22_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_22(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(22, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_23_w0() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_23(uint256(1000000000000000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(23, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_23_w1() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_23(uint256(1424));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(23, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_23_w2() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_23(uint256(1425));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(23, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_23_w3() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_23(uint256(150785468876481092525636));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(23, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_23_w4() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_23(uint256(376963672191202731314091));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(23, snapBefore, snapAfter, gasUsed);
+    }
+
+    function test_slice_23_w5() public {
+        ConservationSnap memory snapBefore = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        uint256 gasStart = gasleft();
+        vm.startPrank(0xAD71fF296c9A76501A00F96d25c83c59547B9a28, 0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _probe_slice_23(uint256(1000000));
+        vm.stopPrank();
+        uint256 gasUsed = gasStart > gasleft() ? (gasStart - gasleft()) : 21000;
+        ConservationSnap memory snapAfter = _takeSnap(0xAD71fF296c9A76501A00F96d25c83c59547B9a28);
+        _assertConservation(23, snapBefore, snapAfter, gasUsed);
     }
 }
