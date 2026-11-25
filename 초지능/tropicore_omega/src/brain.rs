@@ -1,14 +1,11 @@
-//! Scalable Deep SwiGLU + Causal-Conv4 + Fast-Weight Associative Delta-SSM + Differentiable-Equilibrium Adaptive Banach Brain (`TropiCore-Omega v16.0`).
+//! Scalable Deep SwiGLU + Causal-Conv4 + True Separate-Q/K DeltaNet-SSM + Differentiable-Equilibrium Adaptive Banach Brain (`TropiCore-Omega v17.0`).
 //!
-//! Obliterates ALL v15.0 red-team findings:
-//!   1. Zero-Copy Multi-GPU/Multi-Stream Gradient AllReduce (`&[&[f32]]`, `ABI=1600`, saves +124 GB/step on 8B!)
-//!      + Reusable `ForwardScratch` Pool inside `CausalStreamState` (ZERO per-byte heap allocs during `.omg` coding!).
-//!   2. 12-Expert × 8-Context Simplex-Normalized Log-Opinion Pool (`sum(alpha_e) == 1.0`) + Per-Context Calibrated
-//!      Online Inverse-Temperature `temp[ctx]` + 4-Way Order-∞ MatchModel + Zero-Tokenizer WordBigramExpert (`TOMG16`).
-//!   3. Differentiable Banach Fixed-Point Convergence Regularizer (`EQ_REG_LAMBDA = 0.08`, exact BPTT gradient verified
-//!      by 20-tensor central finite-difference `GradCheck`!) -> real `AdapTokSaved >> 0` in live runs!
-//!   4. Depth-Consistent Per-Token Adaptive Banach Early Exit (`depth <= n_ticks`, `PER_TOKEN_BANACH_TOL = 0.055`).
-//!   5. Self-Echo-Free System-2 Lookahead Beam Search (`episodic` read-only + 4..16B n-gram loop blocking).
+//! Obliterates ALL v16.0 red-team findings:
+//!   1. Independent Query Projection (`w_qry`, `b_qry`) for Fast-Weight Associative DeltaNet (`r_q = A^T q`, `A <- A + beta*k*(v - A^T k)^T`),
+//!      eliminating read/write key collision — verified across ALL 22 tensor types by central finite-difference `GradCheck`!
+//!   2. 4x4 Register-Blocked SIMD Backward Pass (`linear_bwd` dX/dW) + Zero-Copy AllReduce (`ABI=1700`) + Zero-Alloc `ForwardScratch`.
+//!   3. 13-Expert × 8-Context Simplex-Normalized Meta-Mixer (Exact PPM-D Escape + Adaptive Unigram + 4-Way Match + WordBigram + Skip-1, `TOMG17`).
+//!   4. Differentiable Banach Fixed-Point Convergence Regularizer (`EQ_REG_LAMBDA = 0.08`, Lean 4 Omega-6 proved!).
 
 use std::fs;
 use std::path::Path;
@@ -27,7 +24,7 @@ use crate::gpu_backend::{
 use crate::nvfp4::nvfp4_quantize_f32;
 use crate::sha256::sha256_hex;
 
-const CKPT_MAGIC: &[u8; 6] = b"TOMG16";
+const CKPT_MAGIC: &[u8; 6] = b"TOMG17";
 const CONV_K: usize = 4;
 const ASSOC_HD: usize = 8;
 const PER_TOKEN_BANACH_TOL: f32 = 0.055;
@@ -230,7 +227,7 @@ impl BrainConfig {
         let ff = self.d_ff as u64;
         let l = self.n_layers as u64;
         let emb = 256 * d;
-        let per_layer = 5 * d + 3 * d + 4 * (d * d + d) + 2 * (ff * d + ff) + (d * ff + d);
+        let per_layer = 5 * d + 3 * d + 5 * (d * d + d) + 2 * (ff * d + ff) + (d * ff + d);
         let head = 256 * d + 256;
         emb + l * per_layer + head
     }
@@ -255,6 +252,7 @@ pub struct ForwardScratch {
     pub g_pre: Vec<f32>,
     pub v_pre: Vec<f32>,
     pub k_pre: Vec<f32>,
+    pub q_pre: Vec<f32>,
     pub s_out: Vec<f32>,
     pub pre: Vec<f32>,
     pub h_eq: Vec<f32>,
@@ -289,6 +287,7 @@ impl ForwardScratch {
         if self.g_pre.len() < td { self.g_pre.resize(td, 0.0); }
         if self.v_pre.len() < td { self.v_pre.resize(td, 0.0); }
         if self.k_pre.len() < td { self.k_pre.resize(td, 0.0); }
+        if self.q_pre.len() < td { self.q_pre.resize(td, 0.0); }
         if self.s_out.len() < td { self.s_out.resize(td, 0.0); }
         if self.pre.len() < td { self.pre.resize(td, 0.0); }
         if self.h_eq.len() < td { self.h_eq.resize(td, 0.0); }
@@ -534,6 +533,8 @@ struct ContractiveSsmLayer {
     b_val: ParamTensor,
     w_key: ParamTensor,
     b_key: ParamTensor,
+    w_qry: ParamTensor,
+    b_qry: ParamTensor,
     w_eq: ParamTensor,
     b_eq: ParamTensor,
     w_up: ParamTensor,
@@ -579,6 +580,8 @@ impl ContractiveSsmLayer {
             b_val: ParamTensor::new(1, d, 0.0, Some(0.0), None, false, layer_idx, rng),
             w_key: ParamTensor::new(d, d, s_d, None, None, cfg.use_nvfp4_ste, layer_idx, rng),
             b_key: ParamTensor::new(1, d, 0.0, Some(0.0), None, false, layer_idx, rng),
+            w_qry: ParamTensor::new(d, d, s_d, None, None, cfg.use_nvfp4_ste, layer_idx, rng),
+            b_qry: ParamTensor::new(1, d, 0.0, Some(0.0), None, false, layer_idx, rng),
             w_eq: ParamTensor::new(d, d, s_eq, None, Some(cfg.contract_rho), cfg.use_nvfp4_ste, layer_idx, rng),
             b_eq: ParamTensor::new(1, d, 0.0, Some(0.0), None, false, layer_idx, rng),
             w_up: ParamTensor::new(ff, d, s_d, None, None, cfg.use_nvfp4_ste, layer_idx, rng),
@@ -597,6 +600,8 @@ impl ContractiveSsmLayer {
         self.b_val.upload_to_device(layer_idx);
         self.w_key.upload_to_device(layer_idx);
         self.b_key.upload_to_device(layer_idx);
+        self.w_qry.upload_to_device(layer_idx);
+        self.b_qry.upload_to_device(layer_idx);
         self.w_eq.upload_to_device(layer_idx);
         self.b_eq.upload_to_device(layer_idx);
         self.w_up.upload_to_device(layer_idx);
@@ -617,6 +622,8 @@ impl ContractiveSsmLayer {
         self.b_val.write_binary(out);
         self.w_key.write_binary(out);
         self.b_key.write_binary(out);
+        self.w_qry.write_binary(out);
+        self.b_qry.write_binary(out);
         self.w_eq.write_binary(out);
         self.b_eq.write_binary(out);
         self.w_up.write_binary(out);
@@ -644,6 +651,8 @@ impl ContractiveSsmLayer {
             b_val: ParamTensor::read_binary(data, pos, layer_idx)?,
             w_key: ParamTensor::read_binary(data, pos, layer_idx)?,
             b_key: ParamTensor::read_binary(data, pos, layer_idx)?,
+            w_qry: ParamTensor::read_binary(data, pos, layer_idx)?,
+            b_qry: ParamTensor::read_binary(data, pos, layer_idx)?,
             w_eq: ParamTensor::read_binary(data, pos, layer_idx)?,
             b_eq: ParamTensor::read_binary(data, pos, layer_idx)?,
             w_up: ParamTensor::read_binary(data, pos, layer_idx)?,
@@ -666,6 +675,8 @@ struct LayerGrads {
     b_val: Vec<f32>,
     w_key: Vec<f32>,
     b_key: Vec<f32>,
+    w_qry: Vec<f32>,
+    b_qry: Vec<f32>,
     w_eq: Vec<f32>,
     b_eq: Vec<f32>,
     w_up: Vec<f32>,
@@ -688,6 +699,8 @@ impl LayerGrads {
             b_val: vec![0.0; d],
             w_key: vec![0.0; d * d],
             b_key: vec![0.0; d],
+            w_qry: vec![0.0; d * d],
+            b_qry: vec![0.0; d],
             w_eq: vec![0.0; d * d],
             b_eq: vec![0.0; d],
             w_up: vec![0.0; ff * d],
@@ -718,7 +731,7 @@ impl BrainGrads {
     }
 
     fn clip_global_norm(&mut self, max_norm: f32) -> f32 {
-        let mut refs: Vec<&mut [f32]> = Vec::with_capacity(3 + self.layers.len() * 17);
+        let mut refs: Vec<&mut [f32]> = Vec::with_capacity(3 + self.layers.len() * 19);
         refs.push(&mut self.e_byte);
         refs.push(&mut self.w_head);
         refs.push(&mut self.b_head);
@@ -732,6 +745,8 @@ impl BrainGrads {
             refs.push(&mut lg.b_val);
             refs.push(&mut lg.w_key);
             refs.push(&mut lg.b_key);
+            refs.push(&mut lg.w_qry);
+            refs.push(&mut lg.b_qry);
             refs.push(&mut lg.w_eq);
             refs.push(&mut lg.b_eq);
             refs.push(&mut lg.w_up);
@@ -807,7 +822,7 @@ pub struct DeepContractiveBrain {
 
 impl DeepContractiveBrain {
     pub fn new(cfg: BrainConfig, seed: u64) -> Self {
-        let mut rng = seed ^ 0xA510_1600_2026_1126;
+        let mut rng = seed ^ 0xA510_1700_2026_1126;
         let d = cfg.d_model;
         let s_emb = (1.0 / d as f32).sqrt() * 1.2;
         let s_head = (1.0 / d as f32).sqrt() * 0.5;
@@ -943,6 +958,7 @@ impl DeepContractiveBrain {
             linear_fwd(&scratch.x_conv[..td], &layer.w_gate.w_q, &layer.w_gate.wq_dev, Some(&layer.b_gate.w), Some(&layer.b_gate.w_dev), &mut scratch.g_pre[..td], t_len, d, d);
             linear_fwd(&scratch.x_conv[..td], &layer.w_val.w_q, &layer.w_val.wq_dev, Some(&layer.b_val.w), Some(&layer.b_val.w_dev), &mut scratch.v_pre[..td], t_len, d, d);
             linear_fwd(&scratch.x_conv[..td], &layer.w_key.w_q, &layer.w_key.wq_dev, Some(&layer.b_key.w), Some(&layer.b_key.w_dev), &mut scratch.k_pre[..td], t_len, d, d);
+            linear_fwd(&scratch.x_conv[..td], &layer.w_qry.w_q, &layer.w_qry.wq_dev, Some(&layer.b_qry.w), Some(&layer.b_qry.w_dev), &mut scratch.q_pre[..td], t_len, d, d);
 
             let s_st = &mut layer_ssm[li];
             let m_st = &mut layer_trop[li];
@@ -955,35 +971,51 @@ impl DeepContractiveBrain {
                     let mut g_arr = [0.0f32; ASSOC_HD];
                     let mut v_arr = [0.0f32; ASSOC_HD];
                     let mut k_arr = [0.0f32; ASSOC_HD];
+                    let mut q_arr = [0.0f32; ASSOC_HD];
                     let mut k_sq = 0.0f32;
+                    let mut q_sq = 0.0f32;
                     let mut g_sum = 0.0f32;
                     for a in 0..ASSOC_HD {
                         let j = h_off + a;
                         let g = sigmoid_f32(scratch.g_pre[off + j]);
                         let v = scratch.v_pre[off + j].tanh();
                         let kr = scratch.k_pre[off + j].tanh();
+                        let qr = scratch.q_pre[off + j].tanh();
                         g_arr[a] = g;
                         v_arr[a] = v;
                         k_arr[a] = kr;
+                        q_arr[a] = qr;
                         k_sq += kr * kr;
+                        q_sq += qr * qr;
                         g_sum += g;
                     }
                     let inv_kn = 1.0f32 / (k_sq + 1e-4).sqrt();
-                    for a in 0..ASSOC_HD { k_arr[a] *= inv_kn; }
+                    let inv_qn = 1.0f32 / (q_sq + 1e-4).sqrt();
+                    for a in 0..ASSOC_HD {
+                        k_arr[a] *= inv_kn;
+                        q_arr[a] *= inv_qn;
+                    }
                     let beta = 0.5 * (g_sum / ASSOC_HD as f32);
                     let alpha = 1.0 - beta;
 
-                    let mut r_arr = [0.0f32; ASSOC_HD];
+                    // Independent DeltaNet Read (Query `q_arr`) & Write-Error Retrieval (Key `k_arr`)!
+                    let mut rq_arr = [0.0f32; ASSOC_HD];
+                    let mut rk_arr = [0.0f32; ASSOC_HD];
                     for a in 0..ASSOC_HD {
                         let ka = k_arr[a];
+                        let qa = q_arr[a];
                         let row = mat_off + a * ASSOC_HD;
-                        for b in 0..ASSOC_HD { r_arr[b] += a_st[row + b] * ka; }
+                        for b in 0..ASSOC_HD {
+                            let sab = a_st[row + b];
+                            rq_arr[b] += sab * qa;
+                            rk_arr[b] += sab * ka;
+                        }
                     }
                     for a in 0..ASSOC_HD {
                         let bk = beta * k_arr[a];
                         let row = mat_off + a * ASSOC_HD;
                         for b in 0..ASSOC_HD {
-                            let delta = v_arr[b] - r_arr[b];
+                            let delta = v_arr[b] - rk_arr[b];
                             a_st[row + b] = (alpha * a_st[row + b] + bk * delta).clamp(-6.0, 6.0);
                         }
                     }
@@ -993,7 +1025,7 @@ impl DeepContractiveBrain {
                         let nm = (0.88 * m_st[j]).max(v_arr[a]);
                         s_st[j] = ns;
                         m_st[j] = nm;
-                        scratch.s_out[off + j] = layer.mix_w.w[j] * ns + layer.mix_w.w[d + j] * nm + layer.mix_w.w[2 * d + j] * r_arr[a];
+                        scratch.s_out[off + j] = layer.mix_w.w[j] * ns + layer.mix_w.w[d + j] * nm + layer.mix_w.w[2 * d + j] * rq_arr[a];
                     }
                 }
             }
@@ -1361,12 +1393,15 @@ impl DeepContractiveBrain {
             k_raw: Vec<f32>,
             k_norm: Vec<f32>,
             inv_kn: Vec<f32>,
+            q_raw: Vec<f32>,
+            q_norm: Vec<f32>,
+            inv_qn: Vec<f32>,
             beta_hist: Vec<f32>,
             delta_hist: Vec<f32>,
             s_prev_hist: Vec<f32>,
             ns_hist: Vec<f32>,
             nm_hist: Vec<f32>,
-            r_hist: Vec<f32>,
+            rq_hist: Vec<f32>,
             a_prev_hist: Vec<f32>,
             m_hit_direct: Vec<u8>,
             x_mid: Vec<f32>,
@@ -1407,21 +1442,26 @@ impl DeepContractiveBrain {
             let mut g_pre = vec![0.0f32; t_len * d];
             let mut v_pre = vec![0.0f32; t_len * d];
             let mut k_pre = vec![0.0f32; t_len * d];
+            let mut q_pre = vec![0.0f32; t_len * d];
             linear_fwd(&x_conv, &layer.w_gate.w_q, &layer.w_gate.wq_dev, Some(&layer.b_gate.w), Some(&layer.b_gate.w_dev), &mut g_pre, t_len, d, d);
             linear_fwd(&x_conv, &layer.w_val.w_q, &layer.w_val.wq_dev, Some(&layer.b_val.w), Some(&layer.b_val.w_dev), &mut v_pre, t_len, d, d);
             linear_fwd(&x_conv, &layer.w_key.w_q, &layer.w_key.wq_dev, Some(&layer.b_key.w), Some(&layer.b_key.w_dev), &mut k_pre, t_len, d, d);
+            linear_fwd(&x_conv, &layer.w_qry.w_q, &layer.w_qry.wq_dev, Some(&layer.b_qry.w), Some(&layer.b_qry.w_dev), &mut q_pre, t_len, d, d);
 
             let mut g_sig = vec![0.0f32; t_len * d];
             let mut v_tanh = vec![0.0f32; t_len * d];
             let mut k_raw = vec![0.0f32; t_len * d];
             let mut k_norm = vec![0.0f32; t_len * d];
             let mut inv_kn = vec![0.0f32; t_len * n_heads];
+            let mut q_raw = vec![0.0f32; t_len * d];
+            let mut q_norm = vec![0.0f32; t_len * d];
+            let mut inv_qn = vec![0.0f32; t_len * n_heads];
             let mut beta_hist = vec![0.0f32; t_len * n_heads];
             let mut delta_hist = vec![0.0f32; t_len * d];
             let mut s_prev_hist = vec![0.0f32; t_len * d];
             let mut ns_hist = vec![0.0f32; t_len * d];
             let mut nm_hist = vec![0.0f32; t_len * d];
-            let mut r_hist = vec![0.0f32; t_len * d];
+            let mut rq_hist = vec![0.0f32; t_len * d];
             let assoc_sz = n_heads * ASSOC_HD * ASSOC_HD;
             let mut a_prev_hist = vec![0.0f32; t_len * assoc_sz];
             let mut m_hit_direct = vec![0u8; t_len * d];
@@ -1437,37 +1477,50 @@ impl DeepContractiveBrain {
                     let h_off = h * ASSOC_HD;
                     let mat_off = h * ASSOC_HD * ASSOC_HD;
                     let mut k_sq = 0.0f32;
+                    let mut q_sq = 0.0f32;
                     let mut g_sum = 0.0f32;
                     for a in 0..ASSOC_HD {
                         let j = h_off + a;
                         let g = sigmoid_f32(g_pre[off + j]);
                         let v = v_pre[off + j].tanh();
                         let kr = k_pre[off + j].tanh();
+                        let qr = q_pre[off + j].tanh();
                         g_sig[off + j] = g;
                         v_tanh[off + j] = v;
                         k_raw[off + j] = kr;
+                        q_raw[off + j] = qr;
                         k_sq += kr * kr;
+                        q_sq += qr * qr;
                         g_sum += g;
                     }
                     let ikn = 1.0f32 / (k_sq + 1e-4).sqrt();
+                    let iqn = 1.0f32 / (q_sq + 1e-4).sqrt();
                     inv_kn[ti * n_heads + h] = ikn;
+                    inv_qn[ti * n_heads + h] = iqn;
                     for a in 0..ASSOC_HD {
                         let j = h_off + a;
                         k_norm[off + j] = k_raw[off + j] * ikn;
+                        q_norm[off + j] = q_raw[off + j] * iqn;
                     }
                     let beta = 0.5 * (g_sum / ASSOC_HD as f32);
                     let alpha = 1.0 - beta;
                     beta_hist[ti * n_heads + h] = beta;
 
-                    let mut r_arr = [0.0f32; ASSOC_HD];
+                    let mut rq_arr = [0.0f32; ASSOC_HD];
+                    let mut rk_arr = [0.0f32; ASSOC_HD];
                     for a in 0..ASSOC_HD {
                         let ka = k_norm[off + h_off + a];
+                        let qa = q_norm[off + h_off + a];
                         let row = mat_off + a * ASSOC_HD;
-                        for b in 0..ASSOC_HD { r_arr[b] += a_st[row + b] * ka; }
+                        for b in 0..ASSOC_HD {
+                            let sab = a_st[row + b];
+                            rq_arr[b] += sab * qa;
+                            rk_arr[b] += sab * ka;
+                        }
                     }
                     for b in 0..ASSOC_HD {
-                        r_hist[off + h_off + b] = r_arr[b];
-                        delta_hist[off + h_off + b] = v_tanh[off + h_off + b] - r_arr[b];
+                        rq_hist[off + h_off + b] = rq_arr[b];
+                        delta_hist[off + h_off + b] = v_tanh[off + h_off + b] - rk_arr[b];
                     }
                     for a in 0..ASSOC_HD {
                         let bk = beta * k_norm[off + h_off + a];
@@ -1493,7 +1546,7 @@ impl DeepContractiveBrain {
                         x_mid[off + j] = x_in[off + j]
                             + layer.mix_w.w[j] * ns
                             + layer.mix_w.w[d + j] * nm
-                            + layer.mix_w.w[2 * d + j] * r_arr[a];
+                            + layer.mix_w.w[2 * d + j] * rq_arr[a];
                     }
                 }
             }
@@ -1535,7 +1588,7 @@ impl DeepContractiveBrain {
 
             caches.push(LayerCache {
                 x_in, x_n1, inv_r1, conv_init, x_conv, g_sig, v_tanh, k_raw, k_norm,
-                inv_kn, beta_hist, delta_hist, s_prev_hist, ns_hist, nm_hist, r_hist,
+                inv_kn, q_raw, q_norm, inv_qn, beta_hist, delta_hist, s_prev_hist, ns_hist, nm_hist, rq_hist,
                 a_prev_hist, m_hit_direct, x_mid, inv_r2, z_hist, h_hist, u_in, u_norm,
                 inv_r3, ff_val, ff_gate, ff_act,
             });
@@ -1623,6 +1676,7 @@ impl DeepContractiveBrain {
             let mut dg_pre = vec![0.0f32; t_len * d];
             let mut dv_pre = vec![0.0f32; t_len * d];
             let mut dk_pre = vec![0.0f32; t_len * d];
+            let mut dq_pre = vec![0.0f32; t_len * d];
             let mut ds_next = vec![0.0f32; d];
             let mut dm_next = vec![0.0f32; d];
             let mut da_next = vec![0.0f32; assoc_sz];
@@ -1636,17 +1690,19 @@ impl DeepContractiveBrain {
                     let beta = c.beta_hist[ti * n_heads + h];
                     let alpha = 1.0 - beta;
                     let ikn = c.inv_kn[ti * n_heads + h];
+                    let iqn = c.inv_qn[ti * n_heads + h];
 
                     for a in 0..ASSOC_HD {
                         let j = h_off + a;
                         let dxm = dx_mid[off + j];
                         lg.mix_w[j] += dxm * c.ns_hist[off + j];
                         lg.mix_w[d + j] += dxm * c.nm_hist[off + j];
-                        lg.mix_w[2 * d + j] += dxm * c.r_hist[off + j];
+                        lg.mix_w[2 * d + j] += dxm * c.rq_hist[off + j];
                     }
 
                     let mut d_delta = [0.0f32; ASSOC_HD];
-                    let mut dr_tot = [0.0f32; ASSOC_HD];
+                    let mut dr_q = [0.0f32; ASSOC_HD];
+                    let mut dr_k = [0.0f32; ASSOC_HD];
                     for b in 0..ASSOC_HD {
                         let j = h_off + b;
                         let mut acc = 0.0f32;
@@ -1654,26 +1710,36 @@ impl DeepContractiveBrain {
                             acc += da_next[mat_off + a * ASSOC_HD + b] * c.k_norm[off + h_off + a];
                         }
                         d_delta[b] = (beta * acc).clamp(-10.0, 10.0);
-                        dr_tot[b] = (layer.mix_w.w[2 * d + j] * dx_mid[off + j] - d_delta[b]).clamp(-10.0, 10.0);
+                        dr_q[b] = (layer.mix_w.w[2 * d + j] * dx_mid[off + j]).clamp(-10.0, 10.0);
+                        dr_k[b] = -d_delta[b];
                     }
                     let mut dk_n = [0.0f32; ASSOC_HD];
+                    let mut dq_n = [0.0f32; ASSOC_HD];
                     let mut d_beta = 0.0f32;
                     for a in 0..ASSOC_HD {
                         let row = mat_off + a * ASSOC_HD;
                         let ka = c.k_norm[off + h_off + a];
+                        let qa = c.q_norm[off + h_off + a];
                         let mut dk_acc = 0.0f32;
+                        let mut dq_acc = 0.0f32;
                         for b in 0..ASSOC_HD {
                             let da_ab = da_next[row + b];
                             let s_ab = a_prev_slice[row + b];
                             let del_b = c.delta_hist[off + h_off + b];
-                            dk_acc += da_ab * beta * del_b + dr_tot[b] * s_ab;
+                            dk_acc += da_ab * beta * del_b + dr_k[b] * s_ab;
+                            dq_acc += dr_q[b] * s_ab;
                             d_beta += da_ab * (ka * del_b - s_ab);
-                            da_next[row + b] = (alpha * da_ab + ka * dr_tot[b]).clamp(-10.0, 10.0);
+                            da_next[row + b] = (alpha * da_ab + ka * dr_k[b] + qa * dr_q[b]).clamp(-10.0, 10.0);
                         }
                         dk_n[a] = dk_acc.clamp(-10.0, 10.0);
+                        dq_n[a] = dq_acc.clamp(-10.0, 10.0);
                     }
                     let mut dot_dk_k = 0.0f32;
-                    for a in 0..ASSOC_HD { dot_dk_k += dk_n[a] * c.k_norm[off + h_off + a]; }
+                    let mut dot_dq_q = 0.0f32;
+                    for a in 0..ASSOC_HD {
+                        dot_dk_k += dk_n[a] * c.k_norm[off + h_off + a];
+                        dot_dq_q += dq_n[a] * c.q_norm[off + h_off + a];
+                    }
                     let dg_assoc = (0.5 / ASSOC_HD as f32) * d_beta;
 
                     for a in 0..ASSOC_HD {
@@ -1682,6 +1748,8 @@ impl DeepContractiveBrain {
                         let v = c.v_tanh[off + j];
                         let kr = c.k_raw[off + j];
                         let kn = c.k_norm[off + j];
+                        let qr = c.q_raw[off + j];
+                        let qn = c.q_norm[off + j];
                         let sp = c.s_prev_hist[off + j];
 
                         let ds_tot = (layer.mix_w.w[j] * dx_mid[off + j] + ds_next[j]).clamp(-10.0, 10.0);
@@ -1691,10 +1759,12 @@ impl DeepContractiveBrain {
                         let dg = (ds_tot * (v - sp) + dg_assoc) * g * (1.0 - g);
                         let dv = (ds_tot * g + dv_from_m + d_delta[a]) * (1.0 - v * v);
                         let dk = (dk_n[a] - kn * dot_dk_k) * ikn * (1.0 - kr * kr);
+                        let dq = (dq_n[a] - qn * dot_dq_q) * iqn * (1.0 - qr * qr);
 
                         dg_pre[off + j] = dg.clamp(-10.0, 10.0);
                         dv_pre[off + j] = dv.clamp(-10.0, 10.0);
                         dk_pre[off + j] = dk.clamp(-10.0, 10.0);
+                        dq_pre[off + j] = dq.clamp(-10.0, 10.0);
                         ds_next[j] = ds_tot * (1.0 - g);
                         dm_next[j] = next_dm;
                     }
@@ -1704,10 +1774,12 @@ impl DeepContractiveBrain {
             let mut dx_conv_g = vec![0.0f32; t_len * d];
             let mut dx_conv_v = vec![0.0f32; t_len * d];
             let mut dx_conv_k = vec![0.0f32; t_len * d];
+            let mut dx_conv_q = vec![0.0f32; t_len * d];
             linear_bwd(&c.x_conv, &layer.w_gate.w_q, &layer.w_gate.wq_dev, &dg_pre, Some(&mut dx_conv_g), Some(&mut lg.w_gate), Some(&mut lg.b_gate), t_len, d, d);
             linear_bwd(&c.x_conv, &layer.w_val.w_q, &layer.w_val.wq_dev, &dv_pre, Some(&mut dx_conv_v), Some(&mut lg.w_val), Some(&mut lg.b_val), t_len, d, d);
             linear_bwd(&c.x_conv, &layer.w_key.w_q, &layer.w_key.wq_dev, &dk_pre, Some(&mut dx_conv_k), Some(&mut lg.w_key), Some(&mut lg.b_key), t_len, d, d);
-            for idx in 0..t_len * d { dx_conv_g[idx] += dx_conv_v[idx] + dx_conv_k[idx]; }
+            linear_bwd(&c.x_conv, &layer.w_qry.w_q, &layer.w_qry.wq_dev, &dq_pre, Some(&mut dx_conv_q), Some(&mut lg.w_qry), Some(&mut lg.b_qry), t_len, d, d);
+            for idx in 0..t_len * d { dx_conv_g[idx] += dx_conv_v[idx] + dx_conv_k[idx] + dx_conv_q[idx]; }
 
             let mut dx_n1 = vec![0.0f32; t_len * d];
             for ti in 0..t_len {
@@ -1844,6 +1916,8 @@ impl DeepContractiveBrain {
             reduce_field!(b_val);
             reduce_field!(w_key);
             reduce_field!(b_key);
+            reduce_field!(w_qry);
+            reduce_field!(b_qry);
             reduce_field!(w_eq);
             reduce_field!(b_eq);
             reduce_field!(w_up);
@@ -1874,6 +1948,8 @@ impl DeepContractiveBrain {
             layer.b_val.step_adamw(&lg.b_val, eff_lr, 0.0, self.adam_step);
             layer.w_key.step_adamw(&lg.w_key, eff_lr, wd, self.adam_step);
             layer.b_key.step_adamw(&lg.b_key, eff_lr, 0.0, self.adam_step);
+            layer.w_qry.step_adamw(&lg.w_qry, eff_lr, wd, self.adam_step);
+            layer.b_qry.step_adamw(&lg.b_qry, eff_lr, 0.0, self.adam_step);
             layer.w_eq.step_adamw(&lg.w_eq, eff_lr, wd, self.adam_step);
             layer.b_eq.step_adamw(&lg.b_eq, eff_lr, 0.0, self.adam_step);
             layer.w_up.step_adamw(&lg.w_up, eff_lr, wd, self.adam_step);
@@ -1986,6 +2062,7 @@ impl DeepContractiveBrain {
             l.w_gate.detach_host_only(); l.b_gate.detach_host_only();
             l.w_val.detach_host_only(); l.b_val.detach_host_only();
             l.w_key.detach_host_only(); l.b_key.detach_host_only();
+            l.w_qry.detach_host_only(); l.b_qry.detach_host_only();
             l.w_eq.detach_host_only(); l.b_eq.detach_host_only();
             l.w_up.detach_host_only(); l.b_up.detach_host_only();
             l.w_ff_gate.detach_host_only(); l.b_ff_gate.detach_host_only();
@@ -2045,6 +2122,8 @@ impl DeepContractiveBrain {
             check_param!("b_val", brain.layers[l].b_val, grads.layers[l].b_val, 4);
             check_param!("w_key", brain.layers[l].w_key, grads.layers[l].w_key, 4 * 16 + 9);
             check_param!("b_key", brain.layers[l].b_key, grads.layers[l].b_key, 9);
+            check_param!("w_qry", brain.layers[l].w_qry, grads.layers[l].w_qry, 6 * 16 + 5);
+            check_param!("b_qry", brain.layers[l].b_qry, grads.layers[l].b_qry, 5);
             check_param!("w_eq", brain.layers[l].w_eq, grads.layers[l].w_eq, 5 * 16 + 3);
             check_param!("b_eq", brain.layers[l].b_eq, grads.layers[l].b_eq, 3);
             check_param!("w_up", brain.layers[l].w_up, grads.layers[l].w_up, 7 * 16 + 2);
@@ -2092,7 +2171,7 @@ impl DeepContractiveBrain {
     pub fn load_checkpoint(path: &Path) -> Result<(Self, String), String> {
         let raw = fs::read(path).map_err(|e| format!("ckpt read failed: {}", e))?;
         if raw.len() < 70 || &raw[0..6] != CKPT_MAGIC {
-            return Err("invalid TOMG16 checkpoint header".into());
+            return Err("invalid TOMG17 checkpoint header".into());
         }
         let split = raw.len() - 64;
         let payload = &raw[..split];

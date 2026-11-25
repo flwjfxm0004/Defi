@@ -1,16 +1,16 @@
-//! Unified Thread-Safe Multi-GPU SM120 CUDA 13 + Zero-Copy AllReduce + Auto-Vectorized CPU Backend (`ABI = 1600`).
+//! Unified Thread-Safe Multi-GPU SM120 CUDA 13 + Zero-Copy AllReduce + 4x4 Blocked SIMD FWD/BWD CPU Backend (`ABI = 1700`).
 //!
 //! ZERO dead CUDA symbols, ZERO multi-thread GPU races, 100% deterministic cross-device `.omg` isolation:
 //!   - `DeviceTensorHandle`: `alloc_upload`, `upload_from_host` (live-wires `tensor_upload`!), `sync_to_host`, `Drop`
 //!   - Strict `use_gpu` gating on ALL ops (`contractive_step`, `byte_ce`, `embedding_scatter`) so detached clones
 //!     used by `.omg` codec NEVER mix GPU/CPU float rounding across machines!
-//!   - 4x4 register-blocked auto-vectorized AVX2/AVX-512 FMA CPU GEMM + Global L2 Gradient Norm Clipping!
+//!   - 4x4 register-blocked auto-vectorized AVX2/AVX-512 FMA CPU GEMM for BOTH `linear_fwd` AND `linear_bwd`!
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::nvfp4::nvfp4_quantize_f32;
 
-pub const SM120_TRAINING_ABI: i32 = 1600;
+pub const SM120_TRAINING_ABI: i32 = 1700;
 
 static FWD_GEMM_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
 static BWD_GEMM_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
@@ -202,9 +202,9 @@ pub fn backend_telemetry() -> BackendTelemetry {
     let gpus = detect_physical_gpus();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
     let backend_name = if cfg!(feature = "cuda_sm120") && gpus > 0 {
-        format!("CUDA13_SM120_MULTIGPU_ZEROCOPY ({}x GPU, ABI=1600)", gpus)
+        format!("CUDA13_SM120_MULTIGPU_ZEROCOPY ({}x GPU, ABI=1700)", gpus)
     } else {
-        format!("CPU_SIMD4_ZEROCOPY_NVFP4 ({}T; SM120 Multi-GPU Fused ABI=1600 ready)", cpus)
+        format!("CPU_SIMD4X4_ZEROCOPY_NVFP4 ({}T; SM120 Multi-GPU Fused ABI=1700 ready)", cpus)
     };
     BackendTelemetry {
         backend_name,
@@ -438,27 +438,101 @@ pub fn linear_bwd(
     }
     let _ = w_dev;
 
+    // 4x4 Register-Blocked SIMD Backward Pass for dX (4x less L1 traffic on dx_row!)
     if let Some(ref mut dx_s) = dx {
         dx_s.fill(0.0);
         for bi in 0..batch {
             let dy_row = &dy[bi * out_dim..(bi + 1) * out_dim];
             let dx_row = &mut dx_s[bi * in_dim..(bi + 1) * in_dim];
-            for o in 0..out_dim {
+            let mut o = 0usize;
+            while o + 4 <= out_dim {
+                let g0 = dy_row[o];
+                let g1 = dy_row[o + 1];
+                let g2 = dy_row[o + 2];
+                let g3 = dy_row[o + 3];
+                if g0 != 0.0 || g1 != 0.0 || g2 != 0.0 || g3 != 0.0 {
+                    let w0 = &w[o * in_dim..(o + 1) * in_dim];
+                    let w1 = &w[(o + 1) * in_dim..(o + 2) * in_dim];
+                    let w2 = &w[(o + 2) * in_dim..(o + 3) * in_dim];
+                    let w3 = &w[(o + 3) * in_dim..(o + 4) * in_dim];
+                    let mut dc = dx_row.chunks_exact_mut(4);
+                    let w0c = w0.chunks_exact(4);
+                    let w1c = w1.chunks_exact(4);
+                    let w2c = w2.chunks_exact(4);
+                    let w3c = w3.chunks_exact(4);
+                    let w0r = w0c.remainder();
+                    let w1r = w1c.remainder();
+                    let w2r = w2c.remainder();
+                    let w3r = w3c.remainder();
+                    for ((((d, c0), c1), c2), c3) in dc.by_ref().zip(w0c).zip(w1c).zip(w2c).zip(w3c) {
+                        d[0] += g0 * c0[0] + g1 * c1[0] + g2 * c2[0] + g3 * c3[0];
+                        d[1] += g0 * c0[1] + g1 * c1[1] + g2 * c2[1] + g3 * c3[1];
+                        d[2] += g0 * c0[2] + g1 * c1[2] + g2 * c2[2] + g3 * c3[2];
+                        d[3] += g0 * c0[3] + g1 * c1[3] + g2 * c2[3] + g3 * c3[3];
+                    }
+                    for (i, dv) in dc.into_remainder().iter_mut().enumerate() {
+                        *dv += g0 * w0r[i] + g1 * w1r[i] + g2 * w2r[i] + g3 * w3r[i];
+                    }
+                }
+                o += 4;
+            }
+            while o < out_dim {
                 let g = dy_row[o];
                 if g != 0.0 {
                     axpy_4way(dx_row, &w[o * in_dim..(o + 1) * in_dim], g);
                 }
+                o += 1;
             }
         }
     }
+    // 4x4 Register-Blocked SIMD Backward Pass for dW (reads x_row ONCE across 4 output rows!)
     if let Some(ref mut dw_s) = dw {
-        for o in 0..out_dim {
-            let dw_row = &mut dw_s[o * in_dim..(o + 1) * in_dim];
-            for bi in 0..batch {
-                let g = dy[bi * out_dim + o];
-                if g != 0.0 {
-                    axpy_4way(dw_row, &x[bi * in_dim..(bi + 1) * in_dim], g);
+        for bi in 0..batch {
+            let x_row = &x[bi * in_dim..(bi + 1) * in_dim];
+            let dy_row = &dy[bi * out_dim..(bi + 1) * out_dim];
+            let mut o = 0usize;
+            while o + 4 <= out_dim {
+                let g0 = dy_row[o];
+                let g1 = dy_row[o + 1];
+                let g2 = dy_row[o + 2];
+                let g3 = dy_row[o + 3];
+                if g0 != 0.0 || g1 != 0.0 || g2 != 0.0 || g3 != 0.0 {
+                    let (r0, rest) = dw_s[o * in_dim..(o + 4) * in_dim].split_at_mut(in_dim);
+                    let (r1, rest) = rest.split_at_mut(in_dim);
+                    let (r2, r3) = rest.split_at_mut(in_dim);
+                    let xc = x_row.chunks_exact(4);
+                    let xr = xc.remainder();
+                    let mut c0 = r0.chunks_exact_mut(4);
+                    let mut c1 = r1.chunks_exact_mut(4);
+                    let mut c2 = r2.chunks_exact_mut(4);
+                    let mut c3 = r3.chunks_exact_mut(4);
+                    for ((((xv, d0), d1), d2), d3) in xc.zip(c0.by_ref()).zip(c1.by_ref()).zip(c2.by_ref()).zip(c3.by_ref()) {
+                        let x0 = xv[0]; let x1 = xv[1]; let x2 = xv[2]; let x3 = xv[3];
+                        d0[0] += g0 * x0; d0[1] += g0 * x1; d0[2] += g0 * x2; d0[3] += g0 * x3;
+                        d1[0] += g1 * x0; d1[1] += g1 * x1; d1[2] += g1 * x2; d1[3] += g1 * x3;
+                        d2[0] += g2 * x0; d2[1] += g2 * x1; d2[2] += g2 * x2; d2[3] += g2 * x3;
+                        d3[0] += g3 * x0; d3[1] += g3 * x1; d3[2] += g3 * x2; d3[3] += g3 * x3;
+                    }
+                    let rem0 = c0.into_remainder();
+                    let rem1 = c1.into_remainder();
+                    let rem2 = c2.into_remainder();
+                    let rem3 = c3.into_remainder();
+                    for i in 0..xr.len() {
+                        let xv = xr[i];
+                        rem0[i] += g0 * xv;
+                        rem1[i] += g1 * xv;
+                        rem2[i] += g2 * xv;
+                        rem3[i] += g3 * xv;
+                    }
                 }
+                o += 4;
+            }
+            while o < out_dim {
+                let g = dy_row[o];
+                if g != 0.0 {
+                    axpy_4way(&mut dw_s[o * in_dim..(o + 1) * in_dim], x_row, g);
+                }
+                o += 1;
             }
         }
     }

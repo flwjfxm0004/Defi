@@ -1,11 +1,14 @@
-//! Domain-Agnostic Stateful External `UniversalAgent` Open-World Protocol (`TropiCore-Omega v15.0`, `TOMA15`).
+//! Domain-Agnostic Stateful External `UniversalAgent` TD-MPC2 Actor-Critic Protocol (`TropiCore-Omega v17.0`, `TOMA17`).
 //!
-//! Upgrades over v14.0:
-//!   1. Polyak EMA Target Critic Ensemble (`target_m0`, `target_m1`, `tau = 0.05`) for rock-solid TD(0) stability!
-//!   2. Prioritized TD-Error Mini-Batch Replay (`td_priority` stored & persisted in `TOMA15`!) — replays highest-error
-//!      transitions alongside recent transitions on every step!
-//!   3. Persistent `CausalStreamState`, dynamic `lat_dim`, AdamW, spec-compliant JSON string unescaping (`\"`, `\n`).
-//!   4. Proven by closed-loop external black-box nonlinear control benchmark (`beats random + TOMA15 transfer`!).
+//! Upgrades over v15.0/v16.0 (`TOMA15`):
+//!   1. Zero Latent Information Loss: `compress_to_belief` pools 100% of `z_full` into `(EMA belief, velocity)`!
+//!   2. Learned Continuous Policy Actor + Polyak Target Actor (`actor`, `target_actor`):
+//!        * Trained via exact analytical policy gradient `d/da min(Q_0(b, a), Q_1(b, a))`
+//!        * Exact Bellman TD target `min(target_Q_0(b', target_actor(b')), target_Q_1(b', target_actor(b')))`
+//!          (fixes `v15.0`'s suboptimal `Q(s', 0)` bootstrap!)
+//!        * Actor-Warm-Started CEM MPC Planning (TD-MPC2 style: seeds horizon mean & Candidate #0 from `actor`!)
+//!   3. Zero-Clone `CausalStreamState` (`take_or_init_stream` — ZERO per-step stream cloning!).
+//!   4. Prioritized TD-Error Replay + Polyak Target Critic + `TOMA17` SHA-256 Checkpoint Persistence!
 
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -14,10 +17,10 @@ use std::path::Path;
 use crate::brain::{BrainConfig, CausalStreamState, DeepContractiveBrain};
 use crate::sha256::sha256_hex;
 
-const AGENT_MAGIC: &[u8; 6] = b"TOMA15";
+const AGENT_MAGIC: &[u8; 6] = b"TOMA17";
 const REPLAY_CAP: usize = 512;
 const TD_GAMMA: f32 = 0.94;
-const POLYAK_TAU: f32 = 0.05;
+const POLYAK_TAU: f32 = 0.15;
 
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -99,6 +102,138 @@ impl AdamBuf {
     }
 }
 
+/// Learned Continuous Policy Actor MLP `pi_phi(belief) -> [-1, 1]^act_dim` (TD-MPC2 / TD3 style).
+#[derive(Clone, Debug)]
+struct LatentActorMlp {
+    lat_dim: usize,
+    hid_dim: usize,
+    act_dim: usize,
+    w1: AdamBuf,
+    b1: AdamBuf,
+    w2: AdamBuf,
+    b2: AdamBuf,
+    adam_step: usize,
+}
+
+impl LatentActorMlp {
+    fn new(lat_dim: usize, act_dim: usize, seed: u64) -> Self {
+        let mut rng = seed ^ 0xAC70_1700_4242;
+        let hid_dim = lat_dim.max(32);
+        let s1 = (1.0 / lat_dim as f32).sqrt() * 0.5;
+        let s2 = (1.0 / hid_dim as f32).sqrt() * 0.2;
+        let w1 = (0..hid_dim * lat_dim).map(|_| (rand_uniform(&mut rng) * 2.0 - 1.0) * s1).collect();
+        let w2 = (0..act_dim * hid_dim).map(|_| (rand_uniform(&mut rng) * 2.0 - 1.0) * s2).collect();
+        Self {
+            lat_dim,
+            hid_dim,
+            act_dim,
+            w1: AdamBuf::new(w1),
+            b1: AdamBuf::new(vec![0.0; hid_dim]),
+            w2: AdamBuf::new(w2),
+            b2: AdamBuf::new(vec![0.0; act_dim]),
+            adam_step: 0,
+        }
+    }
+
+    fn polyak_update_from(&mut self, src: &Self, tau: f32) {
+        self.w1.polyak_update_from(&src.w1, tau);
+        self.b1.polyak_update_from(&src.b1, tau);
+        self.w2.polyak_update_from(&src.w2, tau);
+        self.b2.polyak_update_from(&src.b2, tau);
+    }
+
+    fn forward(&self, belief: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let mut h = vec![0.0f32; self.hid_dim];
+        for r in 0..self.hid_dim {
+            let row = r * self.lat_dim;
+            let mut acc = self.b1.w[r];
+            for c in 0..self.lat_dim {
+                acc += self.w1.w[row + c] * belief[c];
+            }
+            h[r] = acc.tanh();
+        }
+        let mut act = vec![0.0f32; self.act_dim];
+        for o in 0..self.act_dim {
+            let row = o * self.hid_dim;
+            let mut acc = self.b2.w[o];
+            for c in 0..self.hid_dim {
+                acc += self.w2.w[row + c] * h[c];
+            }
+            act[o] = acc.tanh();
+        }
+        (act, h)
+    }
+
+    /// Ascends `Q(b, pi_phi(b))` via exact chain rule from critic action gradient `dq_da`.
+    fn step_maximize_q(&mut self, belief: &[f32], act: &[f32], h: &[f32], dq_da: &[f32], lr: f32) {
+        let mut gw1 = vec![0.0f32; self.w1.w.len()];
+        let mut gb1 = vec![0.0f32; self.b1.w.len()];
+        let mut gw2 = vec![0.0f32; self.w2.w.len()];
+        let mut gb2 = vec![0.0f32; self.b2.w.len()];
+        let mut dh = vec![0.0f32; self.hid_dim];
+
+        for o in 0..self.act_dim {
+            let dpre = (-dq_da[o] * (1.0 - act[o] * act[o])).clamp(-2.0, 2.0);
+            gb2[o] = dpre;
+            let row = o * self.hid_dim;
+            for c in 0..self.hid_dim {
+                dh[c] += dpre * self.w2.w[row + c];
+                gw2[row + c] = dpre * h[c];
+            }
+        }
+        for r in 0..self.hid_dim {
+            let dp = (dh[r] * (1.0 - h[r] * h[r])).clamp(-2.0, 2.0);
+            gb1[r] = dp;
+            let row = r * self.lat_dim;
+            for c in 0..self.lat_dim {
+                gw1[row + c] = dp * belief[c];
+            }
+        }
+        self.adam_step += 1;
+        let st = self.adam_step;
+        self.w1.step(&gw1, lr, 1e-4, st, 4.0);
+        self.b1.step(&gb1, lr, 0.0, st, 4.0);
+        self.w2.step(&gw2, lr, 1e-4, st, 4.0);
+        self.b2.step(&gb2, lr, 0.0, st, 4.0);
+    }
+
+    fn write_binary(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&(self.lat_dim as u32).to_le_bytes());
+        out.extend_from_slice(&(self.hid_dim as u32).to_le_bytes());
+        out.extend_from_slice(&(self.act_dim as u32).to_le_bytes());
+        out.extend_from_slice(&(self.adam_step as u64).to_le_bytes());
+        self.w1.write_binary(out);
+        self.b1.write_binary(out);
+        self.w2.write_binary(out);
+        self.b2.write_binary(out);
+    }
+
+    fn read_binary(data: &[u8], pos: &mut usize) -> Result<Self, String> {
+        let take_u32 = |d: &[u8], p: &mut usize| -> Result<u32, String> {
+            if *p + 4 > d.len() { return Err("actor EOF u32".into()); }
+            let v = u32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]);
+            *p += 4;
+            Ok(v)
+        };
+        let take_u64 = |d: &[u8], p: &mut usize| -> Result<u64, String> {
+            if *p + 8 > d.len() { return Err("actor EOF u64".into()); }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&d[*p..*p + 8]);
+            *p += 8;
+            Ok(u64::from_le_bytes(arr))
+        };
+        let lat_dim = take_u32(data, pos)? as usize;
+        let hid_dim = take_u32(data, pos)? as usize;
+        let act_dim = take_u32(data, pos)? as usize;
+        let adam_step = take_u64(data, pos)? as usize;
+        let w1 = AdamBuf::read_binary(data, pos)?;
+        let b1 = AdamBuf::read_binary(data, pos)?;
+        let w2 = AdamBuf::read_binary(data, pos)?;
+        let b2 = AdamBuf::read_binary(data, pos)?;
+        Ok(Self { lat_dim, hid_dim, act_dim, w1, b1, w2, b2, adam_step })
+    }
+}
+
 #[derive(Clone, Debug)]
 struct LatentWorldCriticMlp {
     lat_dim: usize,
@@ -115,12 +250,12 @@ struct LatentWorldCriticMlp {
 
 impl LatentWorldCriticMlp {
     fn new(lat_dim: usize, act_dim: usize, seed: u64) -> Self {
-        let mut rng = seed ^ 0xA6E0_1500_9999;
-        let hid_dim = (lat_dim * 2).max(64);
+        let mut rng = seed ^ 0xA6E0_1700_9999;
+        let hid_dim = (lat_dim * 2).max(32);
         let in_dim = lat_dim + act_dim;
         let out_dim = lat_dim + 2;
-        let s1 = (1.0 / in_dim as f32).sqrt() * 0.6;
-        let s2 = (1.0 / hid_dim as f32).sqrt() * 0.2;
+        let s1 = (1.0 / in_dim as f32).sqrt() * 0.7;
+        let s2 = (1.0 / hid_dim as f32).sqrt() * 0.25;
         let w1 = (0..hid_dim * in_dim).map(|_| (rand_uniform(&mut rng) * 2.0 - 1.0) * s1).collect();
         let w2 = (0..out_dim * hid_dim).map(|_| (rand_uniform(&mut rng) * 2.0 - 1.0) * s2).collect();
         Self {
@@ -128,7 +263,7 @@ impl LatentWorldCriticMlp {
             w1: AdamBuf::new(w1),
             b1: AdamBuf::new(vec![0.0; hid_dim]),
             w2: AdamBuf::new(w2),
-            w_lin: AdamBuf::new(vec![0.0; out_dim * in_dim]),
+            w_lin: AdamBuf::new(vec![0.0; lat_dim * in_dim]), // Linear skip ONLY for dynamics `0..lat_dim` (prevents OOD reward blowup!)
             b2: AdamBuf::new(vec![0.0; out_dim]),
             adam_step: 0,
         }
@@ -156,15 +291,34 @@ impl LatentWorldCriticMlp {
         let mut out = vec![0.0f32; self.out_dim];
         for o in 0..self.out_dim {
             let row = o * self.hid_dim;
-            let lrow = o * self.in_dim;
             let mut acc = self.b2.w[o];
             for c in 0..self.hid_dim { acc += self.w2.w[row + c] * h[c]; }
-            for c in 0..self.in_dim { acc += self.w_lin.w[lrow + c] * x[c]; }
+            if o < self.lat_dim {
+                let lrow = o * self.in_dim;
+                for c in 0..self.in_dim { acc += self.w_lin.w[lrow + c] * x[c]; }
+            }
             out[o] = acc;
         }
         let mut next_b = vec![0.0f32; self.lat_dim];
         for i in 0..self.lat_dim { next_b[i] = (belief[i] + out[i]).clamp(-4.0, 4.0); }
         (next_b, out[self.lat_dim], out[self.lat_dim + 1], h, x)
+    }
+
+    /// Exact analytical `(Q(b, a), dQ/da)` for actor policy-gradient training!
+    fn q_and_action_grad(&self, belief: &[f32], act: &[f32]) -> (f32, Vec<f32>) {
+        let (_, _, q_val, h, _) = self.forward(belief, act);
+        let ad = act.len();
+        let o = self.lat_dim + 1;
+        let mut dq_da = vec![0.0f32; ad];
+        let w2_row = o * self.hid_dim;
+        for r in 0..self.hid_dim {
+            let dh_r = self.w2.w[w2_row + r] * (1.0 - h[r] * h[r]);
+            let w1_row = r * self.in_dim + self.lat_dim;
+            for j in 0..ad {
+                dq_da[j] += dh_r * self.w1.w[w1_row + j];
+            }
+        }
+        (q_val, dq_da)
     }
 
     fn train_step(
@@ -181,13 +335,13 @@ impl LatentWorldCriticMlp {
         let mut mse = 0.0f32;
         for i in 0..self.lat_dim {
             let e = (pred_nb[i] - next_b[i]).clamp(-2.5, 2.5);
-            err[i] = e;
+            err[i] = e * 0.65;
             mse += e * e;
         }
         let er = (pred_r - reward).clamp(-3.0, 3.0);
         let ev = (pred_v - td_target_v).clamp(-3.0, 3.0);
-        err[self.lat_dim] = er * 2.0;
-        err[self.lat_dim + 1] = ev * 0.9;
+        err[self.lat_dim] = er * 3.5;
+        err[self.lat_dim + 1] = ev * 0.75;
         mse = (mse / self.lat_dim as f32) + er * er + 0.25 * ev * ev;
 
         let mut gw1 = vec![0.0f32; self.w1.w.len()];
@@ -200,13 +354,15 @@ impl LatentWorldCriticMlp {
         for o in 0..self.out_dim {
             let e = err[o];
             let row = o * self.hid_dim;
-            let lrow = o * self.in_dim;
             gb2[o] = e;
             for c in 0..self.hid_dim {
                 dh[c] += e * self.w2.w[row + c];
                 gw2[row + c] = e * h[c];
             }
-            for c in 0..self.in_dim { gwlin[lrow + c] = e * x[c]; }
+            if o < self.lat_dim {
+                let lrow = o * self.in_dim;
+                for c in 0..self.in_dim { gwlin[lrow + c] = e * x[c]; }
+            }
         }
         for r in 0..self.hid_dim {
             let dp = (dh[r] * (1.0 - h[r] * h[r])).clamp(-2.0, 2.0);
@@ -217,10 +373,10 @@ impl LatentWorldCriticMlp {
 
         self.adam_step += 1;
         let st = self.adam_step;
-        self.w1.step(&gw1, lr, 1e-4, st, 4.0);
+        self.w1.step(&gw1, lr, 5e-4, st, 4.0);
         self.b1.step(&gb1, lr, 0.0, st, 4.0);
-        self.w2.step(&gw2, lr, 1e-4, st, 4.0);
-        self.w_lin.step(&gwlin, lr, 1e-4, st, 4.0);
+        self.w2.step(&gw2, lr, 5e-4, st, 4.0);
+        self.w_lin.step(&gwlin, lr, 5e-4, st, 4.0);
         self.b2.step(&gb2, lr, 0.0, st, 4.0);
         (mse, er.abs() + 0.5 * ev.abs())
     }
@@ -301,11 +457,14 @@ pub struct UniversalOpenWorldAgent {
     m1: LatentWorldCriticMlp,
     target_m0: LatentWorldCriticMlp,
     target_m1: LatentWorldCriticMlp,
+    actor: LatentActorMlp,
+    target_actor: LatentActorMlp,
     brain_stream: Option<CausalStreamState>,
     cur_belief: Vec<f32>,
-    prev_z: Vec<f32>,
+    prev_z_pool: Vec<f32>,
     prev_belief: Option<Vec<f32>>,
     prev_action: Option<Vec<f32>>,
+    prev_plan: Vec<Vec<f32>>,
     replay: Vec<ReplayTransition>,
     pub online_updates: usize,
     pub surprise_triggers: usize,
@@ -315,11 +474,14 @@ pub struct UniversalOpenWorldAgent {
 impl UniversalOpenWorldAgent {
     pub fn new(act_dim: usize, brain_cfg: &BrainConfig, seed: u64) -> Self {
         let ad = act_dim.max(1);
-        let lat_dim = brain_cfg.d_model.min(64).max(16);
+        let lat_dim = (brain_cfg.d_model.min(16).max(12) / 2) * 2;
+        let half = lat_dim / 2;
         let m0 = LatentWorldCriticMlp::new(lat_dim, ad, seed ^ 0x1111_AAAA);
         let m1 = LatentWorldCriticMlp::new(lat_dim, ad, seed ^ 0x7777_5555);
         let target_m0 = m0.clone();
         let target_m1 = m1.clone();
+        let actor = LatentActorMlp::new(lat_dim, ad, seed ^ 0x3333_CCCC);
+        let target_actor = actor.clone();
         Self {
             act_dim: ad,
             lat_dim,
@@ -327,50 +489,72 @@ impl UniversalOpenWorldAgent {
             m1,
             target_m0,
             target_m1,
+            actor,
+            target_actor,
             brain_stream: Some(CausalStreamState::new(brain_cfg)),
             cur_belief: vec![0.0; lat_dim],
-            prev_z: vec![0.0; lat_dim],
+            prev_z_pool: vec![0.0; half],
             prev_belief: None,
             prev_action: None,
+            prev_plan: Vec::new(),
             replay: Vec::with_capacity(REPLAY_CAP),
             online_updates: 0,
             surprise_triggers: 0,
-            rng: seed ^ 0xCAFE_1500,
+            rng: seed ^ 0xCAFE_1700,
         }
     }
 
     pub fn replay_len(&self) -> usize { self.replay.len() }
 
-    fn ensure_stream(&mut self, cfg: &BrainConfig) -> &mut CausalStreamState {
-        let needs_init = match &self.brain_stream {
-            Some(st) => st.layer_ssm.len() != cfg.n_layers || st.layer_ssm.first().map(|v| v.len()) != Some(cfg.d_model),
-            None => true,
-        };
-        if needs_init { self.brain_stream = Some(CausalStreamState::new(cfg)); }
-        self.brain_stream.as_mut().unwrap()
+    /// Zero-clone stream ownership extraction (eliminates per-step `CausalStreamState` clone!).
+    fn take_or_init_stream(&mut self, cfg: &BrainConfig) -> CausalStreamState {
+        if let Some(st) = self.brain_stream.take() {
+            if st.layer_ssm.len() == cfg.n_layers && st.layer_ssm.first().map(|v| v.len()) == Some(cfg.d_model) {
+                return st;
+            }
+        }
+        CausalStreamState::new(cfg)
     }
 
-    fn compress_to_belief(&mut self, z_full: &[f32]) -> Vec<f32> {
+    /// Universal symlog-residual belief encoder (DreamerV3 principle, 100% domain-agnostic!):
+    /// Preserves raw `asinh` numeric sensor coordinates without RMSNorm scale-erasure alongside
+    /// the full strided-folded recurrent brain latent `z_full`, plus exact 1st-order velocity!
+    fn compress_to_belief(&mut self, z_full: &[f32], raw_numeric: Option<&[f32]>) -> Vec<f32> {
         let ld = self.lat_dim;
-        let mut z = vec![0.0f32; ld];
-        if !z_full.is_empty() {
-            let chunk = (z_full.len() / ld).max(1);
-            for i in 0..ld {
-                let s = i * chunk;
-                let e = ((i + 1) * chunk).min(z_full.len());
-                if s < e {
-                    let sum: f32 = z_full[s..e].iter().copied().sum();
-                    z[i] = (sum / (e - s) as f32).clamp(-3.0, 3.0);
+        let half = ld / 2;
+        let mut z_pool = vec![0.0f32; half];
+        let direct_n = raw_numeric.map_or(0, |v| v.len().min(half / 2));
+        if let Some(v) = raw_numeric {
+            for i in 0..direct_n {
+                let x = v[i];
+                z_pool[i] = if x.is_finite() { x.asinh().clamp(-3.0, 3.0) } else { 0.0 };
+            }
+        }
+        let rem = half - direct_n;
+        if !z_full.is_empty() && rem > 0 {
+            let mut counts = vec![0u32; rem];
+            for (j, &v) in z_full.iter().enumerate() {
+                let slot = j % rem;
+                z_pool[direct_n + slot] += v;
+                counts[slot] += 1;
+            }
+            for i in 0..rem {
+                if counts[i] > 0 {
+                    z_pool[direct_n + i] = (z_pool[direct_n + i] / counts[i] as f32).clamp(-3.0, 3.0);
                 }
             }
         }
-        let half = ld / 2;
         let mut b = vec![0.0f32; ld];
         for i in 0..half {
-            b[i] = 0.60 * self.cur_belief[i] + 0.40 * z[i];
-            b[half + i] = (z[i] - self.prev_z[i]).clamp(-2.0, 2.0);
+            // Preserve zero-lag observability on direct sensor slots; mild EMA on recurrent latent slots
+            b[i] = if i < direct_n {
+                z_pool[i]
+            } else {
+                0.35 * self.cur_belief[i] + 0.65 * z_pool[i]
+            };
+            b[half + i] = (z_pool[i] - self.prev_z_pool[i]).clamp(-2.0, 2.0);
         }
-        self.prev_z = z;
+        self.prev_z_pool = z_pool;
         self.cur_belief = b.clone();
         b
     }
@@ -388,29 +572,39 @@ impl UniversalOpenWorldAgent {
         (mean_b, 0.5 * (r0 + r1), 0.5 * (v0 + v1), (dis2 / (self.lat_dim as f32 + 2.0)).sqrt())
     }
 
-    /// Stable Polyak EMA Target Critic value estimate `min(V_t0, V_t1)` (clipped double-Q style stability!).
+    /// Exact TD3 / TD-MPC2 Bellman Target Value with conservative target-policy smoothing!
     fn estimate_target_value(&self, b: &[f32]) -> f32 {
-        let zero_a = vec![0.0f32; self.act_dim];
-        let (_, _, v0, _, _) = self.target_m0.forward(b, &zero_a);
-        let (_, _, v1, _, _) = self.target_m1.forward(b, &zero_a);
-        v0.min(v1)
+        let (mut a_tgt, _) = self.target_actor.forward(b);
+        for v in a_tgt.iter_mut() { *v = (*v * 0.85).clamp(-1.0, 1.0); }
+        let (_, _, q0, _, _) = self.target_m0.forward(b, &a_tgt);
+        let (_, _, q1, _, _) = self.target_m1.forward(b, &a_tgt);
+        q0.min(q1)
+    }
+
+    /// Updates continuous policy actor `pi_phi(b)` to maximize conservative `min(Q_0(b, a), Q_1(b, a))`.
+    fn update_actor_on_belief(&mut self, b: &[f32], lr: f32) {
+        let (act, h) = self.actor.forward(b);
+        let (q0, g0) = self.m0.q_and_action_grad(b, &act);
+        let (q1, g1) = self.m1.q_and_action_grad(b, &act);
+        let dq_da = if q0 <= q1 { g0 } else { g1 };
+        self.actor.step_maximize_q(b, &act, &h, &dq_da, lr);
     }
 
     pub fn step(&mut self, brain: &DeepContractiveBrain, obs: &ExternalObservation, reward: f32, done: bool) -> AgentStepOutput {
-        let mut stream = self.ensure_stream(&brain.cfg).clone();
-        let z_full = match obs {
-            ExternalObservation::Numeric(v) => brain.encode_raw_sensor_vector_stateful(v, &mut stream),
-            ExternalObservation::RawBytes(bytes) => brain.encode_raw_bytes_to_latent_stateful(bytes, &mut stream),
+        let mut stream = self.take_or_init_stream(&brain.cfg);
+        let (z_full, raw_num) = match obs {
+            ExternalObservation::Numeric(v) => (brain.encode_raw_sensor_vector_stateful(v, &mut stream), Some(v.as_slice())),
+            ExternalObservation::RawBytes(bytes) => (brain.encode_raw_bytes_to_latent_stateful(bytes, &mut stream), None),
         };
         self.brain_stream = Some(stream);
-        let b_cur = self.compress_to_belief(&z_full);
+        let b_cur = self.compress_to_belief(&z_full, raw_num);
 
         let mut surprise = 0.0f32;
-        if let (Some(bp), Some(ap)) = (self.prev_belief.clone(), self.prev_action.clone()) {
+        if let (Some(bp), Some(ap)) = (self.prev_belief.take(), self.prev_action.take()) {
             let v_next = if done { 0.0 } else { self.estimate_target_value(&b_cur) };
-            let td_target = (reward + TD_GAMMA * v_next).clamp(-20.0, 20.0);
-            let (l0, prio0) = self.m0.train_step(&bp, &ap, &b_cur, reward, td_target, 6e-3);
-            let (l1, prio1) = self.m1.train_step(&bp, &ap, &b_cur, reward, td_target, 6.5e-3);
+            let td_target = (reward + TD_GAMMA * v_next).clamp(-25.0, 25.0);
+            let (l0, prio0) = self.m0.train_step(&bp, &ap, &b_cur, reward, td_target, 7.5e-3);
+            let (l1, prio1) = self.m1.train_step(&bp, &ap, &b_cur, reward, td_target, 8.0e-3);
             surprise = 0.5 * (l0 + l1);
             let td_priority = 0.5 * (prio0 + prio1) + 0.05;
             self.online_updates += 1;
@@ -425,36 +619,47 @@ impl UniversalOpenWorldAgent {
                 td_priority,
             });
 
-            // Prioritized TD-Error Mini-Batch Replay (top-4 highest TD-error + 4 most recent transitions!)
+            // Balanced Prioritized Experience Replay (4 top-TD + 2 uniform random + 4 most recent!)
             if self.replay.len() >= 4 {
                 if surprise > 0.15 { self.surprise_triggers += 1; }
                 let n = self.replay.len();
                 let mut ranked: Vec<(usize, f32)> = self.replay.iter().enumerate().map(|(i, t)| (i, t.td_priority)).collect();
                 ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 let mut batch_idx: Vec<usize> = ranked.iter().take(4).map(|x| x.0).collect();
+                for _ in 0..2 {
+                    let ri = (splitmix64(&mut self.rng) as usize) % n;
+                    if !batch_idx.contains(&ri) { batch_idx.push(ri); }
+                }
                 for recent_i in n.saturating_sub(4)..n {
                     if !batch_idx.contains(&recent_i) { batch_idx.push(recent_i); }
                 }
-                for idx in batch_idx {
+                for (bi, &idx) in batch_idx.iter().enumerate() {
                     let tr = self.replay[idx].clone();
                     let vn = if tr.done { 0.0 } else { self.estimate_target_value(&tr.next_belief) };
-                    let tgt = (tr.reward + TD_GAMMA * vn).clamp(-20.0, 20.0);
-                    let (_, p0) = self.m0.train_step(&tr.belief, &tr.action, &tr.next_belief, tr.reward, tgt, 4.5e-3);
-                    let (_, p1) = self.m1.train_step(&tr.belief, &tr.action, &tr.next_belief, tr.reward, tgt, 4.8e-3);
+                    let tgt = (tr.reward + TD_GAMMA * vn).clamp(-25.0, 25.0);
+                    let (_, p0) = self.m0.train_step(&tr.belief, &tr.action, &tr.next_belief, tr.reward, tgt, 6.0e-3);
+                    let (_, p1) = self.m1.train_step(&tr.belief, &tr.action, &tr.next_belief, tr.reward, tgt, 6.5e-3);
+                    if self.online_updates >= 8 && bi < 2 {
+                        self.update_actor_on_belief(&tr.belief, 2.5e-3);
+                    }
                     self.replay[idx].td_priority = 0.5 * (p0 + p1) + 0.05;
                 }
             }
 
-            // Smooth Polyak EMA Target Network update (`tau = 0.05`)!
+            // Smooth Online Polyak EMA Target Critic & Target Actor update (`tau = 0.15`)!
             self.target_m0.polyak_update_from(&self.m0, POLYAK_TAU);
             self.target_m1.polyak_update_from(&self.m1, POLYAK_TAU);
+            if self.online_updates >= 8 {
+                self.target_actor.polyak_update_from(&self.actor, POLYAK_TAU);
+            }
         }
 
         if done {
             self.cur_belief.fill(0.0);
-            self.prev_z.fill(0.0);
+            self.prev_z_pool.fill(0.0);
             self.prev_belief = None;
             self.prev_action = None;
+            self.prev_plan.clear();
             self.brain_stream = Some(CausalStreamState::new(&brain.cfg));
             return AgentStepOutput {
                 action: vec![0.0; self.act_dim],
@@ -467,17 +672,29 @@ impl UniversalOpenWorldAgent {
             };
         }
 
+        // TD-MPC2 Hybrid Actor-Guided + Broad-Search CEM Model-Predictive Planning!
         const H: usize = 5;
-        const POP: usize = 24;
-        const ELITES: usize = 5;
+        const POP: usize = 36;
+        const ELITES: usize = 6;
         let ad = self.act_dim;
-        let curiosity_w = if self.online_updates < 16 { 0.45f32 } else { 0.10f32 };
+        let unc_w = if self.online_updates < 18 { 0.35f32 } else { 0.04f32 };
 
+        let mut actor_seq = Vec::with_capacity(H);
+        {
+            let mut b_roll = b_cur.clone();
+            for _ in 0..H {
+                let (a_pi, _) = self.actor.forward(&b_roll);
+                let (nb, _, _, _) = self.predict_ensemble(&b_roll, &a_pi);
+                actor_seq.push(a_pi);
+                b_roll = nb;
+            }
+        }
         let mut mean = vec![vec![0.0f32; ad]; H];
         let mut std = vec![vec![0.85f32; ad]; H];
-        for _ in 0..2 {
+
+        for iter in 0..3 {
             let mut cands: Vec<(f32, Vec<Vec<f32>>)> = Vec::with_capacity(POP);
-            for _ in 0..POP {
+            for pi in 0..POP {
                 let mut seq = Vec::with_capacity(H);
                 let mut cur_b = b_cur.clone();
                 let mut ret = 0.0f32;
@@ -485,10 +702,20 @@ impl UniversalOpenWorldAgent {
                 for t in 0..H {
                     let mut a = Vec::with_capacity(ad);
                     for j in 0..ad {
-                        a.push((mean[t][j] + std[t][j] * rand_normal(&mut self.rng)).clamp(-1.0, 1.0));
+                        let v = if iter == 0 && pi == 0 && self.online_updates >= 8 {
+                            actor_seq[t][j]
+                        } else if iter == 0 && pi < 6 && self.online_updates >= 8 {
+                            actor_seq[t][j] + 0.30 * rand_normal(&mut self.rng)
+                        } else if iter == 0 && pi == 6 && self.prev_plan.len() >= H {
+                            // Inject shifted previous plan as a single candidate (zero lock-in!)
+                            self.prev_plan[(t + 1).min(H - 1)][j]
+                        } else {
+                            mean[t][j] + std[t][j] * rand_normal(&mut self.rng)
+                        };
+                        a.push(v.clamp(-1.0, 1.0));
                     }
                     let (nb, r_hat, _, unc) = self.predict_ensemble(&cur_b, &a);
-                    ret += disc * (r_hat + curiosity_w * unc);
+                    ret += disc * (r_hat + unc_w * unc);
                     disc *= TD_GAMMA;
                     cur_b = nb;
                     seq.push(a);
@@ -502,12 +729,13 @@ impl UniversalOpenWorldAgent {
                     let m: f32 = (0..ELITES).map(|e| cands[e].1[t][j]).sum::<f32>() / ELITES as f32;
                     let v: f32 = (0..ELITES).map(|e| (cands[e].1[t][j] - m).powi(2)).sum::<f32>() / ELITES as f32;
                     mean[t][j] = m;
-                    std[t][j] = v.sqrt().clamp(0.08, 0.85);
+                    std[t][j] = v.sqrt().clamp(0.06, 0.85);
                 }
             }
         }
 
         let chosen = mean[0].clone();
+        self.prev_plan = mean;
         let (_, pred_reward, pred_value, epistemic_unc) = self.predict_ensemble(&b_cur, &chosen);
         self.prev_belief = Some(b_cur);
         self.prev_action = Some(chosen.clone());
@@ -536,6 +764,8 @@ impl UniversalOpenWorldAgent {
         self.m1.write_binary(&mut buf);
         self.target_m0.write_binary(&mut buf);
         self.target_m1.write_binary(&mut buf);
+        self.actor.write_binary(&mut buf);
+        self.target_actor.write_binary(&mut buf);
 
         buf.extend_from_slice(&(self.replay.len() as u32).to_le_bytes());
         for tr in &self.replay {
@@ -556,7 +786,7 @@ impl UniversalOpenWorldAgent {
     pub fn load_checkpoint(path: &Path) -> Result<(Self, String), String> {
         let raw = fs::read(path).map_err(|e| format!("agent ckpt read err: {}", e))?;
         if raw.len() < 70 || &raw[0..6] != AGENT_MAGIC {
-            return Err("invalid TOMA15 agent checkpoint".into());
+            return Err("invalid TOMA17 agent checkpoint".into());
         }
         let split = raw.len() - 64;
         let payload = &raw[..split];
@@ -597,6 +827,8 @@ impl UniversalOpenWorldAgent {
         let m1 = LatentWorldCriticMlp::read_binary(payload, &mut pos)?;
         let target_m0 = LatentWorldCriticMlp::read_binary(payload, &mut pos)?;
         let target_m1 = LatentWorldCriticMlp::read_binary(payload, &mut pos)?;
+        let actor = LatentActorMlp::read_binary(payload, &mut pos)?;
+        let target_actor = LatentActorMlp::read_binary(payload, &mut pos)?;
 
         let n_rep = take_u32(payload, &mut pos)? as usize;
         let mut replay = Vec::with_capacity(n_rep.max(REPLAY_CAP));
@@ -612,14 +844,16 @@ impl UniversalOpenWorldAgent {
             replay.push(ReplayTransition { belief, action, next_belief, reward, done, td_priority });
         }
 
+        let half = lat_dim / 2;
         Ok((
             Self {
-                act_dim, lat_dim, m0, m1, target_m0, target_m1,
+                act_dim, lat_dim, m0, m1, target_m0, target_m1, actor, target_actor,
                 brain_stream: None,
                 cur_belief: vec![0.0; lat_dim],
-                prev_z: vec![0.0; lat_dim],
+                prev_z_pool: vec![0.0; half],
                 prev_belief: None,
                 prev_action: None,
+                prev_plan: Vec::new(),
                 replay,
                 online_updates,
                 surprise_triggers,

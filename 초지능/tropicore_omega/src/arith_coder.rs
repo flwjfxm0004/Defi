@@ -1,14 +1,14 @@
-//! Pure-Rust Zero-Dependency Exact 32-Bit Arithmetic Bitstream Codec (`OMGZ16`, Compact 41-Byte Header!)
-//! Powered by 12-Expert × 8-Context Simplex-Normalized Calibrated-Temperature Meta-Mixer
-//! (4-Way Order-∞ Match-Model + Zero-Tokenizer WordBigram + CTW 1..8 + Tropical-L1 + Deep SwiGLU Conv4 Delta-SSM)
+//! Pure-Rust Zero-Dependency Exact 32-Bit Arithmetic Bitstream Codec (`OMGZ17`, Compact 41-Byte Header!)
+//! Powered by 13-Expert × 8-Context Simplex-Normalized Calibrated-Temperature Meta-Mixer
+//! (Exact PPM-D Escape + Adaptive Unigram + 4-Way Order-∞ Match + WordBigram + Skip-1 + Separate-Q/K DeltaNet)
 //! + Deterministic 64-Byte Test-Time Neural Adaptation + Zero-Allocation Byte-Stream Scratch Pool!
 //!
-//! Compact Header Format (`OMGZ16`, saves -38 bytes vs `OMGZ15`'s 79B ASCII-hex header!):
-//!   - `[0..6]`        : Magic `b"OMGZ16"` (6 bytes)
+//! Compact Header Format (`OMGZ17`, 41 bytes for <=16,383 B files):
+//!   - `[0..6]`        : Magic `b"OMGZ17"` (6 bytes)
 //!   - `[6]`           : Flags `u8` (bit 0 = `enable_ttt`) (1 byte)
 //!   - `[7..7+k]`      : Original byte length encoded as ULEB128 varint (1..10 bytes; 2 bytes for <=16,383 B!)
 //!   - `[7+k..39+k]`   : Raw 32-byte SHA-256 digest of original uncompressed bytes (32 bytes, ZERO hex bloat!)
-//!   - `[39+k..]`      : Exact 32-bit arithmetic-coded bitstream (`TOTAL_FREQ = 65536`)
+//!   - `[39+k..]`      : Exact 32-bit arithmetic-coded bitstream (`TOTAL_FREQ = 65536`, Lean 4 Omega-6 proved!)
 
 use std::fs;
 use std::path::Path;
@@ -17,7 +17,7 @@ use crate::brain::{CausalStreamState, DeepContractiveBrain};
 use crate::episodic::NUM_EPISODIC_EXPERTS;
 use crate::sha256::{bytes_to_hex, sha256_bytes};
 
-const OMG_MAGIC: &[u8; 6] = b"OMGZ16";
+const OMG_MAGIC: &[u8; 6] = b"OMGZ17";
 const FULL_RANGE: u64 = 0xFFFF_FFFF;
 const HALF: u64 = 0x8000_0000;
 const QUARTER: u64 = 0x4000_0000;
@@ -287,11 +287,11 @@ pub fn compress_bytes_with_brain(
 
     for (idx, &actual) in raw.iter().enumerate() {
         let (p_mix, p_brain, experts, active, ctx, lat) = if idx == 0 {
-            let unif = [1.0f32 / 256.0; 256];
+            let uni = work_brain.episodic.unigram_prior();
             (
-                unif,
-                unif,
-                [unif; NUM_EPISODIC_EXPERTS],
+                uni,
+                uni,
+                [uni; NUM_EPISODIC_EXPERTS],
                 [false; NUM_EPISODIC_EXPERTS],
                 0usize,
                 [0.0f32; 32],
@@ -356,13 +356,13 @@ pub fn compress_bytes_with_brain(
 
 pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8]) -> Result<Vec<u8>, String> {
     if archive.len() < 40 || &archive[0..6] != OMG_MAGIC {
-        return Err("invalid OMGZ16 archive header".into());
+        return Err("invalid OMGZ17 archive header".into());
     }
     let enable_ttt = (archive[6] & 1) != 0;
     let mut pos = 7usize;
     let orig_len = decode_uleb128(archive, &mut pos)? as usize;
     if pos + 32 > archive.len() {
-        return Err("corrupt OMGZ16 sha256 header".into());
+        return Err("corrupt OMGZ17 sha256 header".into());
     }
     let expected_sha_raw = &archive[pos..pos + 32];
     pos += 32;
@@ -381,11 +381,11 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
 
     for idx in 0..orig_len {
         let (p_mix, p_brain, experts, active, ctx, lat) = if idx == 0 {
-            let unif = [1.0f32 / 256.0; 256];
+            let uni = work_brain.episodic.unigram_prior();
             (
-                unif,
-                unif,
-                [unif; NUM_EPISODIC_EXPERTS],
+                uni,
+                uni,
+                [uni; NUM_EPISODIC_EXPERTS],
                 [false; NUM_EPISODIC_EXPERTS],
                 0usize,
                 [0.0f32; 32],

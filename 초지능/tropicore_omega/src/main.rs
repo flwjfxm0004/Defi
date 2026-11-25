@@ -1,16 +1,17 @@
-//! TropiCore-Omega ASI-Zero (`v16.0.0`) — Pure Zero-Toy Non-LLM General Superintelligence Engine.
+//! TropiCore-Omega ASI-Zero (`v17.0.0`) — Pure Zero-Toy Non-LLM General Superintelligence Engine.
 //!
 //! ZERO toy games, ZERO LLMs, ZERO external Rust crates, ZERO dead symbols, ZERO GPU data races, ZERO gradient cloning:
-//!   1. Zero-Copy Multi-GPU/Multi-Stream Gradient AllReduce (`&[&[f32]]`, `ABI=1600`, saves +124 GB/step on 8B!)
-//!      + Zero-Allocation `ForwardScratch` Pool inside `CausalStreamState` (eliminates 74K heap allocs/file!).
-//!   2. 12-Expert × 8-Context Simplex-Normalized Log-Opinion Pool (`sum(alpha_e) == 1.0`) + Per-Context Calibrated
-//!      Online Inverse-Temperature `temp[ctx]` + 4-Way Order-∞ Match-Model + Zero-Tokenizer WordBigramExpert.
-//!   3. Differentiable Banach Fixed-Point Convergence Regularizer (`EQ_REG_LAMBDA = 0.08`, exact BPTT verified by
-//!      20-tensor central finite-difference `GradCheck` + Lean 4 Omega-1..Omega-5) -> live `AdapTokSaved >> 0`!
-//!   4. Compact 41-Byte Header `OMGZ16` Lossless Codec (ULEB128 + raw 32B SHA-256 + 64B TTT Neural Adaptation).
+//!   1. Independent Query/Key DeltaNet-SSM (`w_qry`/`b_qry` decoupled from `w_key`/`b_key`) + SwiGLU + Conv-4
+//!      + Differentiable Banach Equilibrium Reg — verified across ALL 22 tensor types by central finite-diff `GradCheck`!
+//!   2. 4x4 Register-Blocked SIMD Forward & Backward GEMM (`linear_fwd` & `linear_bwd`) + Zero-Copy AllReduce (`ABI=1700`)
+//!      + Zero-Allocation `ForwardScratch` Pool.
+//!   3. 13-Expert × 8-Context Simplex-Normalized Meta-Mixer: Exact PPM-D Unique-Symbol Escape + Adaptive Order-0 Unigram
+//!      + 4-Way Order-∞ Match-Model + Zero-Tokenizer WordBigram + Skip-1/Gapped Context Expert.
+//!   4. Compact 41-Byte Header `OMGZ17` Lossless Codec (Lean 4 Omega-6 unique-decodability proved!) + 64B TTT Adaptation.
 //!   5. Strictly `O(budget)` RAM Streaming I/O via `File::seek` even on single 10–100 GB files.
-//!   6. Structural Multi-Formula AST Self-Optimizer with Isolated Compiled-Binary 2D Pareto Gate (`--verify-binary`).
-//!   7. Stateful `UniversalAgent` with Polyak Target Critic (`tau=0.05`) + Prioritized TD Replay (`TOMA15`) + Closed-Loop Proof!
+//!   6. Multi-Formula AST Self-Optimizer with Isolated Compiled-Binary 2D Pareto Gate (`--verify-binary`).
+//!   7. TD-MPC2 Actor-Critic `UniversalAgent` (`TOMA17`: zero latent loss, learned continuous actor + Polyak target actor,
+//!      actor-warm-started CEM planning, zero-clone stream, multi-task closed-loop nonlinear + momentum control proof!).
 
 mod agent_protocol;
 mod arith_coder;
@@ -60,12 +61,12 @@ fn has_flag(args: &[String], key: &str) -> bool {
 }
 
 fn print_help() {
-    println!("TropiCore-Omega ASI-Zero v16.0.0 — Zero-Toy Non-LLM General Superintelligence Engine");
+    println!("TropiCore-Omega ASI-Zero v17.0.0 — Zero-Toy Non-LLM General Superintelligence Engine");
     println!("Commands:");
-    println!("  status                                            Show SM120 Multi-GPU Zero-Copy ABI=1600 & presets");
+    println!("  status                                            Show SM120 Multi-GPU Zero-Copy ABI=1700 & presets");
     println!("  train-bytes [--path DIR] [--preset P] [--epochs N] [--max-bytes B] [--ckpt F] [--threads T]");
     println!("  eval-bytes  [--path DIR | --raw-file F] --ckpt F [--use-compiled-defaults]");
-    println!("  compress    --in FILE --out FILE.omg [--ckpt F] [--no-ttt]  Compact 41B-header OMGZ16 lossless codec");
+    println!("  compress    --in FILE --out FILE.omg [--ckpt F] [--no-ttt]  Compact 41B-header OMGZ17 lossless codec");
     println!("  decompress  --in FILE.omg --out FILE [--ckpt F]   Bit-exact SHA-256 verified decompression");
     println!("  generate    --prompt STR [--bytes N] [--beam K] [--temp T] [--ckpt F]");
     println!("  serve-agent [--act-dim A] [--ckpt F] [--agent-ckpt A.toma]");
@@ -78,12 +79,12 @@ fn cmd_status() {
     let abi = verify_sm120_training_abi().expect("SM120 training ABI verification failed");
     let tel = backend_telemetry();
     println!("=================================================================================");
-    println!(" TropiCore-Omega ASI-Zero v16.0.0 (ZeroCopy AllReduce + 12-Exp Simplex + ABI={}/{})", abi, tel.abi_version);
+    println!(" TropiCore-Omega ASI-Zero v17.0.0 (DeltaNet Q/K + PPM-D 13-Exp + TD-MPC2 + ABI={}/{})", abi, tel.abi_version);
     println!("=================================================================================");
     println!(" Compute Backend : {} (GPUs={}, HostCPU={}T)", tel.backend_name, tel.physical_gpus, tel.host_cpu_threads);
     println!(" Target Hardware : 4x RTX PRO 6000 Blackwell (384 GB GDDR7, 14.044 PFLOPS FP4) + 9995WX 192T + 1,000 GB ECC");
     println!("---------------------------------------------------------------------------------");
-    println!(" Scaling Presets (SwiGLU + Conv-4 + Delta-SSM + Differentiable Banach Equilibrium):");
+    println!(" Scaling Presets (SwiGLU + Conv-4 + Separate-Q/K DeltaNet + Diff-EqReg Adaptive Banach):");
     for name in ["laptop", "mid", "blackwell-1b", "blackwell-8b"] {
         let cfg = BrainConfig::from_preset(name).unwrap();
         println!(
@@ -99,7 +100,7 @@ fn cmd_status() {
 fn load_or_init_brain(ckpt: &Path, preset: &str) -> (DeepContractiveBrain, String) {
     if ckpt.exists() {
         match DeepContractiveBrain::load_checkpoint(ckpt) {
-            Ok((b, sha)) => return (b, format!("RESUMED LOSSLESS TOMG16 (sha256={})", &sha[..16])),
+            Ok((b, sha)) => return (b, format!("RESUMED LOSSLESS TOMG17 (sha256={})", &sha[..16])),
             Err(e) => eprintln!(" [warn] checkpoint load failed ({}), initializing fresh...", e),
         }
     }
@@ -121,7 +122,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
         .unwrap_or_else(default_corpus_path);
     let ckpt = flag_val(args, "--ckpt")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+        .unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
     let epochs: usize = flag_val(args, "--epochs").and_then(|s| s.parse().ok()).unwrap_or(2);
     let max_bytes: usize = flag_val(args, "--max-bytes")
         .and_then(|s| s.parse().ok())
@@ -140,7 +141,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
 
     println!("=================================================================================");
     println!(
-        " TropiCore-Omega ASI-Zero v16.0.0 — 12-Expert Simplex+Temp + Banach-EqReg (ABI={}, threads={})",
+        " TropiCore-Omega ASI-Zero v17.0.0 — 13-Expert PPM-D Simplex + DeltaNet Q/K (ABI={}, threads={})",
         abi, threads
     );
     println!(" Boot   : {} | best_bpb={:.3}", boot_msg, if brain.best_heldout_bpb.is_finite() { brain.best_heldout_bpb } else { 8.0 });
@@ -148,7 +149,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
     println!("=================================================================================");
 
     for cyc in 1..=cycles.max(1) {
-        let cycle_seed = 160_000 + (brain.adam_step as u64) + cyc as u64;
+        let cycle_seed = 170_000 + (brain.adam_step as u64) + cyc as u64;
         let corpus = load_real_corpus_split(&path, max_bytes, max_heldout, cycle_seed).unwrap_or_else(|e| {
             eprintln!("[error] {}", e);
             std::process::exit(1);
@@ -178,7 +179,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
 
         let tel = backend_telemetry();
         println!(
-            " [Cycle {:>2}] (tr={}/{}f {}B, ho={}/{}B, ep={}, B={}str, lr*={:.2}) HeldOut bpb: {:.3} -> Param {:.3} | +Simplex {:.3} | Online {:.3} ({:.2}x) | {:.1} KB/s | ||W_eq||={:.3} | Mem={}bkt/{}lat | {}={}({}) | {:.0}ms",
+            " [Cycle {:>2}] (tr={}/{}f {}B, ho={}/{}B, ep={}, B={}str, lr*={:.2}) HeldOut bpb: {:.3} -> Param {:.3} | +PPMD {:.3} | Online {:.3} ({:.2}x) | {:.1} KB/s | ||W_eq||={:.3} | Mem={}bkt/{}lat | {}={}({}) | {:.0}ms",
             cyc, rep.train_files, rep.total_train_pool, rep.train_bytes, rep.heldout_label, rep.heldout_bytes,
             rep.epochs, rep.n_streams, lr_mult, rep.untrained_heldout_bpb, rep.trained_param_heldout_bpb,
             rep.trained_blended_heldout_bpb, rep.online_adapted_heldout_bpb, rep.compression_ratio,
@@ -189,7 +190,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
         let opt_rep = if run_self_opt {
             let so = run_real_self_optimization(
                 &brain, &corpus.train_bytes, &corpus.heldout_bytes, &out_dir,
-                160_000 + cyc as u64, apply_live, verify_binary, threads,
+                170_000 + cyc as u64, apply_live, verify_binary, threads,
             );
             let mut installed_live = false;
             if let Some(win_pol) = so.winning_policy {
@@ -210,7 +211,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
         };
 
         let json = format!(
-            "{{\"engine\":\"TropiCore-ASI-Zero-v16\",\"cyc\":{},\"L\":{},\"d\":{},\"params\":{},\"tr_files\":{},\"bpb_pre\":{:.4},\"bpb_param\":{:.4},\"bpb_blend\":{:.4},\"bpb_online\":{:.4},\"comp\":{:.3},\"kb_s\":{:.2},\"norm\":{:.4},\"guard\":\"{}\",\"fwd\":{},\"bwd\":{},\"ctr\":{},\"adap_saved\":{},\"adamw\":{},\"allred\":{},\"gflops\":{:.3},\"self_opt\":{}}}",
+            "{{\"engine\":\"TropiCore-ASI-Zero-v17\",\"cyc\":{},\"L\":{},\"d\":{},\"params\":{},\"tr_files\":{},\"bpb_pre\":{:.4},\"bpb_param\":{:.4},\"bpb_blend\":{:.4},\"bpb_online\":{:.4},\"comp\":{:.3},\"kb_s\":{:.2},\"norm\":{:.4},\"guard\":\"{}\",\"fwd\":{},\"bwd\":{},\"ctr\":{},\"adap_saved\":{},\"adamw\":{},\"allred\":{},\"gflops\":{:.3},\"self_opt\":{}}}",
             cyc, brain.cfg.n_layers, brain.cfg.d_model, brain.cfg.parameter_count(), rep.train_files,
             rep.untrained_heldout_bpb, rep.trained_param_heldout_bpb, rep.trained_blended_heldout_bpb,
             rep.online_adapted_heldout_bpb, rep.compression_ratio, rep.throughput_kb_s, rep.contractive_linf,
@@ -219,7 +220,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
         );
         let h = sha256_hex(json.as_bytes());
         let _ = append_vault_jsonl(
-            &out_dir.join("asi_zero_v16_vault.jsonl"),
+            &out_dir.join("asi_zero_v17_vault.jsonl"),
             &format!("{{\"sha256\":\"{}\",\"entry\":{}}}", h, json),
         );
     }
@@ -235,7 +236,7 @@ fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
 }
 
 fn cmd_eval_bytes(args: &[String]) {
-    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
     let use_compiled = has_flag(args, "--use-compiled-defaults");
     let (mut brain, sha) = DeepContractiveBrain::load_checkpoint(&ckpt).unwrap_or_else(|e| {
         eprintln!("[error] failed to load '{}': {}", ckpt.display(), e);
@@ -255,7 +256,7 @@ fn cmd_eval_bytes(args: &[String]) {
         (bytes, raw_p)
     } else {
         let path = flag_val(args, "--path").map(PathBuf::from).unwrap_or_else(default_corpus_path);
-        let corpus = load_real_corpus_split(&path, 0, 32_768, 16).unwrap_or_else(|e| {
+        let corpus = load_real_corpus_split(&path, 0, 32_768, 17).unwrap_or_else(|e| {
             eprintln!("[error] {}", e);
             std::process::exit(1);
         });
@@ -265,7 +266,7 @@ fn cmd_eval_bytes(args: &[String]) {
     let (param_bpb, blend_bpb) = brain.eval_byte_stream(&heldout_bytes, 64, false, pol_override);
     let (_, online_bpb) = brain.eval_byte_stream(&heldout_bytes, 64, true, pol_override);
     println!(
-        "Eval `{}` (ckpt={}...): Param={:.4} bpb | +Simplex={:.4} bpb | Online={:.4} bpb ({:.2}x comp)",
+        "Eval `{}` (ckpt={}...): Param={:.4} bpb | +PPMD={:.4} bpb | Online={:.4} bpb ({:.2}x comp)",
         label, &sha[..16], param_bpb, blend_bpb, online_bpb, 8.0 / online_bpb.max(0.05)
     );
 }
@@ -273,7 +274,7 @@ fn cmd_eval_bytes(args: &[String]) {
 fn cmd_compress(args: &[String]) {
     let in_p = PathBuf::from(flag_val(args, "--in").expect("missing --in <file>"));
     let out_p = PathBuf::from(flag_val(args, "--out").expect("missing --out <file.omg>"));
-    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
     let preset = flag_val(args, "--preset").unwrap_or_else(|| "laptop".to_string());
     let enable_ttt = !has_flag(args, "--no-ttt");
     let (brain, _) = load_or_init_brain(&ckpt, &preset);
@@ -282,7 +283,7 @@ fn cmd_compress(args: &[String]) {
         std::process::exit(1);
     });
     println!(
-        "[Compress OMGZ16] {} ({} B) -> {} ({} B, hdr={} B) | Physical={:.3} bits/byte ({:.2}x) | ttt_steps={} | orig_sha256={}",
+        "[Compress OMGZ17] {} ({} B) -> {} ({} B, hdr={} B) | Physical={:.3} bits/byte ({:.2}x) | ttt_steps={} | orig_sha256={}",
         in_p.display(), rep.orig_bytes, out_p.display(), rep.compressed_bytes, rep.header_bytes,
         rep.physical_bpb, rep.physical_ratio, rep.ttt_updates, &rep.orig_sha256[..16]
     );
@@ -291,7 +292,7 @@ fn cmd_compress(args: &[String]) {
 fn cmd_decompress(args: &[String]) {
     let in_p = PathBuf::from(flag_val(args, "--in").expect("missing --in <file.omg>"));
     let out_p = PathBuf::from(flag_val(args, "--out").expect("missing --out <file>"));
-    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
     let preset = flag_val(args, "--preset").unwrap_or_else(|| "laptop".to_string());
     let (brain, _) = load_or_init_brain(&ckpt, &preset);
     let (len, sha) = decompress_omg_to_file(&brain, &in_p, &out_p).unwrap_or_else(|e| {
@@ -299,7 +300,7 @@ fn cmd_decompress(args: &[String]) {
         std::process::exit(1);
     });
     println!(
-        "[Decompress OMGZ16] {} -> {} ({} B) | SHA-256 BIT-EXACT VERIFIED ({})",
+        "[Decompress OMGZ17] {} -> {} ({} B) | SHA-256 BIT-EXACT VERIFIED ({})",
         in_p.display(), out_p.display(), len, &sha[..16]
     );
 }
@@ -309,7 +310,7 @@ fn cmd_generate(args: &[String]) {
     let n_bytes: usize = flag_val(args, "--bytes").and_then(|s| s.parse().ok()).unwrap_or(80);
     let beam: usize = flag_val(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4);
     let temp: f32 = flag_val(args, "--temp").and_then(|s| s.parse().ok()).unwrap_or(0.60);
-    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
     let preset = flag_val(args, "--preset").unwrap_or_else(|| "laptop".to_string());
     let (brain, boot) = load_or_init_brain(&ckpt, &preset);
     let (out, avg_bpb) = brain.generate_bytes_beam(prompt.as_bytes(), n_bytes, beam, temp, 2026_1126);
@@ -322,13 +323,13 @@ fn cmd_self_optimize(args: &[String]) {
         .or_else(|| flag_val(args, "--corpus"))
         .map(PathBuf::from)
         .unwrap_or_else(default_corpus_path);
-    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+    let ckpt = flag_val(args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
     let preset = flag_val(args, "--preset").unwrap_or_else(|| "laptop".to_string());
     let threads = flag_val(args, "--threads").and_then(|s| s.parse().ok()).unwrap_or_else(default_threads);
     let apply_live = has_flag(args, "--apply");
     let verify_binary = has_flag(args, "--verify-binary");
 
-    let corpus = load_real_corpus_split(&path, 16_384, 8_192, 16).unwrap_or_else(|e| {
+    let corpus = load_real_corpus_split(&path, 16_384, 8_192, 17).unwrap_or_else(|e| {
         eprintln!("[error] {}", e);
         std::process::exit(1);
     });
@@ -372,7 +373,7 @@ fn main() {
         "serve-agent" => {
             let act_dim = flag_val(&args, "--act-dim").and_then(|s| s.parse().ok()).unwrap_or(2);
             let preset = flag_val(&args, "--preset").unwrap_or_else(|| "laptop".to_string());
-            let ckpt = flag_val(&args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v16.tomg"));
+            let ckpt = flag_val(&args, "--ckpt").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("out/asi_zero_v17.tomg"));
             let agent_ckpt = flag_val(&args, "--agent-ckpt").map(PathBuf::from);
             let (brain, _) = load_or_init_brain(&ckpt, &preset);
             serve_universal_agent_stdio(&brain, act_dim, agent_ckpt.as_deref());
@@ -393,21 +394,21 @@ mod tests {
     use crate::arith_coder::{compress_bytes_with_brain, decompress_bytes_with_brain};
 
     #[test]
-    fn test_exact_bptt_numerical_gradient_check_all_20_tensor_types() {
+    fn test_exact_bptt_numerical_gradient_check_all_22_tensor_types() {
         let max_rel = DeepContractiveBrain::verify_bptt_numerical_gradients()
-            .expect("Central finite-difference gradient check MUST pass across ALL 20 tensor types including Banach Eq-Reg!");
+            .expect("Central finite-difference gradient check MUST pass across ALL 22 tensor types including Separate Q/K DeltaNet & Banach Eq-Reg!");
         assert!(max_rel < 0.035, "Numerical gradient max relative error too high: {:.5}", max_rel);
-        println!(" [GradCheck PASS] All 20 tensor types + Banach Eq-Reg verified! max_rel_err={:.5}", max_rel);
+        println!(" [GradCheck PASS] All 22 tensor types (Separate Q/K DeltaNet + Banach Eq-Reg) verified! max_rel_err={:.5}", max_rel);
     }
 
     #[test]
-    fn test_sm120_abi_1600_and_blackwell_budget() {
+    fn test_sm120_abi_1700_and_blackwell_budget() {
         let abi = verify_sm120_training_abi().expect("ABI must verify");
-        assert_eq!(abi, 1600);
+        assert_eq!(abi, 1700);
         let b1 = BrainConfig::from_preset("blackwell-1b").unwrap();
         assert!(b1.parameter_count() > 1_000_000_000);
         let b8 = BrainConfig::from_preset("blackwell-8b").unwrap();
-        assert!(b8.parameter_count() > 7_000_000_000);
+        assert!(b8.parameter_count() > 8_000_000_000);
         assert!(b8.nvfp4_weight_gb() < 8.0);
         assert!(b8.fp32_train_state_gb() < 120.0);
     }
@@ -416,7 +417,7 @@ mod tests {
     fn test_single_file_streaming_bounded_ram() {
         let corpus_dir = default_corpus_path();
         let single_file = corpus_dir.join("brain.rs");
-        let split = load_real_corpus_split(&single_file, 2048, 512, 16)
+        let split = load_real_corpus_split(&single_file, 2048, 512, 17)
             .expect("must stream single large file via File::seek");
         assert_eq!(split.train_files, 1);
         assert_eq!(split.train_bytes.len(), 2048);
@@ -424,9 +425,9 @@ mod tests {
     }
 
     #[test]
-    fn test_v16_simplex_12expert_omgz16_41b_header_banach_eqreg_and_loopfree_beam() {
+    fn test_v17_ppmd_13expert_omgz17_41b_header_deltanet_qk_and_loopfree_beam() {
         let corpus_dir = default_corpus_path();
-        let corpus = load_real_corpus_split(&corpus_dir, 14_000, 4_096, 16)
+        let corpus = load_real_corpus_split(&corpus_dir, 14_000, 4_096, 17)
             .expect("must load real Rust source files from src/");
         assert!(corpus.train_files >= 5);
 
@@ -436,38 +437,37 @@ mod tests {
         let rep = run_real_byte_training(&mut brain, &corpus, 2, 64, 1.0, 2);
         assert!(rep.untrained_heldout_bpb > 7.5);
         assert!(rep.trained_param_heldout_bpb < rep.untrained_heldout_bpb - 1.5);
-        assert!(rep.online_adapted_heldout_bpb < 4.5);
+        assert!(rep.online_adapted_heldout_bpb < 4.0);
         assert!(rep.contractive_linf < 1.0);
 
-        // Verify differentiable Banach Eq-Reg + per-token early-exit ACTUALLY saves token ticks (`AdapTokSaved > 0`)!
         let tel = backend_telemetry();
         assert!(tel.adaptive_ticks_saved > 0, "Per-token adaptive Banach early-exit must save > 0 ticks!");
 
-        // PHYSICAL LOSSLESS OMGZ16 (41-byte compact header + 12-expert simplex + 4-way Match + WordBigram + 64B TTT!)
+        // PHYSICAL LOSSLESS OMGZ17 (41-byte compact header + 13-expert PPM-D + Adaptive Unigram + Skip-1 + 64B TTT!)
         let sample = &corpus.heldout_bytes[..1024.min(corpus.heldout_bytes.len())];
         let (archive, crep) = compress_bytes_with_brain(&brain, sample, true);
-        assert_eq!(crep.header_bytes, 41, "OMGZ16 header for 1024 B file MUST be exact 41 bytes!");
+        assert_eq!(crep.header_bytes, 41, "OMGZ17 header for 1024 B file MUST be exact 41 bytes!");
         assert!(crep.ttt_updates >= 10);
         assert!(crep.compressed_bytes < crep.orig_bytes);
-        let restored = decompress_bytes_with_brain(&brain, &archive).expect("OMGZ16 TTT decompression must verify raw 32B SHA-256");
-        assert_eq!(restored.as_slice(), sample, "OMGZ16 restored file must be 100% BIT-IDENTICAL!");
+        let restored = decompress_bytes_with_brain(&brain, &archive).expect("OMGZ17 TTT decompression must verify raw 32B SHA-256");
+        assert_eq!(restored.as_slice(), sample, "OMGZ17 restored file must be 100% BIT-IDENTICAL!");
 
-        // Verify exact probability simplex invariant (`sum_e alpha[e] == 1.0`)!
+        // Verify exact probability simplex invariant (`sum_e alpha[e] == 1.0`) across all 13 experts!
         let all_active = [true; crate::episodic::NUM_EPISODIC_EXPERTS];
         let alpha = brain.meta_mixer.compute_active_simplex(7, &all_active, 1.0, 0.88);
         let alpha_sum: f32 = alpha.iter().sum();
         assert!((alpha_sum - 1.0).abs() < 1e-5, "Simplex weights MUST sum to 1.0, got {}", alpha_sum);
 
         // Self-Echo-Free System-2 Beam Search Generation
-        let (gen, gen_bpb) = brain.generate_bytes_beam(b"pub fn ", 48, 3, 0.6, 16);
+        let (gen, gen_bpb) = brain.generate_bytes_beam(b"pub fn ", 48, 3, 0.6, 17);
         assert_eq!(gen.len(), 48);
         assert!(gen_bpb.is_finite() && gen_bpb < 6.5);
         let gen_str = String::from_utf8_lossy(&gen);
         assert!(!(&gen[..24] == &gen[24..48]), "Beam output must NOT repeat identical 24B loop: {}", gen_str);
 
-        // Lossless Bit-Exact `TOMG16` Checkpoint Roundtrip (including 12-expert simplex theta+temp + 4-way Match + AST policy!)
-        let tmp_dir = std::env::temp_dir().join("tropicore_asi_v16_unit");
-        let ckpt = tmp_dir.join("unit_v16.tomg");
+        // Lossless Bit-Exact `TOMG17` Checkpoint Roundtrip
+        let tmp_dir = std::env::temp_dir().join("tropicore_asi_v17_unit");
+        let ckpt = tmp_dir.join("unit_v17.tomg");
         let so = run_real_self_optimization(&brain, &corpus.train_bytes, sample, &tmp_dir, 99, false, false, 2);
         assert_eq!(so.candidates_evaluated, 8);
         if let Some(win) = so.winning_policy {
@@ -476,8 +476,8 @@ mod tests {
         }
         brain.best_heldout_bpb = rep.online_adapted_heldout_bpb;
 
-        let sha1 = brain.save_checkpoint(&ckpt).expect("save TOMG16");
-        let (mut loaded, sha2) = DeepContractiveBrain::load_checkpoint(&ckpt).expect("load TOMG16");
+        let sha1 = brain.save_checkpoint(&ckpt).expect("save TOMG17");
+        let (mut loaded, sha2) = DeepContractiveBrain::load_checkpoint(&ckpt).expect("load TOMG17");
         assert_eq!(sha1, sha2);
         let (p1, b1) = brain.eval_byte_stream(sample, 64, false, None);
         let (p2, b2) = loaded.eval_byte_stream(sample, 64, false, None);
@@ -486,67 +486,102 @@ mod tests {
     }
 
     #[test]
-    fn test_universal_agent_closed_loop_beats_random_and_persists_toma15() {
-        fn blackbox_step(state: &mut [f32; 2], act: &[f32]) -> ([f32; 4], f32) {
+    fn test_universal_agent_tdmpc2_beats_random_on_two_unknown_tasks_and_persists_toma17() {
+        // Task A: Coupled nonlinear continuous control (`state -> (+0.8, -0.8)`)
+        fn task_a_step(state: &mut [f32; 2], act: &[f32]) -> ([f32; 4], f32) {
             let a0 = act[0].clamp(-1.0, 1.0);
             let a1 = act[1].clamp(-1.0, 1.0);
             state[0] = (0.65 * state[0] + 0.55 * a0).clamp(-2.0, 2.0);
             state[1] = (0.65 * state[1] + 0.55 * a1).clamp(-2.0, 2.0);
             let err2 = (state[0] - 0.8).powi(2) + (state[1] + 0.8).powi(2);
-            let reward = 1.5 - err2;
-            ([state[0], state[1], state[0] * state[1], (state[0] - state[1]).tanh()], reward)
+            ([state[0], state[1], state[0] * state[1], (state[0] - state[1]).tanh()], 1.5 - err2)
         }
 
+        // Task B: 2nd-Order Inertial/Momentum Nonlinear Control (`vel -> pos` delayed actuation + overshoot penalty!)
+        fn task_b_step(state: &mut [f32; 2], act: &[f32]) -> ([f32; 4], f32) {
+            let a = act[0].clamp(-1.0, 1.0);
+            state[1] = (0.72 * state[1] + 0.45 * a).clamp(-2.0, 2.0); // velocity
+            state[0] = (state[0] + 0.55 * state[1]).clamp(-2.0, 2.0); // position (delayed by inertia!)
+            let r = 1.5 - (state[0] - 1.0).powi(2) - 0.35 * state[1].powi(2);
+            ([state[0], state[1], state[0] * state[1], (state[0] - 1.0).tanh()], r)
+        }
+
+        let cfg = BrainConfig::from_preset("laptop").unwrap();
+        let brain = DeepContractiveBrain::new(cfg, 7);
+
+        // --- Task A ---
         let mut rng = 987654321u64;
-        let mut rand_state = [0.0f32; 2];
-        let mut rand_late_sum = 0.0f32;
+        let mut r_st = [0.0f32; 2];
+        let mut r_sum_a = 0.0f32;
         for step in 0..60 {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let a0 = (((rng >> 33) as f32) / ((1u32 << 31) as f32)) * 2.0 - 1.0;
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let a1 = (((rng >> 33) as f32) / ((1u32 << 31) as f32)) * 2.0 - 1.0;
-            let (_, r) = blackbox_step(&mut rand_state, &[a0, a1]);
-            if step >= 30 { rand_late_sum += r; }
+            let (_, r) = task_a_step(&mut r_st, &[a0, a1]);
+            if step >= 30 { r_sum_a += r; }
         }
-        let rand_late_avg = rand_late_sum / 30.0;
+        let rand_a = r_sum_a / 30.0;
 
-        let cfg = BrainConfig::from_preset("laptop").unwrap();
-        let brain = DeepContractiveBrain::new(cfg, 7);
-        let mut agent = UniversalOpenWorldAgent::new(2, &cfg, 77);
-        let mut ag_state = [0.0f32; 2];
-        let mut obs_vec = vec![0.0f32, 0.0, 0.0, 0.0];
-        let mut last_r = 0.0f32;
-        let mut agent_late_sum = 0.0f32;
+        let mut agent_a = UniversalOpenWorldAgent::new(2, &cfg, 77);
+        let mut a_st = [0.0f32; 2];
+        let mut obs_a = vec![0.0f32; 4];
+        let mut lr_a = 0.0f32;
+        let mut ag_sum_a = 0.0f32;
         for step in 0..60 {
-            let out = agent.step(&brain, &ExternalObservation::Numeric(obs_vec.clone()), last_r, false);
-            let (next_obs, r) = blackbox_step(&mut ag_state, &out.action);
-            obs_vec = next_obs.to_vec();
-            last_r = r;
-            if step >= 30 { agent_late_sum += r; }
+            let out = agent_a.step(&brain, &ExternalObservation::Numeric(obs_a.clone()), lr_a, false);
+            let (no, r) = task_a_step(&mut a_st, &out.action);
+            obs_a = no.to_vec();
+            lr_a = r;
+            if step >= 30 { ag_sum_a += r; }
         }
-        let agent_late_avg = agent_late_sum / 30.0;
-        println!(
-            " [ClosedLoop Agent PASS] Random late_avg={:.3} vs UniversalAgent late_avg={:.3} (gain=+{:.3})",
-            rand_late_avg, agent_late_avg, agent_late_avg - rand_late_avg
-        );
-        assert!(
-            agent_late_avg > rand_late_avg + 0.35,
-            "UniversalAgent ({:.3}) MUST beat random baseline ({:.3}) on unknown closed-loop task!",
-            agent_late_avg, rand_late_avg
-        );
+        let agent_avg_a = ag_sum_a / 30.0;
 
+        // --- Task B (2nd-order inertial control!) ---
+        let mut rb_st = [0.0f32; 2];
+        let mut r_sum_b = 0.0f32;
+        for step in 0..70 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let a0 = (((rng >> 33) as f32) / ((1u32 << 31) as f32)) * 2.0 - 1.0;
+            let (_, r) = task_b_step(&mut rb_st, &[a0]);
+            if step >= 35 { r_sum_b += r; }
+        }
+        let rand_b = r_sum_b / 35.0;
+
+        let mut agent_b = UniversalOpenWorldAgent::new(1, &cfg, 88);
+        let mut ab_st = [0.0f32; 2];
+        let mut obs_b = vec![0.0f32; 4];
+        let mut lr_b = 0.0f32;
+        let mut ag_sum_b = 0.0f32;
+        for step in 0..70 {
+            let out = agent_b.step(&brain, &ExternalObservation::Numeric(obs_b.clone()), lr_b, false);
+            let (no, r) = task_b_step(&mut ab_st, &out.action);
+            obs_b = no.to_vec();
+            lr_b = r;
+            if step >= 35 { ag_sum_b += r; }
+        }
+        let agent_avg_b = ag_sum_b / 35.0;
+
+        println!(
+            " [TD-MPC2 MultiTask PASS] TaskA(Coupled): Rand {:.3} vs Agent {:.3} (+{:.3}) | TaskB(Inertial2ndOrder): Rand {:.3} vs Agent {:.3} (+{:.3})",
+            rand_a, agent_avg_a, agent_avg_a - rand_a, rand_b, agent_avg_b, agent_avg_b - rand_b
+        );
+        assert!(agent_avg_a > rand_a + 0.35, "Task A failed: {:.3} vs {:.3}", agent_avg_a, rand_a);
+        assert!(agent_avg_b > rand_b + 0.35, "Task B (2nd-order inertial) failed: {:.3} vs {:.3}", agent_avg_b, rand_b);
+
+        // Verify escaped JSON obs_text + Lossless `TOMA17` SHA-256 Persistence (including Actor + Target Actor!)
         let (obs_txt, r_txt, d_txt) =
             parse_env_jsonl(r#"{"obs_text":"log: \"bid=101.4\"\\nok","reward":1.2,"done":false}"#).unwrap();
         assert!((r_txt - 1.2).abs() < 1e-6 && !d_txt);
-        let out_txt = agent.step(&brain, &obs_txt, r_txt, false);
+        let out_txt = agent_a.step(&brain, &obs_txt, r_txt, false);
         assert!(format_agent_jsonl(&out_txt).contains("\"pred_value\":"));
 
-        let tmp_p = std::env::temp_dir().join("tropicore_v16_agent_unit.toma");
-        let sha1 = agent.save_checkpoint(&tmp_p).expect("save TOMA15");
-        let (loaded, sha2) = UniversalOpenWorldAgent::load_checkpoint(&tmp_p).expect("load TOMA15");
+        let tmp_p = std::env::temp_dir().join("tropicore_v17_agent_unit.toma");
+        let sha1 = agent_a.save_checkpoint(&tmp_p).expect("save TOMA17");
+        let (loaded, sha2) = UniversalOpenWorldAgent::load_checkpoint(&tmp_p).expect("load TOMA17");
         assert_eq!(sha1, sha2);
-        assert_eq!(loaded.online_updates, agent.online_updates);
-        assert_eq!(loaded.replay_len(), agent.replay_len());
+        assert_eq!(loaded.online_updates, agent_a.online_updates);
+        assert_eq!(loaded.replay_len(), agent_a.replay_len());
         let _ = std::fs::remove_file(&tmp_p);
     }
 }

@@ -4915,6 +4915,7 @@ class RPCRouter:
         self._auth_fail_streak: Dict[Tuple[int, str], int] = {}
         self._auth_dead_key_cids: Dict[Tuple[str, str], Set[int]] = {}
         self._auth_dead_key_until: Dict[Tuple[str, str], float] = {}
+        self._auth_dead_key_seen_until: Dict[Tuple[str, str], float] = {}
         self._last_persisted_at: Dict[str, float] = {}
         self._last_shared_sync_at: float = 0.0
         self._verified_chain_urls: Set[Tuple[int, str]] = set()
@@ -4936,6 +4937,15 @@ class RPCRouter:
         try:
             now = time.time()
             rows = self.store.load_rpc_endpoints()
+            raw_adk = self.store.get_engine_meta("auth_dead_provider_keys", "")
+            adk_map: Dict[str, Any] = {}
+            if raw_adk:
+                try:
+                    parsed_adk = json.loads(raw_adk)
+                    if isinstance(parsed_adk, dict):
+                        adk_map = parsed_adk
+                except (ValueError, TypeError):
+                    adk_map = {}
             with self._lock:
                 for row in rows:
                     u = _endpoint_storage_key(str(row.get("url") or ""))
@@ -4946,12 +4956,6 @@ class RPCRouter:
                     if int(row.get("quarantined") or 0) == 1:
                         if du > now and rcid > 0:
                             self._quarantine_until[(rcid, u)] = max(self._quarantine_until.get((rcid, u), 0.0), du)
-                            kfp_r = self._provider_key_fp(str(row.get("url") or ""))
-                            if kfp_r is not None:
-                                cset_r = self._auth_dead_key_cids.setdefault(kfp_r, set())
-                                cset_r.add(rcid)
-                                if len(cset_r) >= 2:
-                                    self._auth_dead_key_until[kfp_r] = max(self._auth_dead_key_until.get(kfp_r, 0.0), du)
                     elif du > now:
                         self._demote_until[u] = max(self._demote_until.get(u, 0.0), du)
                     bcap = int(row.get("batch_cap") or 0)
@@ -4966,6 +4970,29 @@ class RPCRouter:
                     cu = float(row.get("cool_until") or 0.0)
                     if cu > now:
                         self._cool_until[u] = max(self._cool_until.get(u, 0.0), cu)
+                for k_str, meta in adk_map.items():
+                    if not isinstance(meta, dict) or ":" not in str(k_str):
+                        continue
+                    dom_m, kh_m = str(k_str).split(":", 1)
+                    until_m = float(meta.get("until") or 0.0)
+                    if until_m <= now or not dom_m or len(kh_m) != 16:
+                        continue
+                    kfp_m = (dom_m, kh_m)
+                    cset_m = self._auth_dead_key_cids.setdefault(kfp_m, set())
+                    for c_item in (meta.get("cids") or ()):
+                        try:
+                            ci_v = int(c_item)
+                            if ci_v > 0:
+                                cset_m.add(ci_v)
+                        except (ValueError, TypeError):
+                            pass
+                    self._auth_dead_key_seen_until[kfp_m] = max(
+                        self._auth_dead_key_seen_until.get(kfp_m, 0.0), until_m
+                    )
+                    if len(cset_m) >= 2:
+                        self._auth_dead_key_until[kfp_m] = max(
+                            self._auth_dead_key_until.get(kfp_m, 0.0), until_m
+                        )
         except _RECOVERABLE_IO_EXC:
             pass
 
@@ -5268,9 +5295,31 @@ class RPCRouter:
                 return dom, hashlib.sha256(key_seg.encode("utf-8")).hexdigest()[:16]
         return None
 
+    def _persist_auth_dead_keys(self) -> None:
+        if self.store is None:
+            return
+        now = time.time()
+        payload: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            for kfp_p, cset_p in list(self._auth_dead_key_cids.items()):
+                until_p = max(
+                    self._auth_dead_key_until.get(kfp_p, 0.0),
+                    self._auth_dead_key_seen_until.get(kfp_p, 0.0),
+                )
+                if until_p > now and cset_p:
+                    payload[f"{kfp_p[0]}:{kfp_p[1]}"] = {
+                        "until": round(until_p, 1),
+                        "cids": sorted(cset_p),
+                    }
+        try:
+            self.store.put_engine_meta("auth_dead_provider_keys", json.dumps(payload, separators=(",", ":")))
+        except _RECOVERABLE_IO_EXC:
+            pass
+
     def _record_success(self, url: str, elapsed_ms: float, cid: int = 0) -> None:
         uk = _endpoint_storage_key(url)
         kfp = self._provider_key_fp(url)
+        cleared_dead_kfp = False
         with self._lock:
             prev = self._rtt_ms.get(uk)
             self._rtt_ms[uk] = elapsed_ms if prev is None else (0.7 * prev + 0.3 * elapsed_ms)
@@ -5278,15 +5327,22 @@ class RPCRouter:
                 self._quarantine_until.pop((cid, uk), None)
                 self._auth_fail_streak.pop((cid, uk), None)
             if kfp is not None:
-                self._auth_dead_key_until.pop(kfp, None)
-                if cid > 0 and kfp in self._auth_dead_key_cids:
+                if self._auth_dead_key_until.pop(kfp, None) is not None:
+                    cleared_dead_kfp = True
+                if cid > 0 and kfp in self._auth_dead_key_cids and cid in self._auth_dead_key_cids[kfp]:
                     self._auth_dead_key_cids[kfp].discard(cid)
+                    cleared_dead_kfp = True
+                    if not self._auth_dead_key_cids[kfp]:
+                        self._auth_dead_key_seen_until.pop(kfp, None)
+        if cleared_dead_kfp:
+            self._persist_auth_dead_keys()
         if cid > 0:
             self._persist_endpoint_if_due(url, cid, force=False)
 
     def _record_failure(self, url: str, kind: str, cid: int = 0) -> None:
         now = time.time()
         force_save = False
+        persist_dead_kfp = False
         uk = _endpoint_storage_key(url)
         kfp = self._provider_key_fp(url) if kind == "auth_dead" else None
         with self._lock:
@@ -5302,8 +5358,13 @@ class RPCRouter:
                     if kfp is not None and cid > 0:
                         cset = self._auth_dead_key_cids.setdefault(kfp, set())
                         cset.add(cid)
+                        self._auth_dead_key_seen_until[kfp] = max(
+                            self._auth_dead_key_seen_until.get(kfp, 0.0),
+                            now + self._QUARANTINE_TTL_SEC,
+                        )
                         if len(cset) >= 2:
                             self._auth_dead_key_until[kfp] = now + self._QUARANTINE_TTL_SEC
+                        persist_dead_kfp = True
                 else:
                     # Single transient 403/WAF burst on keyless public RPC: short cool+demote instead of 1h quarantine
                     self._demote_until[uk] = now + 300.0
@@ -5327,6 +5388,8 @@ class RPCRouter:
             elif kind == "gap":
                 self._cool_until[uk] = now + 20.0
                 force_save = True
+        if persist_dead_kfp:
+            self._persist_auth_dead_keys()
         if cid > 0:
             self._persist_endpoint_if_due(url, cid, force=force_save)
 
@@ -15190,6 +15253,48 @@ def _build_stage4_flash_wrapped_slices(
                 amm_added += 1
                 if amm_added >= max_amm_slices:
                     break
+    if len(wrapped) > 6:
+        def _flash_slice_weight(_sl: CausalSlice) -> int:
+            _fh = _sl.flash_loan_hint if isinstance(_sl.flash_loan_hint, dict) else {}
+            if _fh.get("amm_pair"):
+                return 4
+            if _fh.get("dual_leg"):
+                return 3
+            if _fh.get("eth_unwrap") or _fh.get("donate_mode"):
+                return 2
+            return 1
+
+        _light_w = [_sl for _sl in wrapped if _flash_slice_weight(_sl) == 1]
+        _heavy_w = sorted(
+            [_sl for _sl in wrapped if _flash_slice_weight(_sl) > 1],
+            key=_flash_slice_weight,
+            reverse=True,
+        )
+        if _light_w and _heavy_w:
+            _n_bkt = max(2, (len(wrapped) + 5) // 6)
+            _bkt_l: List[List[CausalSlice]] = [[] for _ in range(_n_bkt)]
+            _bkt_h: List[List[CausalSlice]] = [[] for _ in range(_n_bkt)]
+            for _idx_l, _sl_l in enumerate(_light_w):
+                _bkt_l[_idx_l % _n_bkt].append(_sl_l)
+            for _idx_h, _sl_h in enumerate(_heavy_w):
+                _cyc = _idx_h // _n_bkt
+                _pos = _idx_h % _n_bkt
+                _bi = _pos if (_cyc % 2 == 0) else (_n_bkt - 1 - _pos)
+                _bkt_h[_bi].append(_sl_h)
+            _balanced_w: List[CausalSlice] = []
+            for _bi in range(_n_bkt):
+                _bl = _bkt_l[_bi]
+                _bh = _bkt_h[_bi]
+                _il = 0
+                _ih = 0
+                while _il < len(_bl) or _ih < len(_bh):
+                    if _il < len(_bl):
+                        _balanced_w.append(_bl[_il])
+                        _il += 1
+                    if _ih < len(_bh):
+                        _balanced_w.append(_bh[_ih])
+                        _ih += 1
+            wrapped = _balanced_w
     return wrapped
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -25142,11 +25247,15 @@ def select_zero_state_caller(
     btag = hex(block_pin) if block_pin > 0 else "latest"
     candidates = _deterministic_caller_candidates(c, exclude_addrs=exclude_addrs)
     toks_to_check = list(dict.fromkeys(nt for t in (check_tokens or []) if (nt := _norm_addr(t))))
-    def _cand_zero_toks(cand_a: str) -> bool:
-        if not toks_to_check:
-            return True
+    universal_spam_toks: Set[str] = set()
+    first_zero_cand_nz: Optional[Tuple[str, Dict[str, int]]] = None
+
+    def _cand_nonzero_toks(cand_a: str) -> Optional[Dict[str, int]]:
+        active_toks = [tk for tk in toks_to_check if tk not in universal_spam_toks]
+        if not active_toks:
+            return {}
         cand_padded = bytes(12) + bytes.fromhex(cand_a[2:])
-        subcalls = [(tk, bytes.fromhex(BALANCE_OF_SEL[2:]) + cand_padded) for tk in toks_to_check]
+        subcalls = [(tk, bytes.fromhex(BALANCE_OF_SEL[2:]) + cand_padded) for tk in active_toks]
         mc_chunks_c = [subcalls[off_tk : off_tk + 64] for off_tk in range(0, len(subcalls), 64)]
 
         def _probe_cand_mc_chunk(ch_s: List[Tuple[str, bytes]]) -> Tuple[Optional[List[Tuple[bool, bytes]]], int, bool]:
@@ -25155,15 +25264,18 @@ def select_zero_state_caller(
             t_fail = bool(t_loc is not None and getattr(t_loc, "last_multicall_transport_failed", False))
             return res_c, len(ch_s), t_fail
 
+        nz_out: Dict[str, int] = {}
+        tok_off = 0
         for mc_res, exp_len, t_fail in _map_chunks_live(router, _probe_cand_mc_chunk, mc_chunks_c, max_workers=8):
             if t_fail or mc_res is None or len(mc_res) != exp_len:
-                return False
-            if any(
-                ok_b and len(ret_b) >= 32 and int.from_bytes(ret_b[:32], "big") > 0
-                for ok_b, ret_b in mc_res
-            ):
-                return False
-        return True
+                return None
+            for idx_b, (ok_b, ret_b) in enumerate(mc_res):
+                if ok_b and len(ret_b) >= 32:
+                    v_b = int.from_bytes(ret_b[:32], "big")
+                    if v_b > 0:
+                        nz_out[active_toks[tok_off + idx_b]] = v_b
+            tok_off += exp_len
+        return nz_out
 
     for wave_off in range(0, len(candidates), 4):
         wave_cands = candidates[wave_off : wave_off + 4]
@@ -25191,8 +25303,24 @@ def select_zero_state_caller(
                     nonce = int(str(res[base_i + 1]), 16)
                     code = _hex_to_bytes(res[base_i + 2])
                     if not _eip7702_delegate(code) and bal == 0 and nonce == 0 and len(code) == 0:
-                        if _cand_zero_toks(cand):
+                        nz_map = _cand_nonzero_toks(cand)
+                        if nz_map is None:
+                            continue
+                        if not nz_map:
                             return cand
+                        if first_zero_cand_nz is None:
+                            first_zero_cand_nz = (cand, nz_map)
+                        else:
+                            prev_c, prev_nz = first_zero_cand_nz
+                            # 두 독립 미사용 EOA(bal=0/nonce=0/code=0x)에 동일 비영 잔고를 반환하는 토큰은 보편 스팸/에어드롭 토큰
+                            for tk_s, val_s in nz_map.items():
+                                if prev_nz.get(tk_s) == val_s:
+                                    universal_spam_toks.add(tk_s)
+                            if universal_spam_toks:
+                                if not any(tk_p not in universal_spam_toks for tk_p in prev_nz):
+                                    return prev_c
+                                if not any(tk_n not in universal_spam_toks for tk_n in nz_map):
+                                    return cand
         except Exception:
             continue
     try:
@@ -25278,15 +25406,17 @@ def ensure_clean_forge_workspace(
     slug: str = "_shared",
     offline: bool = False,
     evm_version: str = "",
+    sub_dir: str = "",
 ) -> Path:
     """
-    프로토콜별 격리 Foundry 워크스페이스(audit_artifacts/<slug>/forge) 초기화 및 foundry.toml 작성:
+    프로토콜별 격리 Foundry 워크스페이스(audit_artifacts/<slug>/forge 또는 임시 청크용 _t/<sub_dir>) 초기화 및 foundry.toml 작성:
     - 로컬 `tools/foundry/solc.exe` 고정(`auto_detect_solc = false`)으로 외부 컴파일러 다운로드 원천 차단
     - 대상 체인 활성 하드포크(`osaka`/`prague`/`cancun`) 설정(`forge`가 `solc 0.8.28` 상한 `prague`로 자동 컴파일 후 활성 런타임으로 실행)
     - `no_storage_caching = true`, `cache_path = "cache"`, `out = "out"`으로 OS 홈 디렉토리(`~/.foundry`) 오염 차단
     """
     clean_s = _norm_slug(slug) or "_shared"
-    ws = ARTIFACT_ROOT / clean_s / "forge"
+    clean_sub = _norm_slug(sub_dir) if sub_dir else ""
+    ws = (ARTIFACT_ROOT / clean_s / "_t" / clean_sub) if clean_sub else (ARTIFACT_ROOT / clean_s / "forge")
     (ws / "src").mkdir(parents=True, exist_ok=True)
     (ws / "test").mkdir(parents=True, exist_ok=True)
     (ws / "cache").mkdir(parents=True, exist_ok=True)
@@ -37047,7 +37177,7 @@ def _render_stage4_fuzz_discovery_sol(
         sw_list = tok_list[:4]
         sw_lines = "\n".join(f"        t[{i}] = {tk};" for i, tk in enumerate(sw_list))
         sweep_helper = (
-            "    FuzzFlashHelper internal immutable _fh = new FuzzFlashHelper();\n\n"
+            f"    FuzzFlashHelper internal immutable _fh = new FuzzFlashHelper{{salt: keccak256(abi.encode(address({c_chk})))}}();\n\n"
             f"    function _sweepToks() internal pure returns (address[] memory t) {{\n"
             f"        t = new address[]({len(sw_list)});\n"
             f"{sw_lines}\n"
@@ -37172,11 +37302,30 @@ def _render_stage4_fuzz_discovery_sol(
             f"            (bool okD, ) = _tok.call{{value: address(this).balance}}(abi.encodeWithSelector({WETH_DEPOSIT_SEL})); okD;\n"
             "        }\n"
             "    }\n"
+            "    function _preSnap(address tok, address[] memory swToks) internal view returns (uint256[] memory pre) {\n"
+            "        pre = new uint256[](3 + swToks.length);\n"
+            "        pre[0] = _bo(tok);\n"
+            "        pre[1] = (_ammQuote != address(0) && _ammQuote != tok) ? _bo(_ammQuote) : 0;\n"
+            "        pre[2] = address(this).balance;\n"
+            "        for (uint256 i = 0; i < swToks.length; i++) {\n"
+            "            if (swToks[i] != tok && swToks[i] != _ammQuote) { pre[3 + i] = _bo(swToks[i]); }\n"
+            "        }\n"
+            "    }\n"
+            "    function _sweepDelta(address tok, address[] memory swToks, address ben, uint256[] memory pre) internal {\n"
+            "        uint256 bMain = _bo(tok); if (bMain > pre[0]) { _tr(tok, ben, bMain - pre[0]); }\n"
+            "        if (_ammQuote != address(0) && _ammQuote != tok) { uint256 bQ = _bo(_ammQuote); if (bQ > pre[1]) { _tr(_ammQuote, ben, bQ - pre[1]); } }\n"
+            "        for (uint256 i = 0; i < swToks.length; i++) {\n"
+            "            if (swToks[i] == tok || swToks[i] == _ammQuote) { continue; }\n"
+            "            uint256 bi = _bo(swToks[i]); if (bi > pre[3 + i]) { _tr(swToks[i], ben, bi - pre[3 + i]); }\n"
+            "        }\n"
+            '        if (address(this).balance > pre[2]) { (bool sOk, ) = ben.call{value: address(this).balance - pre[2]}(""); sOk; }\n'
+            "    }\n"
             "    function runFlash(\n"
             "        uint8 mode, address vault, address tok, uint256 amt,\n"
             "        address[] memory tgts, bytes[] memory cds, address[] memory swToks, address ben\n"
             "    ) external {\n"
             "        _tok = tok; _amt = amt; _tgts = tgts; _cds = cds;\n"
+            "        uint256[] memory pre = _preSnap(tok, swToks);\n"
             "        bool ok;\n"
             f"        if (mode == {_STAGE4_FLASH_MODE['balancer_v2']}) {{\n"
             "            address[] memory ts = new address[](1); ts[0] = tok;\n"
@@ -37200,14 +37349,8 @@ def _render_stage4_fuzz_discovery_sol(
             f'            if (mode == {_STAGE4_FLASH_MODE["dex_flash_v2"]}) {{ (ok, ) = vault.call(abi.encodeWithSelector({V2_SWAP_SEL}, a0, a1, address(this), hex"01")); }}\n'
             f'            else {{ (ok, ) = vault.call(abi.encodeWithSelector({V3_FLASH_SEL}, address(this), a0, a1, hex"01")); }}\n'
             "        }\n"
-            "        ok;\n"
-            "        uint256 bMain = _bo(tok); if (bMain > 0) { _tr(tok, ben, bMain); }\n"
-            "        if (_ammQuote != address(0) && _ammQuote != tok) { uint256 bQ = _bo(_ammQuote); if (bQ > 0) { _tr(_ammQuote, ben, bQ); } }\n"
-            "        for (uint256 i = 0; i < swToks.length; i++) {\n"
-            "            if (swToks[i] == tok || swToks[i] == _ammQuote) { continue; }\n"
-            "            uint256 bi = _bo(swToks[i]); if (bi > 0) { _tr(swToks[i], ben, bi); }\n"
-            "        }\n"
-            '        if (address(this).balance > 0) { (bool sOk, ) = ben.call{value: address(this).balance}(""); sOk; }\n'
+            "        if (!ok) { return; }\n"
+            "        _sweepDelta(tok, swToks, ben, pre);\n"
             "    }\n"
             "    function unlockCallback(bytes calldata data) external returns (bytes memory) {\n"
             "        uint256 amt = abi.decode(data, (uint256));\n"

@@ -67,7 +67,7 @@ fn emit_runtime_cfg_rs(g: RuntimePolicyOverride) -> String {
         ),
     };
     format!(
-        r#"//! Evolved Live Structural AST Runtime Policy (`TropiCore-Omega v16.0`, `{tag}`).
+        r#"//! Evolved Live Structural AST Runtime Policy (`TropiCore-Omega v17.0`, `{tag}`).
 
 #[inline]
 pub fn contractive_gamma() -> f32 {{
@@ -456,7 +456,7 @@ pub fn run_real_self_optimization(
     let accepted = improved && rustc_ok && (!verify_binary || !apply_live || binary_verified);
     let new_sha = sha256_hex(final_src.as_bytes());
     let payload = format!(
-        "{{\"engine\":\"ASI-Zero-v16\",\"src_prev_sha\":\"{}\",\"src_sha256\":\"{}\",\"bin_sha256\":\"{}\",\"base_bpb\":{:.5},\"best_bpb\":{:.5},\"accepted\":{},\"applied_live\":{},\"binary_verified\":{},\"upgrade\":\"{}\"}}",
+        "{{\"engine\":\"ASI-Zero-v17\",\"src_prev_sha\":\"{}\",\"src_sha256\":\"{}\",\"bin_sha256\":\"{}\",\"base_bpb\":{:.5},\"best_bpb\":{:.5},\"accepted\":{},\"applied_live\":{},\"binary_verified\":{},\"upgrade\":\"{}\"}}",
         &live_sha[..16], &new_sha[..16], bin_sha, baseline_bpb, best_bpb, accepted, applied_live, binary_verified, upgrade_desc
     );
     let ledger_digest = sha256_hex(payload.as_bytes());

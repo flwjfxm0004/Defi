@@ -1,17 +1,17 @@
 // ==============================================================================
-// TropiCore-Omega ASI-Zero v16.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
+// TropiCore-Omega ASI-Zero v17.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
 // Target Node (`장비.md` Track A):
 //   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 7.168 TB/s, 14.044 PFLOPS FP4)
 //   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5) + 1,000 GB DDR5-6400 ECC
 //
-// ABI = 1600 (Zero-Copy AllReduce, Hardware-Exact NVFP4 RNE, Fused RMSNorm/SwiGLU, ZERO Dead Symbols!):
+// ABI = 1700 (Zero-Copy AllReduce, Aligned Clamp, Hardware-Exact NVFP4 RNE, Fused RMSNorm/SwiGLU, ZERO Dead Symbols!):
 //   1. Thread-Safe Persistent GDDR7 Tensor Handle Pool (`g_pool_mtx` + per-GPU `ctx.mtx`):
 //      `tensor_create / tensor_upload / tensor_download / tensor_free` across GPUs `0..N-1`
 //   2. `tropicore_sm120_embedding_fwd` / `bwd`      : Live GPU-Resident Byte Embedding Lookup & Scatter
 //   3. `tropicore_sm120_linear_fwd/bwd_resident`    : Batched Forward & Backward `dX`/`dW`/`db` GEMMs
 //   4. `tropicore_sm120_rmsnorm_fwd` / `bwd`        : Fused Per-Token RMSNorm Forward & Backward
 //   5. `tropicore_sm120_swiglu_fwd` / `bwd`         : Fused SwiGLU `silu(gate)*val` Forward & Backward
-//   6. `tropicore_sm120_contractive_step_fwd` / `bwd`: Live-wired Input-Anchored Contractive Equilibrium
+//   6. `tropicore_sm120_contractive_step_fwd` / `bwd`: Live-wired Input-Anchored Contractive Equilibrium ([-10,10] parity)
 //   7. `tropicore_sm120_byte_ce_fwd_bwd`            : Exact 256-way Byte Cross-Entropy + Softmax Grad
 //   8. `tropicore_sm120_adamw_resident_inplace`     : Fused GPU AdamW + Banach Row-L_inf + Exact NVFP4 RNE STE
 //   9. `tropicore_sm120_allreduce_mean`             : Zero-Copy `const float* const*` Multi-Shard AllReduce
@@ -19,13 +19,12 @@
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#include <cublasLt.h>
 #include <stdint.h>
 #include <math.h>
 #include <mutex>
 #include <vector>
 
-static constexpr int32_t TROPICORE_SM120_ABI = 1600;
+static constexpr int32_t TROPICORE_SM120_ABI = 1700;
 static constexpr int MAX_GPUS = 4;
 static constexpr int MAX_DEV_TENSORS = 16384;
 
@@ -40,7 +39,6 @@ struct DeviceCtx {
     std::mutex mtx;
     bool initialized = false;
     cublasHandle_t cublas = nullptr;
-    cublasLtHandle_t cublas_lt = nullptr;
     float* d_buf_a = nullptr;
     float* d_buf_b = nullptr;
     float* d_buf_c = nullptr;
@@ -68,7 +66,6 @@ static inline bool ensure_ctx_locked(int gpu) {
     if (!g_ctx[gpu].initialized) {
         if (cublasCreate(&g_ctx[gpu].cublas) != CUBLAS_STATUS_SUCCESS) return false;
         cublasSetMathMode(g_ctx[gpu].cublas, CUBLAS_TF32_TENSOR_OP_MATH);
-        cublasLtCreate(&g_ctx[gpu].cublas_lt);
         g_ctx[gpu].initialized = true;
     }
     return true;
@@ -269,7 +266,7 @@ __global__ void contractive_bwd_pre_kernel(
         float g = dz[idx];
         float h = h_cur[idx];
         float dp = g * gamma * (1.0f - h * h);
-        dpre[idx] = fminf(fmaxf(dp, -4.0f), 4.0f);
+        dpre[idx] = fminf(fmaxf(dp, -10.0f), 10.0f);
         dx_anchor[idx] += g * (1.0f - gamma);
     }
 }
@@ -429,7 +426,7 @@ __global__ void adamw_row_contractive_nvfp4_kernel(
 }
 
 // ============================================================================
-// EXTERN "C" FFI ENTRYPOINTS (ABI = 1300 — 100% THREAD-SAFE!)
+// EXTERN "C" FFI ENTRYPOINTS (ABI = 1700 — 100% THREAD-SAFE!)
 // ============================================================================
 
 extern "C" {

@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# TropiCore-Omega ASI-Zero v16.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
+# TropiCore-Omega ASI-Zero v17.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
 # Target Hardware (`장비.md` Track A):
 #   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 14.044 PFLOPS FP4 2:4)
 #   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5, 384 MB L3)
 #   - 1,000 GB DDR5-6400 ECC + 4x Samsung 9100 PRO 4TB (RAID1 OS + 15.2 TB RAID0)
-#   - PURE ZERO-TOY, ZERO-LLM, ZERO-COPY ALLREDUCE MULTI-GPU SM120 ARCHITECTURE (`ABI = 1600`):
-#       * Zero-Copy AllReduce (`&[&[f32]]`, saves +124 GB/step on 8B!) + Reusable ForwardScratch Pool
-#       * SwiGLU + Causal Conv-4 + Learned Mixers + Fast-Weight Delta-SSM + Differentiable Banach Equilibrium Reg
-#       * Fused CUDA 13 RMSNorm + SwiGLU + Resident GEMM + Embedding + Contractive + Byte-CE + Exact NVFP4 RNE AdamW
-#       * Verified by Central Finite-Diff Gradient Check across ALL 20 tensor types + Lean 4 Omega-1..Omega-5
-#       * 12-Expert x 8-Context Simplex-Normalized Log-Opinion Pool + Calibrated Online Temp (4-Way Match + WordBigram + CTW 1..8 + Tropical-L1 + Neural)
-#       * Dynamic Scaling Presets: `laptop` (0.35M) | `mid` (18.15M) | `blackwell-1b` (1.14B) | `blackwell-8b` (7.76B)
-#       * Compact 41-Byte Header `OMGZ16` Lossless Codec (ULEB128 + raw 32B SHA-256 + 64B TTT Neural Adaptation)
+#   - PURE ZERO-TOY, ZERO-LLM, ZERO-COPY ALLREDUCE MULTI-GPU SM120 ARCHITECTURE (`ABI = 1700`):
+#       * Independent Query/Key DeltaNet-SSM (`w_qry`/`b_qry`) + SwiGLU + Conv-4 + Diff-EqReg Adaptive Banach
+#       * Zero-Copy AllReduce (`&[&[f32]]`) + 4x4 Blocked SIMD FWD/BWD + Reusable ForwardScratch Pool
+#       * Fused CUDA 13 RMSNorm + SwiGLU + Resident GEMM + Embedding + Contractive([-10,10]) + Byte-CE + NVFP4 RNE AdamW
+#       * Verified by Central Finite-Diff Gradient Check across ALL 22 tensor types + Lean 4 Omega-1..Omega-6 (0 sorry)
+#       * 13-Expert x 8-Context Simplex Meta-Mixer (Exact PPM-D Escape + Adaptive Unigram + 4-Way Match + WordBigram + Skip-1)
+#       * Compact 41-Byte Header `OMGZ17` Lossless Codec (ULEB128 + raw 32B SHA-256 + 64B TTT Neural Adaptation)
 #       * Strictly `O(budget)` RAM Streaming I/O via `File::seek` (works on single 10-100 GB dataset files!)
 #       * Multi-Formula AST Self-Optimizer with Isolated Compiled-Binary 2D Pareto Gate (`--verify-binary`)
-#       * Stateful Polyak-Target-TD + Prioritized-Replay `UniversalAgent` (`TOMA15`, closed-loop reward proven!)
+#       * Stateful TD-MPC2 Actor-Critic `UniversalAgent` (`TOMA17`: zero latent loss, continuous actor + Polyak target, warm-started CEM!)
 #
 # Day-1 Turnkey Usage:
 #   chmod +x deploy/deploy_4x_blackwell.sh
@@ -48,7 +47,7 @@ done
 
 CPU_THREADS="$(nproc)"
 echo "========================================================================="
-echo " TropiCore-Omega ASI-Zero v16.0.0 — 4x RTX PRO 6000 Blackwell SM120"
+echo " TropiCore-Omega ASI-Zero v17.0.0 — 4x RTX PRO 6000 Blackwell SM120"
 echo " Preset: ${PRESET} | Corpus: ${CORPUS_PATH} | Power: ${POWER_LIMIT}W/GPU | Threads: ${CPU_THREADS}"
 echo "========================================================================="
 
@@ -63,21 +62,21 @@ else
   echo "  (Note: run with sudo to apply nvidia-smi -pm 1 and -pl ${POWER_LIMIT}W)"
 fi
 
-echo "[2/5] Checking Toolchain (nvcc CUDA 13, cublas/cublasLt, rustc)..."
+echo "[2/5] Checking Toolchain (nvcc CUDA 13, cublas, rustc)..."
 nvcc --version
 rustc --version
 
-echo "[3/5] Compiling Zero-Copy Multi-GPU Fused SM120 CUDA 13 Kernels (RMSNorm+SwiGLU+NVFP4 RNE, ABI=1600)..."
+echo "[3/5] Compiling Zero-Copy Multi-GPU Fused SM120 CUDA 13 Kernels (RMSNorm+SwiGLU+NVFP4 RNE, ABI=1700)..."
 nvcc -O3 -std=c++17 -arch=sm_120a -Xcompiler -fPIC \
   -c cuda/tropicore_omega_sm120.cu -o cuda/tropicore_omega_sm120.o
 ar rcs cuda/libtropicore_omega_sm120.a cuda/tropicore_omega_sm120.o
 ls -lh cuda/libtropicore_omega_sm120.a
 
-echo "[4/5] Building & Testing tropicore_omega v16.0 --release --features cuda_sm120 (-D warnings)..."
+echo "[4/5] Building & Testing tropicore_omega v17.0 --release --features cuda_sm120 (-D warnings)..."
 RUSTFLAGS="-C target-cpu=native -D warnings" cargo build --release --features cuda_sm120
 RUSTFLAGS="-C target-cpu=native -D warnings" cargo test --release --features cuda_sm120 -- --nocapture
 
-echo "[5/5] Launching TropiCore-Omega ASI-Zero v16.0 Status & Autonomous Real-World Daemon..."
+echo "[5/5] Launching TropiCore-Omega ASI-Zero v17.0 Status & Autonomous Real-World Daemon..."
 ./target/release/tropicore_omega status
 
 EXTRA_FLAGS=""
@@ -94,10 +93,10 @@ if [[ "$CYCLES" -gt 0 ]]; then
     --cycles "$CYCLES" \
     --epochs "$EPOCHS" \
     --threads "$CPU_THREADS" \
-    --ckpt "out/asi_zero_v16_${PRESET}.tomg" \
+    --ckpt "out/asi_zero_v17_${PRESET}.tomg" \
     ${EXTRA_FLAGS}
 fi
 
 echo "========================================================================="
-echo " TropiCore-Omega ASI-Zero v16.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
+echo " TropiCore-Omega ASI-Zero v17.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
 echo "========================================================================="
