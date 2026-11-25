@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# TropiCore-Omega ASI-Zero v15.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
+# TropiCore-Omega ASI-Zero v16.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
 # Target Hardware (`장비.md` Track A):
 #   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 14.044 PFLOPS FP4 2:4)
 #   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5, 384 MB L3)
 #   - 1,000 GB DDR5-6400 ECC + 4x Samsung 9100 PRO 4TB (RAID1 OS + 15.2 TB RAID0)
-#   - PURE ZERO-TOY, ZERO-LLM, THREAD-SAFE MULTI-GPU FUSED SM120 ARCHITECTURE (`ABI = 1500`):
-#       * SwiGLU + Causal Conv-4 + Learned Mixers + Fast-Weight Associative Delta-SSM + Depth-Consistent Banach
+#   - PURE ZERO-TOY, ZERO-LLM, ZERO-COPY ALLREDUCE MULTI-GPU SM120 ARCHITECTURE (`ABI = 1600`):
+#       * Zero-Copy AllReduce (`&[&[f32]]`, saves +124 GB/step on 8B!) + Reusable ForwardScratch Pool
+#       * SwiGLU + Causal Conv-4 + Learned Mixers + Fast-Weight Delta-SSM + Differentiable Banach Equilibrium Reg
 #       * Fused CUDA 13 RMSNorm + SwiGLU + Resident GEMM + Embedding + Contractive + Byte-CE + Exact NVFP4 RNE AdamW
 #       * Verified by Central Finite-Diff Gradient Check across ALL 20 tensor types + Lean 4 Omega-1..Omega-5
-#       * 11-Expert x 8-Context Online Convex Meta-Mixer (Order-inf Exact Match-Model + CTW 1..8 + Tropical-L1 + Neural)
+#       * 12-Expert x 8-Context Simplex-Normalized Log-Opinion Pool + Calibrated Online Temp (4-Way Match + WordBigram + CTW 1..8 + Tropical-L1 + Neural)
 #       * Dynamic Scaling Presets: `laptop` (0.35M) | `mid` (18.15M) | `blackwell-1b` (1.14B) | `blackwell-8b` (7.76B)
-#       * Cross-Machine Deterministic `OMGZ15` Lossless Codec with 64-Byte TTT Neural Adaptation (`TOTAL_FREQ=65536`)
-#       * Self-Echo-Free System-2 Lookahead Beam Search (`generate --beam K`)
-#       * Structural Multi-Formula AST Self-Optimizer with Whole-Crate `cargo check --release` Safety Gate
+#       * Compact 41-Byte Header `OMGZ16` Lossless Codec (ULEB128 + raw 32B SHA-256 + 64B TTT Neural Adaptation)
+#       * Strictly `O(budget)` RAM Streaming I/O via `File::seek` (works on single 10-100 GB dataset files!)
+#       * Multi-Formula AST Self-Optimizer with Isolated Compiled-Binary 2D Pareto Gate (`--verify-binary`)
 #       * Stateful Polyak-Target-TD + Prioritized-Replay `UniversalAgent` (`TOMA15`, closed-loop reward proven!)
 #
 # Day-1 Turnkey Usage:
 #   chmod +x deploy/deploy_4x_blackwell.sh
 #   sudo ./deploy/deploy_4x_blackwell.sh --preset blackwell-1b --path /data/corpus --power 300 --cycles 100
-#   sudo ./deploy/deploy_4x_blackwell.sh --preset blackwell-8b --path /data/corpus --power 300 --cycles 100 --apply
+#   sudo ./deploy/deploy_4x_blackwell.sh --preset blackwell-8b --path /data/corpus --power 300 --cycles 100 --apply --verify-binary
 #   sudo ./deploy/deploy_4x_blackwell.sh --preset mid          --path ./src        --power 210 --cycles 20
 # ==============================================================================
 set -euo pipefail
@@ -30,6 +31,7 @@ CORPUS_PATH="./src"
 CYCLES="50"
 EPOCHS="2"
 APPLY_SELF_OPT="0"
+VERIFY_BINARY="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,13 +41,14 @@ while [[ $# -gt 0 ]]; do
     --cycles|--daemon) CYCLES="${2:-50}"; shift 2 ;;
     --epochs) EPOCHS="${2:-2}"; shift 2 ;;
     --apply|--apply-rsi) APPLY_SELF_OPT="1"; shift 1 ;;
+    --verify-binary) VERIFY_BINARY="1"; shift 1 ;;
     *) shift ;;
   esac
 done
 
 CPU_THREADS="$(nproc)"
 echo "========================================================================="
-echo " TropiCore-Omega ASI-Zero v15.0.0 — 4x RTX PRO 6000 Blackwell SM120"
+echo " TropiCore-Omega ASI-Zero v16.0.0 — 4x RTX PRO 6000 Blackwell SM120"
 echo " Preset: ${PRESET} | Corpus: ${CORPUS_PATH} | Power: ${POWER_LIMIT}W/GPU | Threads: ${CPU_THREADS}"
 echo "========================================================================="
 
@@ -64,22 +67,25 @@ echo "[2/5] Checking Toolchain (nvcc CUDA 13, cublas/cublasLt, rustc)..."
 nvcc --version
 rustc --version
 
-echo "[3/5] Compiling Thread-Safe Multi-GPU Fused SM120 CUDA 13 Kernels (RMSNorm+SwiGLU+NVFP4 RNE, ABI=1500)..."
+echo "[3/5] Compiling Zero-Copy Multi-GPU Fused SM120 CUDA 13 Kernels (RMSNorm+SwiGLU+NVFP4 RNE, ABI=1600)..."
 nvcc -O3 -std=c++17 -arch=sm_120a -Xcompiler -fPIC \
   -c cuda/tropicore_omega_sm120.cu -o cuda/tropicore_omega_sm120.o
 ar rcs cuda/libtropicore_omega_sm120.a cuda/tropicore_omega_sm120.o
 ls -lh cuda/libtropicore_omega_sm120.a
 
-echo "[4/5] Building & Testing tropicore_omega v15.0 --release --features cuda_sm120 (-D warnings)..."
+echo "[4/5] Building & Testing tropicore_omega v16.0 --release --features cuda_sm120 (-D warnings)..."
 RUSTFLAGS="-C target-cpu=native -D warnings" cargo build --release --features cuda_sm120
 RUSTFLAGS="-C target-cpu=native -D warnings" cargo test --release --features cuda_sm120 -- --nocapture
 
-echo "[5/5] Launching TropiCore-Omega ASI-Zero v15.0 Status & Autonomous Real-World Daemon..."
+echo "[5/5] Launching TropiCore-Omega ASI-Zero v16.0 Status & Autonomous Real-World Daemon..."
 ./target/release/tropicore_omega status
 
-APPLY_FLAG=""
+EXTRA_FLAGS=""
 if [[ "$APPLY_SELF_OPT" == "1" ]]; then
-  APPLY_FLAG="--apply"
+  EXTRA_FLAGS="${EXTRA_FLAGS} --apply"
+fi
+if [[ "$VERIFY_BINARY" == "1" ]]; then
+  EXTRA_FLAGS="${EXTRA_FLAGS} --verify-binary"
 fi
 if [[ "$CYCLES" -gt 0 ]]; then
   ./target/release/tropicore_omega daemon \
@@ -88,10 +94,10 @@ if [[ "$CYCLES" -gt 0 ]]; then
     --cycles "$CYCLES" \
     --epochs "$EPOCHS" \
     --threads "$CPU_THREADS" \
-    --ckpt "out/asi_zero_v15_${PRESET}.tomg" \
-    ${APPLY_FLAG}
+    --ckpt "out/asi_zero_v16_${PRESET}.tomg" \
+    ${EXTRA_FLAGS}
 fi
 
 echo "========================================================================="
-echo " TropiCore-Omega ASI-Zero v15.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
+echo " TropiCore-Omega ASI-Zero v16.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
 echo "========================================================================="

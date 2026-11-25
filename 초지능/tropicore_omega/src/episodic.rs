@@ -1,15 +1,18 @@
-//! Non-Parametric 2-Way LRU Context-Tree (CTW Ord 1..=8) + Tropical-L1 + Order-∞ Exact Match-Model
-//! + 8-Context-Bucket Online Convex Logistic Meta-Mixer (`TropiCore-Omega v15.0`, PAQ/CMIX/Hedge Principle!).
+//! Non-Parametric 2-Way LRU Context-Tree (CTW Ord 1..=8) + Tropical-L1 + 4-Way Order-∞ Exact Match-Model
+//! + Zero-Tokenizer Word-Bigram Expert + 12-Expert Simplex-Normalized Calibrated-Temperature Meta-Mixer
+//! (`TropiCore-Omega v16.0`, Exact Probability Simplex Log-Opinion Pool!).
 //!
-//! Total 11 Experts unified in an 8-context-bucket convex log-opinion meta-mixer:
+//! Total 12 Experts unified in an 8-context-bucket simplex-normalized (`sum(alpha_e) == 1.0`) meta-mixer
+//! with per-context learned online inverse-temperature `temp[ctx]`:
 //!   - Expert 0    : Deep SwiGLU + Conv-4 + Fast-Weight Associative Delta-SSM Neural Brain
 //!   - Experts 1..8: 2-Way Set-Associative LRU Exact Suffix CTW (`orders 1..=8`, NEVER freezes!)
 //!   - Expert 9    : Tropical-L1 Latent Key-Value Recall
-//!   - Expert 10   : Order-∞ Exact Match-Model (`O(1)` 2-way 4-byte hash chain over 64 KB rolling window,
+//!   - Expert 10   : 4-Way Order-∞ Exact Match-Model (`O(1)` 4-way 4-byte hash over 64 KB rolling window,
 //!                   detects 4..128 byte exact copies across arbitrary unseen files/code/binaries!)
+//!   - Expert 11   : Zero-Tokenizer Word-Bigram & Long-Identifier Prefix Expert (byte-level, language-agnostic!)
 
-pub const NUM_EPISODIC_EXPERTS: usize = 10; // 0..8 = CTW Ord 1..8, 8 = Tropical-L1, 9 = Order-∞ Match-Model
-pub const NUM_TOTAL_EXPERTS: usize = 11;    // 0 = Neural Brain, 1..=10 = Episodic Experts
+pub const NUM_EPISODIC_EXPERTS: usize = 11; // 0..8 = CTW Ord 1..8, 8 = Tropical-L1, 9 = 4-Way Match, 10 = WordBigram
+pub const NUM_TOTAL_EXPERTS: usize = 12;    // 0 = Neural Brain, 1..=11 = Episodic Experts
 pub const NUM_MIXER_CONTEXTS: usize = 8;
 
 const CTW_NUM_SETS: usize = 32_768;
@@ -21,12 +24,13 @@ const MAX_ENTRIES_PER_SLOT: usize = 8;
 const MATCH_HIST_CAP: usize = 65_536;
 const MATCH_HASH_SIZE: usize = 65_536;
 const MATCH_HASH_MASK: usize = MATCH_HASH_SIZE - 1;
+const MATCH_WAYS: usize = 4;
 
 /// Strictly causal context classifier (`0..8`) driven ONLY by previous observed byte & causal match length!
 #[inline]
 pub fn mixer_context_bucket(prev_byte: u8, match_len: usize) -> usize {
     if match_len >= 12 {
-        return 7; // Long exact copy regime (Order-∞ Match-Model dominates!)
+        return 7; // Long exact copy regime (4-Way Order-∞ Match-Model dominates!)
     }
     if match_len >= 5 {
         return 6; // Medium exact match regime
@@ -42,26 +46,107 @@ pub fn mixer_context_bucket(prev_byte: u8, match_len: usize) -> usize {
     }
 }
 
-/// 8-Context-Bucket × 11-Expert Online Convex Logistic Meta-Mixer (`O(sqrt(T))` Regret Guarantee per Context!).
+/// 8-Context-Bucket × 12-Expert Simplex-Normalized Log-Opinion Pool + Calibrated Online Temperature (`temp[ctx]`).
+/// Guarantees `sum_{e active} alpha[e] == 1.0` EXACTLY (eliminates unnormalized log-product over-confidence!).
 #[derive(Clone, Debug)]
 pub struct OnlineLogisticMetaMixer {
-    pub weights: [[f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS],
-    pub grad_sq: [[f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS],
+    pub theta: [[f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS],
+    pub temp: [f32; NUM_MIXER_CONTEXTS],
+    pub grad_sq_theta: [[f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS],
+    pub grad_sq_temp: [f32; NUM_MIXER_CONTEXTS],
     pub updates: u64,
 }
 
 impl OnlineLogisticMetaMixer {
     pub fn new() -> Self {
-        let base_w = [1.00f32, 0.14, 0.24, 0.36, 0.50, 0.65, 0.80, 0.95, 1.08, 0.25, 1.35];
-        let mut weights = [base_w; NUM_MIXER_CONTEXTS];
-        // Context 6 (medium match) & Context 7 (long match) start with stronger Match-Model prior
-        weights[6][10] = 1.65;
-        weights[7][10] = 2.15;
+        // Log-space simplex priors: [Neural, CTW1..8, Tropical-L1, 4-Way Match, WordBigram]
+        let base_theta = [
+            0.95f32, // 0: Neural Brain
+            -1.15, -0.60, -0.10, 0.25, 0.55, 0.85, 1.10, 1.32, // 1..=8: CTW Ord 1..8
+            -0.75,   // 9: Tropical-L1
+            1.85,    // 10: 4-Way Order-∞ Match-Model
+            1.15,    // 11: Zero-Tokenizer WordBigramExpert
+        ];
+        let mut theta = [base_theta; NUM_MIXER_CONTEXTS];
+        // Space, identifier, and operator transitions benefit heavily from WordBigramExpert
+        theta[1][11] = 1.40;
+        theta[2][11] = 1.40;
+        theta[4][11] = 1.35;
+        // Context 6 (medium match) & Context 7 (long match) start with stronger 4-Way Match-Model simplex mass
+        theta[6][10] = 2.30;
+        theta[7][10] = 2.95;
+
+        let mut temp = [1.14f32; NUM_MIXER_CONTEXTS];
+        temp[6] = 1.24;
+        temp[7] = 1.32;
+
         Self {
-            weights,
-            grad_sq: [[1.0; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS],
+            theta,
+            temp,
+            grad_sq_theta: [[1.0; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS],
+            grad_sq_temp: [1.0; NUM_MIXER_CONTEXTS],
             updates: 0,
         }
+    }
+
+    /// Exact active-expert probability simplex: `alpha[e] >= 0`, `sum_e alpha[e] == 1.0` ALWAYS!
+    #[inline]
+    pub fn compute_active_simplex(
+        &self,
+        ctx: usize,
+        active: &[bool; NUM_EPISODIC_EXPERTS],
+        w_mem_scale: f32,
+        w_mem_cap: f32,
+    ) -> [f32; NUM_TOTAL_EXPERTS] {
+        let c_idx = ctx.min(NUM_MIXER_CONTEXTS - 1);
+        let th = &self.theta[c_idx];
+
+        let mut mx = th[0];
+        for k in 0..NUM_EPISODIC_EXPERTS {
+            if active[k] && th[k + 1] > mx {
+                mx = th[k + 1];
+            }
+        }
+
+        let mut raw = [0.0f32; NUM_TOTAL_EXPERTS];
+        raw[0] = (th[0] - mx).max(-20.0).exp();
+        let mut ep_sum = 0.0f32;
+        for k in 0..NUM_EPISODIC_EXPERTS {
+            if active[k] {
+                let v = (th[k + 1] - mx).max(-20.0).exp();
+                raw[k + 1] = v;
+                ep_sum += v;
+            }
+        }
+        if ep_sum <= 1e-12 {
+            let mut only_brain = [0.0f32; NUM_TOTAL_EXPERTS];
+            only_brain[0] = 1.0;
+            return only_brain;
+        }
+
+        let tot = raw[0] + ep_sum;
+        let a0 = raw[0] / tot;
+        let a_ep = ep_sum / tot;
+
+        // Smoothly apply policy's episodic scale & cap while preserving EXACT `sum(alpha) == 1.0`!
+        let eff_cap = if active[9] {
+            w_mem_cap.max(0.95).clamp(0.10, 0.98)
+        } else {
+            w_mem_cap.clamp(0.10, 0.96)
+        };
+        let scaled_ep = a_ep * w_mem_scale.max(0.05);
+        let target_ep = (scaled_ep / (a0 + scaled_ep).max(1e-8)).min(eff_cap);
+        let target_0 = 1.0 - target_ep;
+
+        let mut alpha = [0.0f32; NUM_TOTAL_EXPERTS];
+        alpha[0] = target_0;
+        let ep_mul = target_ep / ep_sum;
+        for k in 0..NUM_EPISODIC_EXPERTS {
+            if active[k] {
+                alpha[k + 1] = raw[k + 1] * ep_mul;
+            }
+        }
+        alpha
     }
 
     pub fn mix_256(
@@ -75,42 +160,47 @@ impl OnlineLogisticMetaMixer {
         use_log_odds: bool,
     ) -> [f32; 256] {
         let mut any_active = false;
-        for &a in active { if a { any_active = true; break; } }
-        if !any_active { return *p_brain; }
+        for &a in active {
+            if a {
+                any_active = true;
+                break;
+            }
+        }
+        if !any_active {
+            return *p_brain;
+        }
 
         let c_idx = ctx.min(NUM_MIXER_CONTEXTS - 1);
-        let cw = &self.weights[c_idx];
-
-        let mut ep_w_sum = 0.0f32;
-        for k in 0..NUM_EPISODIC_EXPERTS {
-            if active[k] { ep_w_sum += cw[k + 1].max(0.0); }
-        }
-        // Allow higher episodic mass when Match-Model (Expert 9) is active on a long exact copy!
-        let eff_cap = if active[9] { w_mem_cap.max(0.94) } else { w_mem_cap };
-        let max_ep_mass = (eff_cap / (1.0 - eff_cap).max(0.04)).min(14.0) * cw[0].max(0.15);
-        let ep_gain = if ep_w_sum > 1e-6 {
-            let scaled = ep_w_sum * w_mem_scale;
-            if scaled > max_ep_mass { max_ep_mass / ep_w_sum } else { w_mem_scale }
-        } else {
-            0.0
-        };
+        let alpha = self.compute_active_simplex(c_idx, active, w_mem_scale, w_mem_cap);
+        let tau = self.temp[c_idx].clamp(0.55, 2.25);
 
         let mut out = [0.0f32; 256];
-        let wb = cw[0].max(0.15);
         if use_log_odds {
             let mut lbuf = [0.0f32; 256];
-            for c in 0..256 { lbuf[c] = wb * p_brain[c].max(1e-7).ln(); }
+            let a0 = alpha[0];
+            if a0 > 1e-6 {
+                for c in 0..256 {
+                    lbuf[c] = a0 * p_brain[c].max(1e-7).ln();
+                }
+            }
             for k in 0..NUM_EPISODIC_EXPERTS {
                 if active[k] {
-                    let wk = cw[k + 1] * ep_gain;
-                    if wk > 1e-5 {
+                    let ak = alpha[k + 1];
+                    if ak > 1e-6 {
                         let ek = &experts[k];
-                        for c in 0..256 { lbuf[c] += wk * ek[c].max(1e-7).ln(); }
+                        for c in 0..256 {
+                            lbuf[c] += ak * ek[c].max(1e-7).ln();
+                        }
                     }
                 }
             }
             let mut mx = f32::NEG_INFINITY;
-            for &v in &lbuf { if v > mx { mx = v; } }
+            for c in 0..256 {
+                lbuf[c] *= tau;
+                if lbuf[c] > mx {
+                    mx = lbuf[c];
+                }
+            }
             let mut sum = 0.0f32;
             for c in 0..256 {
                 let v = (lbuf[c] - mx).max(-40.0).exp().max(1e-7);
@@ -118,22 +208,34 @@ impl OnlineLogisticMetaMixer {
                 sum += v;
             }
             let inv = 1.0 / sum.max(1e-12);
-            for c in 0..256 { out[c] *= inv; }
+            for c in 0..256 {
+                out[c] *= inv;
+            }
         } else {
-            for c in 0..256 { out[c] = wb * p_brain[c]; }
+            let a0 = alpha[0];
+            for c in 0..256 {
+                out[c] = a0 * p_brain[c];
+            }
             for k in 0..NUM_EPISODIC_EXPERTS {
                 if active[k] {
-                    let wk = cw[k + 1] * ep_gain;
-                    if wk > 1e-5 {
+                    let ak = alpha[k + 1];
+                    if ak > 1e-6 {
                         let ek = &experts[k];
-                        for c in 0..256 { out[c] += wk * ek[c]; }
+                        for c in 0..256 {
+                            out[c] += ak * ek[c];
+                        }
                     }
                 }
             }
             let mut sum = 0.0f32;
-            for c in 0..256 { out[c] = out[c].max(1e-7); sum += out[c]; }
+            for c in 0..256 {
+                out[c] = out[c].max(1e-7);
+                sum += out[c];
+            }
             let inv = 1.0 / sum.max(1e-12);
-            for c in 0..256 { out[c] *= inv; }
+            for c in 0..256 {
+                out[c] *= inv;
+            }
         }
         out
     }
@@ -146,75 +248,157 @@ impl OnlineLogisticMetaMixer {
         active: &[bool; NUM_EPISODIC_EXPERTS],
         p_mix: &[f32; 256],
         actual_byte: u8,
+        w_mem_scale: f32,
+        w_mem_cap: f32,
         use_log_odds: bool,
         lr: f32,
     ) {
+        let mut any_active = false;
+        for &a in active {
+            if a {
+                any_active = true;
+                break;
+            }
+        }
+        if !any_active {
+            return;
+        }
+
         self.updates = self.updates.saturating_add(1);
         let c_idx = ctx.min(NUM_MIXER_CONTEXTS - 1);
-        let cw = &mut self.weights[c_idx];
-        let cg = &mut self.grad_sq[c_idx];
+        let alpha = self.compute_active_simplex(c_idx, active, w_mem_scale, w_mem_cap);
+        let tau = self.temp[c_idx].clamp(0.55, 2.25);
         let y = actual_byte as usize;
 
+        let mut g_alpha = [0.0f32; NUM_TOTAL_EXPERTS];
+        let mut d_temp = 0.0f32;
+
         if use_log_odds {
-            let mut exp_b = 0.0f32;
-            for c in 0..256 { exp_b += p_mix[c] * p_brain[c].max(1e-7).ln(); }
-            let g0 = (exp_b - p_brain[y].max(1e-7).ln()).clamp(-4.0, 4.0);
-            cg[0] = (cg[0] * 0.992 + g0 * g0).max(0.25);
-            cw[0] = (cw[0] - lr * g0 / cg[0].sqrt()).clamp(0.18, 3.0);
+            let mut exp_0 = 0.0f32;
+            for c in 0..256 {
+                exp_0 += p_mix[c] * p_brain[c].max(1e-7).ln();
+            }
+            let e0 = (exp_0 - p_brain[y].max(1e-7).ln()).clamp(-6.0, 6.0);
+            g_alpha[0] = tau * e0;
+            d_temp += alpha[0] * e0;
 
             for k in 0..NUM_EPISODIC_EXPERTS {
-                if !active[k] { continue; }
+                if !active[k] {
+                    continue;
+                }
                 let ek = &experts[k];
                 let mut exp_k = 0.0f32;
-                for c in 0..256 { exp_k += p_mix[c] * ek[c].max(1e-7).ln(); }
-                let gk = (exp_k - ek[y].max(1e-7).ln()).clamp(-4.0, 4.0);
-                let idx = k + 1;
-                cg[idx] = (cg[idx] * 0.992 + gk * gk).max(0.25);
-                cw[idx] = (cw[idx] - lr * gk / cg[idx].sqrt()).clamp(0.0, 3.5);
+                for c in 0..256 {
+                    exp_k += p_mix[c] * ek[c].max(1e-7).ln();
+                }
+                let ek_err = (exp_k - ek[y].max(1e-7).ln()).clamp(-6.0, 6.0);
+                g_alpha[k + 1] = tau * ek_err;
+                d_temp += alpha[k + 1] * ek_err;
             }
         } else {
             let pm_y = p_mix[y].max(1e-6);
-            let g0 = (1.0 - p_brain[y] / pm_y).clamp(-4.0, 4.0);
-            cg[0] = (cg[0] * 0.992 + g0 * g0).max(0.25);
-            cw[0] = (cw[0] - lr * g0 / cg[0].sqrt()).clamp(0.18, 3.0);
+            g_alpha[0] = (1.0 - p_brain[y] / pm_y).clamp(-6.0, 6.0);
             for k in 0..NUM_EPISODIC_EXPERTS {
-                if !active[k] { continue; }
-                let gk = (1.0 - experts[k][y] / pm_y).clamp(-4.0, 4.0);
-                let idx = k + 1;
-                cg[idx] = (cg[idx] * 0.992 + gk * gk).max(0.25);
-                cw[idx] = (cw[idx] - lr * gk / cg[idx].sqrt()).clamp(0.0, 3.5);
+                if active[k] {
+                    g_alpha[k + 1] = (1.0 - experts[k][y] / pm_y).clamp(-6.0, 6.0);
+                }
             }
+        }
+
+        // Exact softmax Jacobian on the active simplex: `dL/dtheta_e = alpha_e * (g_alpha_e - dot(alpha, g_alpha))`
+        let mut mean_g = alpha[0] * g_alpha[0];
+        for k in 0..NUM_EPISODIC_EXPERTS {
+            if active[k] {
+                mean_g += alpha[k + 1] * g_alpha[k + 1];
+            }
+        }
+
+        let th = &mut self.theta[c_idx];
+        let gsq = &mut self.grad_sq_theta[c_idx];
+        let lr_th = lr * 2.0;
+
+        let gt0 = (alpha[0] * (g_alpha[0] - mean_g)).clamp(-4.0, 4.0);
+        gsq[0] = (gsq[0] * 0.992 + gt0 * gt0).max(0.20);
+        th[0] = (th[0] - lr_th * gt0 / gsq[0].sqrt()).clamp(-4.5, 4.5);
+
+        for k in 0..NUM_EPISODIC_EXPERTS {
+            if !active[k] {
+                continue;
+            }
+            let idx = k + 1;
+            let gtk = (alpha[idx] * (g_alpha[idx] - mean_g)).clamp(-4.0, 4.0);
+            gsq[idx] = (gsq[idx] * 0.992 + gtk * gtk).max(0.20);
+            th[idx] = (th[idx] - lr_th * gtk / gsq[idx].sqrt()).clamp(-4.5, 4.5);
+        }
+
+        // Mean-center logits slightly to keep simplex numerically pristine forever
+        let mut th_mean = 0.0f32;
+        for &v in th.iter() {
+            th_mean += v;
+        }
+        th_mean /= NUM_TOTAL_EXPERTS as f32;
+        for v in th.iter_mut() {
+            *v = (*v - th_mean).clamp(-4.5, 4.5);
+        }
+
+        if use_log_odds {
+            let gt = d_temp.clamp(-4.0, 4.0);
+            let gst = &mut self.grad_sq_temp[c_idx];
+            *gst = (*gst * 0.992 + gt * gt).max(0.25);
+            self.temp[c_idx] = (self.temp[c_idx] - (lr * 0.45) * gt / gst.sqrt()).clamp(0.55, 2.25);
         }
     }
 
     pub fn write_binary(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.updates.to_le_bytes());
         for c in 0..NUM_MIXER_CONTEXTS {
-            for &w in &self.weights[c] { out.extend_from_slice(&w.to_le_bytes()); }
-            for &g in &self.grad_sq[c] { out.extend_from_slice(&g.to_le_bytes()); }
+            for &v in &self.theta[c] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            for &g in &self.grad_sq_theta[c] {
+                out.extend_from_slice(&g.to_le_bytes());
+            }
+            out.extend_from_slice(&self.temp[c].to_le_bytes());
+            out.extend_from_slice(&self.grad_sq_temp[c].to_le_bytes());
         }
     }
 
     pub fn read_binary(data: &[u8], pos: &mut usize) -> Result<Self, String> {
-        let need = 8 + NUM_MIXER_CONTEXTS * NUM_TOTAL_EXPERTS * 8;
-        if *pos + need > data.len() { return Err("meta_mixer EOF".into()); }
+        let need = 8 + NUM_MIXER_CONTEXTS * (NUM_TOTAL_EXPERTS * 8 + 8);
+        if *pos + need > data.len() {
+            return Err("meta_mixer v16 EOF".into());
+        }
         let mut uarr = [0u8; 8];
         uarr.copy_from_slice(&data[*pos..*pos + 8]);
         let updates = u64::from_le_bytes(uarr);
         *pos += 8;
-        let mut weights = [[0.0f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS];
-        let mut grad_sq = [[1.0f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS];
+
+        let mut theta = [[0.0f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS];
+        let mut grad_sq_theta = [[1.0f32; NUM_TOTAL_EXPERTS]; NUM_MIXER_CONTEXTS];
+        let mut temp = [1.14f32; NUM_MIXER_CONTEXTS];
+        let mut grad_sq_temp = [1.0f32; NUM_MIXER_CONTEXTS];
+
         for c in 0..NUM_MIXER_CONTEXTS {
-            for slot in &mut weights[c] {
+            for slot in &mut theta[c] {
                 *slot = f32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
                 *pos += 4;
             }
-            for slot in &mut grad_sq[c] {
+            for slot in &mut grad_sq_theta[c] {
                 *slot = f32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
                 *pos += 4;
             }
+            temp[c] = f32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            *pos += 4;
+            grad_sq_temp[c] = f32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            *pos += 4;
         }
-        Ok(Self { weights, grad_sq, updates })
+        Ok(Self {
+            theta,
+            temp,
+            grad_sq_theta,
+            grad_sq_temp,
+            updates,
+        })
     }
 }
 
@@ -230,11 +414,19 @@ struct ContextSlot {
 impl ContextSlot {
     #[inline]
     fn empty() -> Self {
-        Self { tag: 0, total: 0, last_seen: 0, counts: [(0, 0); MAX_ENTRIES_PER_SLOT], len: 0 }
+        Self {
+            tag: 0,
+            total: 0,
+            last_seen: 0,
+            counts: [(0, 0); MAX_ENTRIES_PER_SLOT],
+            len: 0,
+        }
     }
 
     #[inline]
-    fn is_occupied(&self) -> bool { self.total > 0 }
+    fn is_occupied(&self) -> bool {
+        self.total > 0
+    }
 
     fn reset_with(&mut self, tag: u64, byte: u8, clock: u64) {
         self.tag = tag;
@@ -268,11 +460,25 @@ impl ContextSlot {
         } else {
             let mut min_i = 0usize;
             for i in 1..MAX_ENTRIES_PER_SLOT {
-                if self.counts[i].1 < self.counts[min_i].1 { min_i = i; }
+                if self.counts[i].1 < self.counts[min_i].1 {
+                    min_i = i;
+                }
             }
             self.total = self.total.saturating_sub(self.counts[min_i].1 as u32);
             self.counts[min_i] = (byte, 1);
             self.total = self.total.saturating_add(1);
+        }
+    }
+
+    #[inline]
+    fn fill_distribution(&self, dist: &mut [f32; 256], alpha: f32) {
+        let inv_denom = 1.0f32 / (self.total as f32 + 256.0 * alpha);
+        let base_p = alpha * inv_denom;
+        dist.fill(base_p);
+        let cnt_len = self.len as usize;
+        for i in 0..cnt_len {
+            let (b, c) = self.counts[i];
+            dist[b as usize] += c as f32 * inv_denom;
         }
     }
 }
@@ -291,9 +497,9 @@ pub struct TropicalEpisodicMemory {
     latent_dim: usize,
     latent_ring: Vec<LatentEntry>,
     latent_cursor: usize,
-    // Order-∞ Exact Match-Model rolling history + 2-way 4-byte hash table!
+    // 4-Way Order-∞ Exact Match-Model rolling history + 4-way 4-byte hash table!
     match_hist: Vec<u8>,
-    match_hash: Vec<[u32; 2]>,
+    match_hash: Vec<[u32; MATCH_WAYS]>,
     pub total_observations: u64,
 }
 
@@ -305,6 +511,81 @@ fn fnv1a_context(order: u8, suffix: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01B3);
     }
     if h == 0 { 1 } else { h }
+}
+
+#[inline(always)]
+fn fnv1a_word_bigram(order: u8, prev_word: &[u8], sep: &[u8], cur_word: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ ((order as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    for &b in prev_word {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h ^= 0xFF;
+    h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    for &b in sep {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h ^= 0xFE;
+    h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    for &b in cur_word {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    if h == 0 { 1 } else { h }
+}
+
+#[inline(always)]
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Strictly causal, zero-tokenizer word-context extractor over raw byte history (works on any code/text/log!).
+/// Returns `(tag_bigram_opt, tag_word_prefix_opt)` under orders `11..=13` (disjoint from CTW orders `1..=8`).
+fn extract_word_tags(history_tail: &[u8]) -> (Option<u64>, Option<u64>) {
+    let n = history_tail.len();
+    if n < 2 {
+        return (None, None);
+    }
+
+    let mut cur_start = n;
+    let cur_floor = n.saturating_sub(24);
+    while cur_start > cur_floor && is_word_byte(history_tail[cur_start - 1]) {
+        cur_start -= 1;
+    }
+    let cur_word = &history_tail[cur_start..n];
+
+    let mut sep_start = cur_start;
+    let sep_floor = cur_start.saturating_sub(8);
+    while sep_start > sep_floor && !is_word_byte(history_tail[sep_start - 1]) {
+        sep_start -= 1;
+    }
+    let sep_slice = &history_tail[sep_start..cur_start];
+
+    let mut prev_start = sep_start;
+    if !sep_slice.is_empty() {
+        let prev_floor = sep_start.saturating_sub(24);
+        while prev_start > prev_floor && is_word_byte(history_tail[prev_start - 1]) {
+            prev_start -= 1;
+        }
+    }
+    let prev_word = &history_tail[prev_start..sep_start];
+
+    let tag_bigram = if !prev_word.is_empty() && !sep_slice.is_empty() && sep_slice.len() <= 4 {
+        Some(fnv1a_word_bigram(11, prev_word, sep_slice, cur_word))
+    } else {
+        None
+    };
+
+    let tag_prefix = if cur_word.len() >= 3 {
+        Some(fnv1a_context(12, cur_word))
+    } else if prev_word.len() >= 2 && !sep_slice.is_empty() {
+        Some(fnv1a_word_bigram(13, prev_word, &sep_slice[sep_slice.len() - 1..], &[]))
+    } else {
+        None
+    };
+
+    (tag_bigram, tag_prefix)
 }
 
 #[inline(always)]
@@ -323,17 +604,23 @@ impl TropicalEpisodicMemory {
             latent_ring: Vec::with_capacity(latent_cap.min(2048)),
             latent_cursor: 0,
             match_hist: Vec::with_capacity(MATCH_HIST_CAP),
-            match_hash: vec![[0u32; 2]; MATCH_HASH_SIZE],
+            match_hash: vec![[0u32; MATCH_WAYS]; MATCH_HASH_SIZE],
             total_observations: 0,
         }
     }
 
-    pub fn bucket_count(&self) -> usize { self.occupied_slots }
-    pub fn latent_count(&self) -> usize { self.latent_ring.len() }
+    pub fn bucket_count(&self) -> usize {
+        self.occupied_slots
+    }
+    pub fn latent_count(&self) -> usize {
+        self.latent_ring.len()
+    }
 
     fn rebuild_match_hash(&mut self) {
-        self.match_hash.fill([0u32; 2]);
-        if self.match_hist.len() < 4 { return; }
+        self.match_hash.fill([0u32; MATCH_WAYS]);
+        if self.match_hist.len() < 4 {
+            return;
+        }
         for end_idx in 3..self.match_hist.len() {
             let h = hash4_u32(
                 self.match_hist[end_idx - 3],
@@ -342,6 +629,8 @@ impl TropicalEpisodicMemory {
                 self.match_hist[end_idx],
             );
             let slot = &mut self.match_hash[h];
+            slot[3] = slot[2];
+            slot[2] = slot[1];
             slot[1] = slot[0];
             slot[0] = (end_idx + 1) as u32;
         }
@@ -351,27 +640,68 @@ impl TropicalEpisodicMemory {
     fn find_slot(&self, tag: u64) -> Option<&ContextSlot> {
         let base = ((tag as usize) & CTW_SET_MASK) * CTW_WAYS;
         let s0 = &self.ctw_table[base];
-        if s0.total > 0 && s0.tag == tag { return Some(s0); }
+        if s0.total > 0 && s0.tag == tag {
+            return Some(s0);
+        }
         let s1 = &self.ctw_table[base + 1];
-        if s1.total > 0 && s1.tag == tag { return Some(s1); }
+        if s1.total > 0 && s1.tag == tag {
+            return Some(s1);
+        }
         None
     }
 
-    /// Order-∞ Exact Match-Model lookup: returns `(predicted_next_byte, match_len)` if a >=4-byte exact suffix match exists!
+    #[inline]
+    fn observe_ctw_tag(&mut self, tag: u64, actual_byte: u8, clock: u64) {
+        let base = ((tag as usize) & CTW_SET_MASK) * CTW_WAYS;
+        if self.ctw_table[base].total > 0 && self.ctw_table[base].tag == tag {
+            self.ctw_table[base].observe(actual_byte, clock);
+            return;
+        }
+        if self.ctw_table[base + 1].total > 0 && self.ctw_table[base + 1].tag == tag {
+            self.ctw_table[base + 1].observe(actual_byte, clock);
+            return;
+        }
+        if !self.ctw_table[base].is_occupied() {
+            self.ctw_table[base].reset_with(tag, actual_byte, clock);
+            self.occupied_slots += 1;
+        } else if !self.ctw_table[base + 1].is_occupied() {
+            self.ctw_table[base + 1].reset_with(tag, actual_byte, clock);
+            self.occupied_slots += 1;
+        } else {
+            let evict = if self.ctw_table[base].last_seen <= self.ctw_table[base + 1].last_seen {
+                base
+            } else {
+                base + 1
+            };
+            self.ctw_table[evict].reset_with(tag, actual_byte, clock);
+        }
+    }
+
+    /// 4-Way Order-∞ Exact Match-Model lookup: returns `(predicted_next_byte, match_len)` if a >=4-byte exact suffix match exists!
     fn lookup_match_model(&self, history_tail: &[u8]) -> Option<(u8, usize)> {
         let n = history_tail.len();
         let hlen = self.match_hist.len();
-        if n < 4 || hlen < 5 { return None; }
-        let h = hash4_u32(history_tail[n - 4], history_tail[n - 3], history_tail[n - 2], history_tail[n - 1]);
+        if n < 4 || hlen < 5 {
+            return None;
+        }
+        let h = hash4_u32(
+            history_tail[n - 4],
+            history_tail[n - 3],
+            history_tail[n - 2],
+            history_tail[n - 1],
+        );
         let cands = self.match_hash[h];
 
         let mut best_len = 0usize;
         let mut best_next = 0u8;
         for &pos_p1 in &cands {
-            if pos_p1 == 0 { continue; }
+            if pos_p1 == 0 {
+                continue;
+            }
             let end_idx = (pos_p1 - 1) as usize;
-            // Must have a known next byte strictly in the past!
-            if end_idx + 1 >= hlen { continue; }
+            if end_idx + 1 >= hlen {
+                continue;
+            }
             let max_check = n.min(end_idx + 1).min(128);
             let mut ml = 0usize;
             while ml < max_check && self.match_hist[end_idx - ml] == history_tail[n - 1 - ml] {
@@ -382,13 +712,18 @@ impl TropicalEpisodicMemory {
                 best_next = self.match_hist[end_idx + 1];
             }
         }
-        if best_len >= 4 { Some((best_next, best_len)) } else { None }
+        if best_len >= 4 {
+            Some((best_next, best_len))
+        } else {
+            None
+        }
     }
 
-    /// Single-pass O(1) prediction of ALL 10 distinct normalized episodic experts + causal `match_len`!
+    /// Single-pass O(1) prediction of ALL 11 distinct normalized episodic experts + causal `match_len`!
     ///   - `experts[0..8]` : CTW orders 1..=8
     ///   - `experts[8]`    : Tropical-L1 latent recall
-    ///   - `experts[9]`    : Order-∞ Exact Match-Model!
+    ///   - `experts[9]`    : 4-Way Order-∞ Exact Match-Model
+    ///   - `experts[10]`   : Zero-Tokenizer WordBigram & Long-Word Prefix Expert!
     pub fn predict_expert_distributions(
         &self,
         history_tail: &[u8],
@@ -407,15 +742,7 @@ impl TropicalEpisodicMemory {
                 let idx = (ord - 1) as usize;
                 active[idx] = true;
                 let alpha = if ord >= 5 { 0.04f32 } else { 0.08f32 };
-                let inv_denom = 1.0f32 / (slot.total as f32 + 256.0 * alpha);
-                let base_p = alpha * inv_denom;
-                let dist = &mut experts[idx];
-                dist.fill(base_p);
-                let cnt_len = slot.len as usize;
-                for i in 0..cnt_len {
-                    let (b, c) = slot.counts[i];
-                    dist[b as usize] += c as f32 * inv_denom;
-                }
+                slot.fill_distribution(&mut experts[idx], alpha);
             }
         }
 
@@ -429,7 +756,9 @@ impl TropicalEpisodicMemory {
             while i < self.latent_ring.len() {
                 let ent = &self.latent_ring[i];
                 let mut l1 = 0.0f32;
-                for d in 0..self.latent_dim { l1 += (q[d] - ent.key[d]).abs(); }
+                for d in 0..self.latent_dim {
+                    l1 += (q[d] - ent.key[d]).abs();
+                }
                 let sim = -l1 / (self.latent_dim as f32);
                 let wt = (sim * 4.5).clamp(-12.0, 0.0).exp();
                 total_score += wt;
@@ -441,20 +770,49 @@ impl TropicalEpisodicMemory {
                 let inv_d = 1.0f32 / (total_score + 5.12);
                 let base_p = 0.02 * inv_d;
                 let dist = &mut experts[8];
-                for c in 0..256 { dist[c] = base_p + lat_hits[c] * inv_d; }
+                for c in 0..256 {
+                    dist[c] = base_p + lat_hits[c] * inv_d;
+                }
             }
         }
 
-        // Expert 9: Order-∞ Exact Match-Model!
+        // Expert 9: 4-Way Order-∞ Exact Match-Model!
         let mut match_len = 0usize;
         if let Some((pred_b, ml)) = self.lookup_match_model(history_tail) {
             match_len = ml;
             active[9] = true;
-            let p_hit = (1.0f32 - 1.0f32 / (ml as f32 + 1.5)).clamp(0.55, 0.992);
+            let p_hit = (1.0f32 - 1.0f32 / (ml as f32 + 1.5)).clamp(0.55, 0.994);
             let p_other = (1.0 - p_hit) / 255.0;
             let dist = &mut experts[9];
             dist.fill(p_other);
             dist[pred_b as usize] = p_hit;
+        }
+
+        // Expert 10: Zero-Tokenizer WordBigram & Long-Identifier Prefix Expert!
+        let (tag_bg, tag_pf) = extract_word_tags(history_tail);
+        let hit_bg = tag_bg.and_then(|t| self.find_slot(t));
+        let hit_pf = tag_pf.and_then(|t| self.find_slot(t));
+        match (hit_bg, hit_pf) {
+            (Some(s_bg), Some(s_pf)) => {
+                let mut d_bg = [0.0f32; 256];
+                let mut d_pf = [0.0f32; 256];
+                s_bg.fill_distribution(&mut d_bg, 0.035);
+                s_pf.fill_distribution(&mut d_pf, 0.045);
+                let dist = &mut experts[10];
+                for c in 0..256 {
+                    dist[c] = 0.62 * d_bg[c] + 0.38 * d_pf[c];
+                }
+                active[10] = true;
+            }
+            (Some(s_bg), None) => {
+                s_bg.fill_distribution(&mut experts[10], 0.035);
+                active[10] = true;
+            }
+            (None, Some(s_pf)) => {
+                s_pf.fill_distribution(&mut experts[10], 0.045);
+                active[10] = true;
+            }
+            (None, None) => {}
         }
 
         (experts, active, match_len)
@@ -468,29 +826,19 @@ impl TropicalEpisodicMemory {
         for ord in 1u8..=max_ord {
             let k = ord as usize;
             let tag = fnv1a_context(ord, &history_tail[n - k..n]);
-            let base = ((tag as usize) & CTW_SET_MASK) * CTW_WAYS;
-
-            if self.ctw_table[base].total > 0 && self.ctw_table[base].tag == tag {
-                self.ctw_table[base].observe(actual_byte, clock);
-                continue;
-            }
-            if self.ctw_table[base + 1].total > 0 && self.ctw_table[base + 1].tag == tag {
-                self.ctw_table[base + 1].observe(actual_byte, clock);
-                continue;
-            }
-            if !self.ctw_table[base].is_occupied() {
-                self.ctw_table[base].reset_with(tag, actual_byte, clock);
-                self.occupied_slots += 1;
-            } else if !self.ctw_table[base + 1].is_occupied() {
-                self.ctw_table[base + 1].reset_with(tag, actual_byte, clock);
-                self.occupied_slots += 1;
-            } else {
-                let evict = if self.ctw_table[base].last_seen <= self.ctw_table[base + 1].last_seen { base } else { base + 1 };
-                self.ctw_table[evict].reset_with(tag, actual_byte, clock);
-            }
+            self.observe_ctw_tag(tag, actual_byte, clock);
         }
 
-        // Update Order-∞ Match-Model rolling window + 2-way 4-byte hash index!
+        // Observe Zero-Tokenizer WordBigram & Long-Identifier Prefix tags!
+        let (tag_bg, tag_pf) = extract_word_tags(history_tail);
+        if let Some(t) = tag_bg {
+            self.observe_ctw_tag(t, actual_byte, clock);
+        }
+        if let Some(t) = tag_pf {
+            self.observe_ctw_tag(t, actual_byte, clock);
+        }
+
+        // Update 4-Way Order-∞ Match-Model rolling window + 4-way 4-byte hash index!
         if self.match_hist.len() >= MATCH_HIST_CAP {
             self.match_hist.drain(..MATCH_HIST_CAP / 2);
             self.rebuild_match_hash();
@@ -506,6 +854,8 @@ impl TropicalEpisodicMemory {
                 self.match_hist[end_idx],
             );
             let slot = &mut self.match_hash[h];
+            slot[3] = slot[2];
+            slot[2] = slot[1];
             slot[1] = slot[0];
             slot[0] = (end_idx + 1) as u32;
         }
@@ -532,7 +882,9 @@ impl TropicalEpisodicMemory {
 
         out.extend_from_slice(&(self.occupied_slots as u32).to_le_bytes());
         for (idx, sl) in self.ctw_table.iter().enumerate() {
-            if sl.total == 0 { continue; }
+            if sl.total == 0 {
+                continue;
+            }
             out.extend_from_slice(&(idx as u32).to_le_bytes());
             out.extend_from_slice(&sl.tag.to_le_bytes());
             out.extend_from_slice(&sl.total.to_le_bytes());
@@ -547,7 +899,9 @@ impl TropicalEpisodicMemory {
         out.extend_from_slice(&(self.latent_ring.len() as u32).to_le_bytes());
         for ent in &self.latent_ring {
             out.push(ent.next_byte);
-            for &v in &ent.key { out.extend_from_slice(&v.to_le_bytes()); }
+            for &v in &ent.key {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
         }
 
         out.extend_from_slice(&(self.match_hist.len() as u32).to_le_bytes());
@@ -556,20 +910,26 @@ impl TropicalEpisodicMemory {
 
     pub fn read_binary(data: &[u8], pos: &mut usize) -> Result<Self, String> {
         let take_u32 = |d: &[u8], p: &mut usize| -> Result<u32, String> {
-            if *p + 4 > d.len() { return Err("episodic EOF u32".into()); }
+            if *p + 4 > d.len() {
+                return Err("episodic EOF u32".into());
+            }
             let v = u32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]);
             *p += 4;
             Ok(v)
         };
         let take_u64 = |d: &[u8], p: &mut usize| -> Result<u64, String> {
-            if *p + 8 > d.len() { return Err("episodic EOF u64".into()); }
+            if *p + 8 > d.len() {
+                return Err("episodic EOF u64".into());
+            }
             let mut arr = [0u8; 8];
             arr.copy_from_slice(&d[*p..*p + 8]);
             *p += 8;
             Ok(u64::from_le_bytes(arr))
         };
         let take_f32 = |d: &[u8], p: &mut usize| -> Result<f32, String> {
-            if *p + 4 > d.len() { return Err("episodic EOF f32".into()); }
+            if *p + 4 > d.len() {
+                return Err("episodic EOF f32".into());
+            }
             let v = f32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]);
             *p += 4;
             Ok(v)
@@ -587,35 +947,51 @@ impl TropicalEpisodicMemory {
             let tag = take_u64(data, pos)?;
             let total = take_u32(data, pos)?;
             let last_seen = take_u64(data, pos)?;
-            if *pos >= data.len() { return Err("episodic EOF len".into()); }
+            if *pos >= data.len() {
+                return Err("episodic EOF len".into());
+            }
             let len = data[*pos];
             *pos += 1;
             let mut counts = [(0u8, 0u16); MAX_ENTRIES_PER_SLOT];
             for i in 0..(len as usize).min(MAX_ENTRIES_PER_SLOT) {
-                if *pos + 3 > data.len() { return Err("episodic EOF entry".into()); }
+                if *pos + 3 > data.len() {
+                    return Err("episodic EOF entry".into());
+                }
                 let byte = data[*pos];
                 let cnt = u16::from_le_bytes([data[*pos + 1], data[*pos + 2]]);
                 *pos += 3;
                 counts[i] = (byte, cnt);
             }
             if idx < CTW_SLOTS {
-                ctw_table[idx] = ContextSlot { tag, total, last_seen, counts, len };
+                ctw_table[idx] = ContextSlot {
+                    tag,
+                    total,
+                    last_seen,
+                    counts,
+                    len,
+                };
             }
         }
 
         let n_lat = take_u32(data, pos)? as usize;
         let mut latent_ring = Vec::with_capacity(n_lat);
         for _ in 0..n_lat {
-            if *pos >= data.len() { return Err("episodic EOF lat byte".into()); }
+            if *pos >= data.len() {
+                return Err("episodic EOF lat byte".into());
+            }
             let next_byte = data[*pos];
             *pos += 1;
             let mut key = Vec::with_capacity(latent_dim);
-            for _ in 0..latent_dim { key.push(take_f32(data, pos)?); }
+            for _ in 0..latent_dim {
+                key.push(take_f32(data, pos)?);
+            }
             latent_ring.push(LatentEntry { key, next_byte });
         }
 
         let mh_len = take_u32(data, pos)? as usize;
-        if *pos + mh_len > data.len() { return Err("episodic EOF match_hist".into()); }
+        if *pos + mh_len > data.len() {
+            return Err("episodic EOF match_hist".into());
+        }
         let match_hist = data[*pos..*pos + mh_len].to_vec();
         *pos += mh_len;
 
@@ -627,7 +1003,7 @@ impl TropicalEpisodicMemory {
             latent_ring,
             latent_cursor,
             match_hist,
-            match_hash: vec![[0u32; 2]; MATCH_HASH_SIZE],
+            match_hash: vec![[0u32; MATCH_WAYS]; MATCH_HASH_SIZE],
             total_observations,
         };
         mem.rebuild_match_hash();

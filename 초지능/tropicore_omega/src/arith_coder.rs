@@ -1,15 +1,23 @@
-//! Pure-Rust Zero-Dependency Exact 32-Bit Arithmetic Bitstream Codec (`OMGZ15`)
-//! Powered by 11-Expert × 8-Context Online Convex Meta-Mixer (Order-∞ Match-Model + CTW 1..8 + Tropical-L1
-//! + Deep SwiGLU Conv4 Delta-SSM Brain) + Deterministic 64-Byte Test-Time Neural Adaptation!
+//! Pure-Rust Zero-Dependency Exact 32-Bit Arithmetic Bitstream Codec (`OMGZ16`, Compact 41-Byte Header!)
+//! Powered by 12-Expert × 8-Context Simplex-Normalized Calibrated-Temperature Meta-Mixer
+//! (4-Way Order-∞ Match-Model + Zero-Tokenizer WordBigram + CTW 1..8 + Tropical-L1 + Deep SwiGLU Conv4 Delta-SSM)
+//! + Deterministic 64-Byte Test-Time Neural Adaptation + Zero-Allocation Byte-Stream Scratch Pool!
+//!
+//! Compact Header Format (`OMGZ16`, saves -38 bytes vs `OMGZ15`'s 79B ASCII-hex header!):
+//!   - `[0..6]`        : Magic `b"OMGZ16"` (6 bytes)
+//!   - `[6]`           : Flags `u8` (bit 0 = `enable_ttt`) (1 byte)
+//!   - `[7..7+k]`      : Original byte length encoded as ULEB128 varint (1..10 bytes; 2 bytes for <=16,383 B!)
+//!   - `[7+k..39+k]`   : Raw 32-byte SHA-256 digest of original uncompressed bytes (32 bytes, ZERO hex bloat!)
+//!   - `[39+k..]`      : Exact 32-bit arithmetic-coded bitstream (`TOTAL_FREQ = 65536`)
 
 use std::fs;
 use std::path::Path;
 
 use crate::brain::{CausalStreamState, DeepContractiveBrain};
 use crate::episodic::NUM_EPISODIC_EXPERTS;
-use crate::sha256::sha256_hex;
+use crate::sha256::{bytes_to_hex, sha256_bytes};
 
-const OMG_MAGIC: &[u8; 6] = b"OMGZ15";
+const OMG_MAGIC: &[u8; 6] = b"OMGZ16";
 const FULL_RANGE: u64 = 0xFFFF_FFFF;
 const HALF: u64 = 0x8000_0000;
 const QUARTER: u64 = 0x4000_0000;
@@ -18,6 +26,38 @@ const TOTAL_FREQ: u64 = 65_536;
 const TTT_BLOCK: usize = 64;
 const TTT_LR_SCALE: f32 = 0.55;
 
+fn encode_uleb128(mut v: u64, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (v & 0x7F) as u8;
+        v >>= 7;
+        if v != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if v == 0 {
+            break;
+        }
+    }
+}
+
+fn decode_uleb128(data: &[u8], pos: &mut usize) -> Result<u64, String> {
+    let mut val = 0u64;
+    let mut shift = 0u32;
+    for _ in 0..10 {
+        if *pos >= data.len() {
+            return Err("OMGZ16 ULEB128 EOF".into());
+        }
+        let b = data[*pos];
+        *pos += 1;
+        val |= ((b & 0x7F) as u64) << shift;
+        if (b & 0x80) == 0 {
+            return Ok(val);
+        }
+        shift += 7;
+    }
+    Err("OMGZ16 ULEB128 overflow".into())
+}
+
 pub fn probs_to_cdf(probs: &[f32; 256]) -> [u64; 257] {
     let mut freqs = [1u64; 256];
     let budget = TOTAL_FREQ - 256;
@@ -25,20 +65,33 @@ pub fn probs_to_cdf(probs: &[f32; 256]) -> [u64; 257] {
     for &p in probs {
         sum_p += if p.is_finite() && p > 0.0 { p as f64 } else { 0.0 };
     }
-    if sum_p <= 1e-12 { sum_p = 1.0; }
+    if sum_p <= 1e-12 {
+        sum_p = 1.0;
+    }
     let mut assigned = 0u64;
     let mut max_i = 0usize;
     let mut max_f = 0u64;
     for i in 0..256 {
-        let p = if probs[i].is_finite() && probs[i] > 0.0 { probs[i] as f64 / sum_p } else { 0.0 };
+        let p = if probs[i].is_finite() && probs[i] > 0.0 {
+            probs[i] as f64 / sum_p
+        } else {
+            0.0
+        };
         let add = (p * budget as f64).floor() as u64;
         freqs[i] += add;
         assigned += add;
-        if freqs[i] > max_f { max_f = freqs[i]; max_i = i; }
+        if freqs[i] > max_f {
+            max_f = freqs[i];
+            max_i = i;
+        }
     }
-    if assigned < budget { freqs[max_i] += budget - assigned; }
+    if assigned < budget {
+        freqs[max_i] += budget - assigned;
+    }
     let mut cdf = [0u64; 257];
-    for i in 0..256 { cdf[i + 1] = cdf[i] + freqs[i]; }
+    for i in 0..256 {
+        cdf[i + 1] = cdf[i] + freqs[i];
+    }
     cdf
 }
 
@@ -53,7 +106,14 @@ pub struct ArithmeticEncoder {
 
 impl ArithmeticEncoder {
     pub fn new(capacity_hint: usize) -> Self {
-        Self { low: 0, high: FULL_RANGE, pending: 0, cur_byte: 0, bit_pos: 0, out: Vec::with_capacity(capacity_hint) }
+        Self {
+            low: 0,
+            high: FULL_RANGE,
+            pending: 0,
+            cur_byte: 0,
+            bit_pos: 0,
+            out: Vec::with_capacity(capacity_hint),
+        }
     }
 
     #[inline]
@@ -104,7 +164,11 @@ impl ArithmeticEncoder {
 
     pub fn finish(mut self) -> Vec<u8> {
         self.pending += 1;
-        if self.low < QUARTER { self.emit_bit_and_pending(0); } else { self.emit_bit_and_pending(1); }
+        if self.low < QUARTER {
+            self.emit_bit_and_pending(0);
+        } else {
+            self.emit_bit_and_pending(1);
+        }
         if self.bit_pos > 0 {
             self.cur_byte <<= 8 - self.bit_pos;
             self.out.push(self.cur_byte);
@@ -124,17 +188,31 @@ pub struct ArithmeticDecoder<'a> {
 
 impl<'a> ArithmeticDecoder<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        let mut dec = Self { data, byte_idx: 0, bit_pos: 0, low: 0, high: FULL_RANGE, value: 0 };
-        for _ in 0..32 { dec.value = (dec.value << 1) | (dec.read_bit() as u64); }
+        let mut dec = Self {
+            data,
+            byte_idx: 0,
+            bit_pos: 0,
+            low: 0,
+            high: FULL_RANGE,
+            value: 0,
+        };
+        for _ in 0..32 {
+            dec.value = (dec.value << 1) | (dec.read_bit() as u64);
+        }
         dec
     }
 
     #[inline]
     fn read_bit(&mut self) -> u8 {
-        if self.byte_idx >= self.data.len() { return 0; }
+        if self.byte_idx >= self.data.len() {
+            return 0;
+        }
         let b = (self.data[self.byte_idx] >> (7 - self.bit_pos)) & 1;
         self.bit_pos += 1;
-        if self.bit_pos == 8 { self.bit_pos = 0; self.byte_idx += 1; }
+        if self.bit_pos == 8 {
+            self.bit_pos = 0;
+            self.byte_idx += 1;
+        }
         b
     }
 
@@ -146,7 +224,11 @@ impl<'a> ArithmeticDecoder<'a> {
         let mut hi = 256usize;
         while lo + 1 < hi {
             let mid = (lo + hi) >> 1;
-            if cdf[mid] <= scaled { lo = mid; } else { hi = mid; }
+            if cdf[mid] <= scaled {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         }
         let s = lo;
         self.high = self.low + (range * cdf[s + 1]) / TOTAL_FREQ - 1;
@@ -178,6 +260,7 @@ impl<'a> ArithmeticDecoder<'a> {
 pub struct PhysicalCompressReport {
     pub orig_bytes: usize,
     pub compressed_bytes: usize,
+    pub header_bytes: usize,
     pub physical_bpb: f64,
     pub physical_ratio: f64,
     pub ttt_updates: usize,
@@ -189,13 +272,14 @@ pub fn compress_bytes_with_brain(
     raw: &[u8],
     enable_ttt: bool,
 ) -> (Vec<u8>, PhysicalCompressReport) {
-    let orig_sha = sha256_hex(raw);
+    let orig_sha_raw = sha256_bytes(raw);
+    let orig_sha = bytes_to_hex(&orig_sha_raw);
     let mut work_brain = brain.clone();
     let mut stream = CausalStreamState::new(&work_brain.cfg);
     let mut ttt_stream = CausalStreamState::new(&work_brain.cfg);
     let mut enc = ArithmeticEncoder::new(raw.len() / 2 + 64);
 
-    let use_lo = work_brain.active_policy.use_log_odds_mix;
+    let pol = work_brain.active_policy;
     let mut blk_in = Vec::with_capacity(TTT_BLOCK);
     let mut blk_tgt = Vec::with_capacity(TTT_BLOCK);
     let mut ttt_updates = 0usize;
@@ -204,7 +288,14 @@ pub fn compress_bytes_with_brain(
     for (idx, &actual) in raw.iter().enumerate() {
         let (p_mix, p_brain, experts, active, ctx, lat) = if idx == 0 {
             let unif = [1.0f32 / 256.0; 256];
-            (unif, unif, [unif; NUM_EPISODIC_EXPERTS], [false; NUM_EPISODIC_EXPERTS], 0usize, vec![0.0f32; work_brain.cfg.d_model])
+            (
+                unif,
+                unif,
+                [unif; NUM_EPISODIC_EXPERTS],
+                [false; NUM_EPISODIC_EXPERTS],
+                0usize,
+                [0.0f32; 32],
+            )
         } else {
             work_brain.predict_next_byte_full(prev_byte, &mut stream, None)
         };
@@ -213,7 +304,18 @@ pub fn compress_bytes_with_brain(
 
         if idx > 0 {
             let surprise = -(p_mix[actual as usize].max(1e-7).log2());
-            work_brain.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, actual, use_lo, 0.16);
+            work_brain.meta_mixer.observe_online(
+                ctx,
+                &p_brain,
+                &experts,
+                &active,
+                &p_mix,
+                actual,
+                pol.w_mem_scale,
+                pol.w_mem_cap,
+                pol.use_log_odds_mix,
+                0.16,
+            );
             work_brain.episodic.observe(&stream.recent_bytes, &lat, actual, surprise);
             if enable_ttt {
                 blk_in.push(prev_byte);
@@ -230,11 +332,12 @@ pub fn compress_bytes_with_brain(
     }
 
     let payload = enc.finish();
-    let mut archive = Vec::with_capacity(6 + 1 + 8 + 64 + payload.len());
+    let mut archive = Vec::with_capacity(48 + payload.len());
     archive.extend_from_slice(OMG_MAGIC);
     archive.push(if enable_ttt { 1u8 } else { 0u8 });
-    archive.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-    archive.extend_from_slice(orig_sha.as_bytes());
+    encode_uleb128(raw.len() as u64, &mut archive);
+    archive.extend_from_slice(&orig_sha_raw);
+    let header_bytes = archive.len();
     archive.extend_from_slice(&payload);
 
     let comp_len = archive.len();
@@ -242,6 +345,7 @@ pub fn compress_bytes_with_brain(
     let rep = PhysicalCompressReport {
         orig_bytes: raw.len(),
         compressed_bytes: comp_len,
+        header_bytes,
         physical_bpb: phys_bpb,
         physical_ratio: raw.len() as f64 / comp_len.max(1) as f64,
         ttt_updates,
@@ -251,15 +355,18 @@ pub fn compress_bytes_with_brain(
 }
 
 pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8]) -> Result<Vec<u8>, String> {
-    if archive.len() < 79 || &archive[0..6] != OMG_MAGIC {
-        return Err("invalid OMGZ15 archive header".into());
+    if archive.len() < 40 || &archive[0..6] != OMG_MAGIC {
+        return Err("invalid OMGZ16 archive header".into());
     }
     let enable_ttt = (archive[6] & 1) != 0;
-    let mut len_arr = [0u8; 8];
-    len_arr.copy_from_slice(&archive[7..15]);
-    let orig_len = u64::from_le_bytes(len_arr) as usize;
-    let expected_sha = std::str::from_utf8(&archive[15..79]).map_err(|_| "corrupt sha256 header")?;
-    let bitstream = &archive[79..];
+    let mut pos = 7usize;
+    let orig_len = decode_uleb128(archive, &mut pos)? as usize;
+    if pos + 32 > archive.len() {
+        return Err("corrupt OMGZ16 sha256 header".into());
+    }
+    let expected_sha_raw = &archive[pos..pos + 32];
+    pos += 32;
+    let bitstream = &archive[pos..];
 
     let mut work_brain = brain.clone();
     let mut stream = CausalStreamState::new(&work_brain.cfg);
@@ -267,7 +374,7 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
     let mut dec = ArithmeticDecoder::new(bitstream);
     let mut restored = Vec::with_capacity(orig_len);
 
-    let use_lo = work_brain.active_policy.use_log_odds_mix;
+    let pol = work_brain.active_policy;
     let mut blk_in = Vec::with_capacity(TTT_BLOCK);
     let mut blk_tgt = Vec::with_capacity(TTT_BLOCK);
     let mut prev_byte = 0u8;
@@ -275,7 +382,14 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
     for idx in 0..orig_len {
         let (p_mix, p_brain, experts, active, ctx, lat) = if idx == 0 {
             let unif = [1.0f32 / 256.0; 256];
-            (unif, unif, [unif; NUM_EPISODIC_EXPERTS], [false; NUM_EPISODIC_EXPERTS], 0usize, vec![0.0f32; work_brain.cfg.d_model])
+            (
+                unif,
+                unif,
+                [unif; NUM_EPISODIC_EXPERTS],
+                [false; NUM_EPISODIC_EXPERTS],
+                0usize,
+                [0.0f32; 32],
+            )
         } else {
             work_brain.predict_next_byte_full(prev_byte, &mut stream, None)
         };
@@ -285,7 +399,18 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
 
         if idx > 0 {
             let surprise = -(p_mix[sym as usize].max(1e-7).log2());
-            work_brain.meta_mixer.observe_online(ctx, &p_brain, &experts, &active, &p_mix, sym, use_lo, 0.16);
+            work_brain.meta_mixer.observe_online(
+                ctx,
+                &p_brain,
+                &experts,
+                &active,
+                &p_mix,
+                sym,
+                pol.w_mem_scale,
+                pol.w_mem_cap,
+                pol.use_log_odds_mix,
+                0.16,
+            );
             work_brain.episodic.observe(&stream.recent_bytes, &lat, sym, surprise);
             if enable_ttt {
                 blk_in.push(prev_byte);
@@ -300,9 +425,13 @@ pub fn decompress_bytes_with_brain(brain: &DeepContractiveBrain, archive: &[u8])
         prev_byte = sym;
     }
 
-    let actual_sha = sha256_hex(&restored);
-    if actual_sha != expected_sha {
-        return Err(format!("bitstream SHA-256 mismatch! expected={} got={}", expected_sha, actual_sha));
+    let actual_sha_raw = sha256_bytes(&restored);
+    if actual_sha_raw.as_slice() != expected_sha_raw {
+        return Err(format!(
+            "bitstream SHA-256 mismatch! expected={} got={}",
+            bytes_to_hex(expected_sha_raw),
+            bytes_to_hex(&actual_sha_raw)
+        ));
     }
     Ok(restored)
 }
@@ -315,7 +444,9 @@ pub fn compress_file_to_omg(
 ) -> Result<PhysicalCompressReport, String> {
     let raw = fs::read(in_path).map_err(|e| format!("read failed: {}", e))?;
     let (archive, rep) = compress_bytes_with_brain(brain, &raw, enable_ttt);
-    if let Some(p) = out_path.parent() { let _ = fs::create_dir_all(p); }
+    if let Some(p) = out_path.parent() {
+        let _ = fs::create_dir_all(p);
+    }
     fs::write(out_path, &archive).map_err(|e| format!("write failed: {}", e))?;
     Ok(rep)
 }
@@ -323,8 +454,10 @@ pub fn compress_file_to_omg(
 pub fn decompress_omg_to_file(brain: &DeepContractiveBrain, in_path: &Path, out_path: &Path) -> Result<(usize, String), String> {
     let archive = fs::read(in_path).map_err(|e| format!("read failed: {}", e))?;
     let restored = decompress_bytes_with_brain(brain, &archive)?;
-    let sha = sha256_hex(&restored);
-    if let Some(p) = out_path.parent() { let _ = fs::create_dir_all(p); }
+    let sha = bytes_to_hex(&sha256_bytes(&restored));
+    if let Some(p) = out_path.parent() {
+        let _ = fs::create_dir_all(p);
+    }
     fs::write(out_path, &restored).map_err(|e| format!("write failed: {}", e))?;
     Ok((restored.len(), sha))
 }

@@ -1,9 +1,10 @@
-//! Stratified Multi-File Streaming Byte-Stream Solomonoff Learner (`TropiCore-Omega v13.0`).
+//! Stratified Multi-File & Single-Large-File `O(budget)` RAM Streaming Byte-Stream Solomonoff Learner (`TropiCore-Omega v16.0`).
 //!
-//! Obliterates v12.0's alphabetical 2-file starvation & full-RAM corpus limitation:
-//!   - Deterministically holds out the unseen evaluation file (`files.last()`).
-//!   - Shuffles ALL remaining training files per cycle seed and reads balanced rotating windows
-//!     across EVERY file in the directory (fixed bounded RAM — works on 100 KB OR 16 TB NVMe corpora!).
+//! Works at fixed `O(max_train_bytes + max_heldout_bytes)` RAM on 100 KB repos OR a single 100 GB / 16 TB Gen5 NVMe file!
+//!   - Single file (`files.len() == 1`): uses `File::open + Seek + Read` on both the 85% training prefix AND 15% held-out tail
+//!     (ZERO full-file `fs::read()` OOM!).
+//!   - Multi-file directory: deterministically holds out `files.last()` (bounded prefix read) and Fisher-Yates shuffles ALL
+//!     remaining training files per cycle seed with balanced rotating windows across every file.
 //!   - Runs lock-free Multi-Stream Data-Parallel Batch Training with Linear Warmup + Cosine LR Decay!
 
 use std::fs::{self, File};
@@ -43,7 +44,7 @@ pub fn collect_real_files(root: &Path) -> Vec<PathBuf> {
                 }
             } else if p.is_file() {
                 if let Ok(meta) = p.metadata() {
-                    if meta.len() >= 128 && meta.len() <= 512 * 1024 * 1024 {
+                    if meta.len() >= 128 {
                         out.push(p);
                     }
                 }
@@ -54,20 +55,45 @@ pub fn collect_real_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Strictly bounded `O(len)` disk range reader (loops on short `read()` calls; NEVER reads full multi-GB file into RAM!).
+fn read_exact_range(path: &Path, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+    let mut f = File::open(path).map_err(|e| format!("open failed: {}", e))?;
+    if offset > 0 {
+        f.seek(SeekFrom::Start(offset)).map_err(|e| format!("seek failed: {}", e))?;
+    }
+    let mut buf = vec![0u8; len];
+    let mut filled = 0usize;
+    while filled < len {
+        let n = f.read(&mut buf[filled..]).map_err(|e| format!("read failed: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    buf.truncate(filled);
+    Ok(buf)
+}
+
 fn read_window_from_file(path: &Path, max_bytes: usize, rng: &mut u64) -> Result<Vec<u8>, String> {
     let meta = fs::metadata(path).map_err(|e| format!("stat failed: {}", e))?;
-    let fsize = meta.len() as usize;
-    if max_bytes == 0 || fsize <= max_bytes {
-        return fs::read(path).map_err(|e| format!("read failed: {}", e));
+    let fsize = meta.len();
+    if max_bytes == 0 || fsize <= max_bytes as u64 {
+        return read_exact_range(path, 0, fsize as usize);
     }
-    let max_off = fsize - max_bytes;
-    let off = (splitmix64(rng) as usize) % (max_off + 1);
-    let mut f = File::open(path).map_err(|e| format!("open failed: {}", e))?;
-    f.seek(SeekFrom::Start(off as u64)).map_err(|e| format!("seek failed: {}", e))?;
-    let mut buf = vec![0u8; max_bytes];
-    let n = f.read(&mut buf).map_err(|e| format!("read failed: {}", e))?;
-    buf.truncate(n);
-    Ok(buf)
+    let max_off = fsize - (max_bytes as u64);
+    let off = splitmix64(rng) % (max_off + 1);
+    read_exact_range(path, off, max_bytes)
+}
+
+fn read_prefix_from_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let meta = fs::metadata(path).map_err(|e| format!("stat failed: {}", e))?;
+    let fsize = meta.len();
+    let take = if max_bytes > 0 {
+        (max_bytes as u64).min(fsize) as usize
+    } else {
+        fsize as usize
+    };
+    read_exact_range(path, 0, take)
 }
 
 #[derive(Clone, Debug)]
@@ -79,8 +105,7 @@ pub struct CorpusSplit {
     pub heldout_label: String,
 }
 
-/// Stratified Shuffled Multi-File Streaming Loader:
-/// Samples balanced rotating windows from EVERY training file (no alphabetical starvation, O(budget) RAM!).
+/// Stratified Shuffled Multi-File & Single-Large-File Streaming Loader (`O(budget)` RAM ALWAYS!).
 pub fn load_real_corpus_split(
     path: &Path,
     max_train_bytes: usize,
@@ -93,27 +118,42 @@ pub fn load_real_corpus_split(
     }
 
     if files.len() == 1 {
-        let raw = fs::read(&files[0]).map_err(|e| format!("read failed: {}", e))?;
-        if raw.len() < 256 {
+        let fpath = &files[0];
+        let meta = fs::metadata(fpath).map_err(|e| format!("stat failed: {}", e))?;
+        let fsize = meta.len();
+        if fsize < 256 {
             return Err("File too small (<256 bytes) for train/heldout split".into());
         }
-        let split = (raw.len() * 85) / 100;
-        let mut tr = raw[..split].to_vec();
-        let mut ho = raw[split..].to_vec();
-        if max_train_bytes > 0 && tr.len() > max_train_bytes {
+        let split = ((fsize as u128 * 85) / 100) as u64;
+        let train_avail = split;
+        let held_avail = fsize - split;
+
+        let tr_len = if max_train_bytes > 0 {
+            (max_train_bytes as u64).min(train_avail) as usize
+        } else {
+            train_avail as usize
+        };
+        let tr_off = if (tr_len as u64) < train_avail {
             let mut rng = cycle_seed ^ 0x517C_C1B7;
-            let off = (splitmix64(&mut rng) as usize) % (tr.len() - max_train_bytes + 1);
-            tr = tr[off..off + max_train_bytes].to_vec();
-        }
-        if max_heldout_bytes > 0 && ho.len() > max_heldout_bytes {
-            ho.truncate(max_heldout_bytes);
-        }
+            splitmix64(&mut rng) % (train_avail - (tr_len as u64) + 1)
+        } else {
+            0u64
+        };
+        let tr = read_exact_range(fpath, tr_off, tr_len)?;
+
+        let ho_len = if max_heldout_bytes > 0 {
+            (max_heldout_bytes as u64).min(held_avail) as usize
+        } else {
+            held_avail as usize
+        };
+        let ho = read_exact_range(fpath, split, ho_len)?;
+
         return Ok(CorpusSplit {
             train_bytes: tr,
             heldout_bytes: ho,
             train_files: 1,
             total_train_pool: 1,
-            heldout_label: format!("tail-15% of {}", files[0].display()),
+            heldout_label: format!("tail-15% of {}", fpath.display()),
         });
     }
 
@@ -123,7 +163,7 @@ pub fn load_real_corpus_split(
     let total_train_pool = train_pool.len();
 
     // Deterministic Fisher-Yates shuffle of ALL training files using `cycle_seed`!
-    let mut rng = cycle_seed ^ 0xC099_1300_2026;
+    let mut rng = cycle_seed ^ 0xC099_1600_2026;
     for i in (1..train_pool.len()).rev() {
         let j = (splitmix64(&mut rng) as usize) % (i + 1);
         train_pool.swap(i, j);
@@ -156,10 +196,7 @@ pub fn load_real_corpus_split(
         train_bytes.truncate(max_train_bytes);
     }
 
-    let mut heldout_bytes = fs::read(&held_path).map_err(|e| format!("heldout read failed: {}", e))?;
-    if max_heldout_bytes > 0 && heldout_bytes.len() > max_heldout_bytes {
-        heldout_bytes.truncate(max_heldout_bytes);
-    }
+    let heldout_bytes = read_prefix_from_file(&held_path, max_heldout_bytes)?;
 
     Ok(CorpusSplit {
         train_bytes,

@@ -1814,9 +1814,15 @@ class SQLiteStore:
                 pin_cnt = int((rc.execute("SELECT COUNT(*) FROM pinned_rpc_cache").fetchone() or [0])[0] or 0)
                 cc_cnt = int((rc.execute("SELECT COUNT(*) FROM contract_code").fetchone() or [0])[0] or 0)
             active_bytes = max(0, pc_i - fc_i) * max(512, ps_i)
+            freelist_bytes = max(0, fc_i) * max(512, ps_i)
             prune_pin_excess = max(0, pin_cnt - 50_000)
             prune_cc = active_bytes > (MAX_SQLITE_BYTES * 2) and cc_cnt > 60_000
-            if prune_pin_excess <= 0 and not prune_cc and av_i != 2:
+            need_av_migrate = bool(
+                av_i == 0
+                and freelist_bytes >= (MAX_SQLITE_BYTES * 2)
+                and active_bytes <= (MAX_SQLITE_BYTES * 4)
+            )
+            if prune_pin_excess <= 0 and not prune_cc and av_i != 2 and not need_av_migrate:
                 with self._write_tx():
                     self._conn.execute(
                         "INSERT OR REPLACE INTO engine_meta(meta_key, meta_val, updated_at) VALUES('last_sqlite_prune_at', ?, ?)",
@@ -1858,9 +1864,22 @@ class SQLiteStore:
                         qm_d = ",".join("?" for _ in chunk_d)
                         self._conn.execute(f"DELETE FROM contract_code WHERE rowid IN ({qm_d})", chunk_d)
             with self._lock:
-                if av_i == 2:
+                if need_av_migrate:
                     try:
-                        self._conn.execute("PRAGMA incremental_vacuum(2000)")
+                        # 레거시 auto_vacuum=0 DB에 >1GB 미회수 freelist가 누적된 경우 1회 전환+압축+WAL TRUNCATE로 영구 정상화
+                        self._conn.commit()
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+                        self._conn.execute("VACUUM")
+                        self._conn.execute("PRAGMA journal_mode = WAL")
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except sqlite3.Error:
+                        pass
+                elif av_i == 2:
+                    try:
+                        vac_pages = min(fc_i, 65536) if fc_i > 10_000 else (min(fc_i, 2000) if fc_i > 0 else 0)
+                        if vac_pages > 0:
+                            self._conn.execute(f"PRAGMA incremental_vacuum({int(vac_pages)})")
                     except sqlite3.Error:
                         pass
                 try:
@@ -2581,6 +2600,9 @@ class SQLiteStore:
                 try:
                     d_h = json.loads(str(r[1] or "{}"))
                     if isinstance(d_h, dict):
+                        t_to = float(d_h.get("_timeout_at") or 0.0)
+                        if t_to > 0.0 and (time.time() - t_to) > 1800.0:
+                            continue
                         out_m[str(r[0]).lower()] = d_h
                 except _PARSE_DATA_EXC:
                     continue
@@ -10604,7 +10626,13 @@ def _coalesced_sourcify_dep_lookup(
             for cid_i, hs_set in sorted(by_cid.items()):
                 c_p, a_p = _sourcify_chain_and_addr_preds(d_cols, cid_i, sorted(hs_set))
                 clauses.append(f"({c_p} AND {a_p})")
-            where_sql = " OR ".join(clauses)
+            if len(by_cid) >= 2:
+                cids_in = ", ".join(str(int(ci)) for ci in sorted(by_cid.keys()))
+                cid_col_t = d_cols.get("chain_id", "")
+                cid_pre = f"d.chain_id IN ({cids_in})" if ("INT" in cid_col_t or "DECIMAL" in cid_col_t or "HUGEINT" in cid_col_t) else f"CAST(d.chain_id AS BIGINT) IN ({cids_in})"
+                where_sql = f"({cid_pre}) AND ({' OR '.join(clauses)})"
+            else:
+                where_sql = " OR ".join(clauses)
             batch["rows"] = _run_duckdb_cli_json(
                 f"""
                 SELECT CAST(d.chain_id AS BIGINT) AS cid_num, CAST(d.id AS VARCHAR) AS dep_id,
@@ -10614,12 +10642,12 @@ def _coalesced_sourcify_dep_lookup(
                 LIMIT 512
                 """,
                 parquet_root=p_root,
-                timeout_sec=18.0,
+                timeout_sec=10.0,
             )
         finally:
             batch["ev"].set()
     else:
-        batch["ev"].wait(timeout=22.0)
+        batch["ev"].wait(timeout=14.0)
     all_rows = batch.get("rows")
     if all_rows is None:
         return None
@@ -10717,6 +10745,9 @@ def _query_local_sourcify_deployment_hints(
 
         f_counts, c_types = _unpack_sourcify_v2_meta(p_root)
         has_dep = int(f_counts.get("contract_deployments", 0)) > 0
+        is_giant_dep_corpus = int(f_counts.get("contract_deployments", 0)) > 64
+        if not include_bytecodes and is_giant_dep_corpus and len(query_addrs) > 8:
+            query_addrs = query_addrs[:8]
         dep_scan_ok = True
         sibs_by_query_addr: Dict[str, List[str]] = {}
         if has_dep and DUCKDB_BIN.is_file():
@@ -10782,7 +10813,7 @@ def _query_local_sourcify_deployment_hints(
                         WHERE {vc_in_pred}
                         """,
                         parquet_root=p_root,
-                        timeout_sec=12.0,
+                        timeout_sec=(7.0 if (not include_bytecodes and is_giant_dep_corpus) else 12.0),
                     )
                     if v_rows is None:
                         dep_scan_ok = False
@@ -10879,8 +10910,8 @@ def _query_local_sourcify_deployment_hints(
                                     except _PARSE_DATA_EXC:
                                         pass
 
-                # Step 4: Same-deployer sibling contracts on the same chain
-                if has_dep_col and dep_blk_bounds:
+                # Step 4: Same-deployer sibling contracts on the same chain (skip redundant 2nd 6.3GB scan in live non-bytecode S2)
+                if has_dep_col and dep_blk_bounds and (include_bytecodes or not is_giant_dep_corpus):
                     dep_in = (
                         ", ".join(f"unhex({_sql_quote_str(dh)})" for dh in sorted(dep_blk_bounds.keys()))
                         if dep_blob
@@ -10954,20 +10985,27 @@ def _query_local_sourcify_deployment_hints(
                     if b32_sc:
                         out["abi_bytes32_addr_getters"][sa] = ["0x" + g.hex() for g in b32_sc]
 
-        if use_db_hints and store is not None and corpus_fp and dep_scan_ok:
-            to_persist: Dict[str, Dict[str, Any]] = {}
-            for qa in query_addrs:
-                rec_q: Dict[str, Any] = {}
-                if out["embedded_addresses"].get(qa):
-                    rec_q["emb"] = list(out["embedded_addresses"][qa])
-                if out["abi_zero_arg_getters"].get(qa):
-                    rec_q["abi0"] = list(out["abi_zero_arg_getters"][qa])
-                if out["abi_bytes32_addr_getters"].get(qa):
-                    rec_q["abib32"] = list(out["abi_bytes32_addr_getters"][qa])
-                if sibs_by_query_addr.get(qa):
-                    rec_q["sibs"] = list(sibs_by_query_addr[qa])
-                to_persist[qa] = rec_q
-            store.put_sourcify_hints_batch(corpus_fp, chain_id, to_persist)
+        if use_db_hints and store is not None and corpus_fp:
+            if dep_scan_ok:
+                to_persist: Dict[str, Dict[str, Any]] = {}
+                for qa in query_addrs:
+                    rec_q: Dict[str, Any] = {}
+                    if out["embedded_addresses"].get(qa):
+                        rec_q["emb"] = list(out["embedded_addresses"][qa])
+                    if out["abi_zero_arg_getters"].get(qa):
+                        rec_q["abi0"] = list(out["abi_zero_arg_getters"][qa])
+                    if out["abi_bytes32_addr_getters"].get(qa):
+                        rec_q["abib32"] = list(out["abi_bytes32_addr_getters"][qa])
+                    if sibs_by_query_addr.get(qa):
+                        rec_q["sibs"] = list(sibs_by_query_addr[qa])
+                    to_persist[qa] = rec_q
+                store.put_sourcify_hints_batch(corpus_fp, chain_id, to_persist)
+            elif is_giant_dep_corpus and query_addrs:
+                # 30분 부정 쿨다운 기록으로 거대 코퍼스 타임아웃 주소의 매 스윕 20~40s 무한 재스캔 차단
+                now_to = time.time()
+                store.put_sourcify_hints_batch(
+                    corpus_fp, chain_id, {qa: {"_timeout_at": now_to} for qa in query_addrs}
+                )
         if use_sf_cache and dep_scan_ok:
             with _SOURCIFY_HINTS_CACHE_LOCK:
                 if len(_SOURCIFY_HINTS_CACHE) >= 512:
@@ -12039,6 +12077,9 @@ def _harvest_logs_bisect(
     if is_real_lb and max_depth >= 1 and span_cur > 0:
         sp_map = getattr(router, "_live_log_max_span_by_chain", None)
         known_sp = int(sp_map.get(c_lb, 0) or 0) if isinstance(sp_map, dict) else 0
+        if known_sp <= 0 and span_cur > 12_500:
+            # 라이브 공용/아카이브 RPC 대부분이 50k 단일 getLogs를 거부하므로 초기부터 현실 상한으로 병렬 분할
+            known_sp = 25_000 if c_lb in ("arbitrum", "optimism", "base") else 12_500
         if known_sp > 0 and span_cur > known_sp:
             # Partition directly into <=4 bounded parallel subranges matching the learned chain span (0 wasted failing probes)
             n_parts = min(4, max(2, (span_cur + known_sp) // known_sp))
@@ -12311,8 +12352,8 @@ def _harvest_inbound_trust_and_approvals(
     if not norm_targets:
         return verified_vaults, approval_grantors, approval_tokens
     padded = ["0x" + ("0" * 24) + nt[2:] for nt in norm_targets]
-    spans: Tuple[int, ...] = (1_000_000, 250_000, 50_000, 10_000, 3_000) if is_live_rpc else (500_000, 50_000, 3_000)
     is_real_r = is_live_rpc and _is_live_real_router(router)
+    spans: Tuple[int, ...] = (50_000, 10_000, 3_000) if is_real_r else ((1_000_000, 250_000, 50_000, 10_000, 3_000) if is_live_rpc else (500_000, 50_000, 3_000))
     if is_real_r:
         span_map = getattr(router, "_live_log_max_span_by_chain", None)
         if isinstance(span_map, dict):
@@ -12338,7 +12379,7 @@ def _harvest_inbound_trust_and_approvals(
                     "topics": [[ROLE_GRANTED_TOPIC0, OWNERSHIP_TRANSFERRED_TOPIC0, APPROVAL_TOPIC0], None, padded],
                 }],
                 block_pin=(int(to_block) if int(to_block) > 0 else None),
-                timeout=8.0,
+                timeout=(5.0 if is_real_r else 8.0),
             )
             if isinstance(res_l, list):
                 any_span_ok = True
@@ -12434,6 +12475,10 @@ _CHAIN_MIN_GAS_PRICE_WEI: Dict[str, int] = {
 _SYSTEM_DEPOSIT_TX_TYPES: FrozenSet[int] = frozenset({0x7E, 0x64, 0x65, 0x66, 0x68, 0x6A})
 
 
+_GAS_PRICE_PIN_CACHE: Dict[Tuple[str, int], int] = {}
+_GAS_PRICE_PIN_CACHE_LOCK = threading.Lock()
+
+
 def fetch_gas_price_wei(router: RPCRouter, chain: str, block_pin: int = 0) -> int:
     """
     감사·최신 블록 기준 실측 유효 가스 단가(wei) 산출:
@@ -12441,61 +12486,119 @@ def fetch_gas_price_wei(router: RPCRouter, chain: str, block_pin: int = 0) -> in
     - 적격 트랜잭션 부재 시 직전 적격 블록 실측치·실시간 호가(`eth_gasPrice`)·프로토콜 최소 유효 가스단가 중 최댓값 반환
     """
     c = _norm_chain(chain)
-    btag = hex(int(block_pin)) if block_pin > 0 else "latest"
+    bp_i = int(block_pin or 0)
+    btag = hex(bp_i) if bp_i > 0 else "latest"
     min_tip = _CHAIN_MIN_PRIORITY_TIP_WEI.get(c, 0)
     min_gp = _CHAIN_MIN_GAS_PRICE_WEI.get(c, 0)
-    need_arch = bool(block_pin > 0)
+    need_arch = bool(bp_i > 0)
+    is_live_gp = _is_live_real_router(router)
+    cid_gp = int(CHAIN_IDS.get(c, 0) or 0)
+    gp_store = getattr(router, "store", None) if (is_live_gp and bp_i > 0 and cid_gp > 0) else None
+
+    if is_live_gp and bp_i > 0:
+        with _GAS_PRICE_PIN_CACHE_LOCK:
+            hit_gp = _GAS_PRICE_PIN_CACHE.get((c, bp_i))
+        if hit_gp is not None and hit_gp > 0:
+            return hit_gp
+        if gp_store is not None:
+            try:
+                gp_found, db_gp = gp_store.get_pinned_rpc(cid_gp, bp_i, "_gas_price_wei", btag)
+                if gp_found and isinstance(db_gp, int) and db_gp > 0:
+                    with _GAS_PRICE_PIN_CACHE_LOCK:
+                        if len(_GAS_PRICE_PIN_CACHE) > 1024:
+                            _GAS_PRICE_PIN_CACHE.clear()
+                        _GAS_PRICE_PIN_CACHE[(c, bp_i)] = db_gp
+                    return db_gp
+            except _RECOVERABLE_IO_EXC:
+                pass
+
+    def _cache_gp_result(val_w: int) -> int:
+        if is_live_gp and bp_i > 0 and val_w > 0:
+            with _GAS_PRICE_PIN_CACHE_LOCK:
+                if len(_GAS_PRICE_PIN_CACHE) > 1024:
+                    _GAS_PRICE_PIN_CACHE.clear()
+                _GAS_PRICE_PIN_CACHE[(c, bp_i)] = val_w
+            if gp_store is not None:
+                try:
+                    gp_store.put_pinned_rpc(cid_gp, bp_i, "_gas_price_wei", btag, val_w)
+                except _RECOVERABLE_IO_EXC:
+                    pass
+        return val_w
+
+    gp_timeout = 4.0 if is_live_gp else 6
 
     def _call_gp_rpc(method_nm: str, params_l: List[Any]) -> Any:
         try:
             return router.call(
-                c, method_nm, params_l, block_pin=block_pin, need_archive=need_arch, timeout=6
+                c, method_nm, params_l, block_pin=bp_i, need_archive=need_arch, timeout=gp_timeout
             )
         except TypeError:
             try:
-                return router.call(c, method_nm, params_l, block_pin=block_pin)
+                return router.call(c, method_nm, params_l, block_pin=bp_i)
             except TypeError:
                 return router.call(c, method_nm, params_l)
 
     target_base_fee = 0
     fh_bf_blocks: List[int] = []
     fh_rw_blocks: List[int] = []
-    try:
-        fh = _call_gp_rpc("eth_feeHistory", [5, btag, [50]])
-        if isinstance(fh, dict):
-            bf_raw = fh.get("baseFeePerGas") or []
-            rw_raw = fh.get("reward") or []
-            if isinstance(bf_raw, list):
-                fh_bf_blocks = [
-                    int(s, 16) if isinstance(s, str) and s.startswith("0x") else 0
-                    for s in bf_raw
-                ]
-                if len(fh_bf_blocks) >= 2:
-                    target_base_fee = max(target_base_fee, fh_bf_blocks[-2])
-                elif fh_bf_blocks:
-                    target_base_fee = max(target_base_fee, fh_bf_blocks[0])
-                if block_pin <= 0 and fh_bf_blocks:
-                    target_base_fee = max(target_base_fee, fh_bf_blocks[-1])
-            if isinstance(rw_raw, list):
-                fh_rw_blocks = [
-                    int(rw[0], 16)
-                    if (isinstance(rw, list) and rw and isinstance(rw[0], str) and rw[0].startswith("0x"))
-                    else 0
-                    for rw in rw_raw
-                ]
-    except (OSError, TimeoutError, ValueError, TypeError, KeyError, RuntimeError):
-        pass
+    fh: Any = None
+    blk_hdr: Any = None
+    if is_live_gp and bp_i > 0 and callable(getattr(router, "batch_call", None)):
+        try:
+            b_res_gp = router.batch_call(
+                c,
+                [
+                    ("eth_feeHistory", [5, btag, [50]]),
+                    ("eth_getBlockByNumber", [btag, False]),
+                ],
+                block_pin=bp_i,
+                need_archive=need_arch,
+            )
+            if len(b_res_gp) >= 1:
+                fh = b_res_gp[0]
+            if len(b_res_gp) >= 2:
+                blk_hdr = b_res_gp[1]
+        except (OSError, TimeoutError, ValueError, TypeError, KeyError, RuntimeError):
+            fh = None
+            blk_hdr = None
+    else:
+        try:
+            fh = _call_gp_rpc("eth_feeHistory", [5, btag, [50]])
+        except (OSError, TimeoutError, ValueError, TypeError, KeyError, RuntimeError):
+            fh = None
+        try:
+            blk_hdr = _call_gp_rpc("eth_getBlockByNumber", [btag, False])
+        except (OSError, TimeoutError, ValueError, TypeError, KeyError, RuntimeError):
+            blk_hdr = None
 
-    try:
-        blk_hdr = _call_gp_rpc("eth_getBlockByNumber", [btag, False])
-        if isinstance(blk_hdr, dict):
-            bf_hex = blk_hdr.get("baseFeePerGas")
-            if isinstance(bf_hex, str) and bf_hex.startswith("0x"):
-                bf_val = int(bf_hex, 16)
-                if bf_val > 0:
-                    target_base_fee = max(target_base_fee, bf_val)
-    except (OSError, TimeoutError, ValueError, TypeError, KeyError, RuntimeError):
-        pass
+    if isinstance(fh, dict):
+        bf_raw = fh.get("baseFeePerGas") or []
+        rw_raw = fh.get("reward") or []
+        if isinstance(bf_raw, list):
+            fh_bf_blocks = [
+                int(s, 16) if isinstance(s, str) and s.startswith("0x") else 0
+                for s in bf_raw
+            ]
+            if len(fh_bf_blocks) >= 2:
+                target_base_fee = max(target_base_fee, fh_bf_blocks[-2])
+            elif fh_bf_blocks:
+                target_base_fee = max(target_base_fee, fh_bf_blocks[0])
+            if bp_i <= 0 and fh_bf_blocks:
+                target_base_fee = max(target_base_fee, fh_bf_blocks[-1])
+        if isinstance(rw_raw, list):
+            fh_rw_blocks = [
+                int(rw[0], 16)
+                if (isinstance(rw, list) and rw and isinstance(rw[0], str) and rw[0].startswith("0x"))
+                else 0
+                for rw in rw_raw
+            ]
+
+    if isinstance(blk_hdr, dict):
+        bf_hex = blk_hdr.get("baseFeePerGas")
+        if isinstance(bf_hex, str) and bf_hex.startswith("0x"):
+            bf_val = int(bf_hex, 16)
+            if bf_val > 0:
+                target_base_fee = max(target_base_fee, bf_val)
 
     proto_min_wei = max(
         (target_base_fee + min_tip) if (target_base_fee > 0 or min_tip > 0) else 0,
@@ -12553,8 +12656,8 @@ def fetch_gas_price_wei(router: RPCRouter, chain: str, block_pin: int = 0) -> in
         except (OSError, TimeoutError, ValueError, TypeError, KeyError, RuntimeError):
             pass
 
-    if block_pin > 0 and block_rep_wei > 0:
-        return max(block_rep_wei, proto_min_wei)
+    if bp_i > 0 and block_rep_wei > 0:
+        return _cache_gp_result(max(block_rep_wei, proto_min_wei))
 
     live_quote_wei = 0
     try:
@@ -12568,7 +12671,7 @@ def fetch_gas_price_wei(router: RPCRouter, chain: str, block_pin: int = 0) -> in
 
     floor_wei = max(block_rep_wei, prev_eligible_wei, live_quote_wei, proto_min_wei)
     if floor_wei > 0:
-        return floor_wei
+        return _cache_gp_result(floor_wei)
     return 2_000_000_000 if c == "ethereum" else 100_000_000
 
 
@@ -25537,7 +25640,15 @@ _NON_IDENT_CHAR_RE: re.Pattern[str] = re.compile(r"[^A-Za-z0-9_]")
 
 
 def _safe_solidity_ident(slug: str) -> str:
-    return _NON_IDENT_CHAR_RE.sub("_", slug) or "Protocol"
+    cleaned = _NON_IDENT_CHAR_RE.sub("_", slug) or "Protocol"
+    if len(cleaned) <= 30:
+        return cleaned
+    # Windows MAX_PATH(260) 안전 상한: 긴 슬러그(31~55자)를 파일명·컨트랙트명에 중복 삽입해도 forge 아티팩트 경로 < 254자 유지
+    h8 = hashlib.sha256(slug.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    pref = cleaned[:11].rstrip("_") or "P"
+    if pref[0].isdigit():
+        pref = f"P{pref[:10]}"
+    return f"{pref}_{h8}"
 
 
 _SUPPORTED_HARNESS_DEX_KINDS: FrozenSet[str] = frozenset(
@@ -31692,7 +31803,7 @@ _SOLC_AST_NONCACHEABLE_ERRORS: FrozenSet[str] = frozenset({
 _SOLC_AST_CACHE: Dict[Tuple[str, str, bool, bool], Tuple[bool, Tuple[str, ...]]] = {}
 _SOLC_AST_CACHE_LOCK = threading.Lock()
 _SOLC_AST_INFLIGHT: Dict[Tuple[str, str, bool, bool], threading.Event] = {}
-_SOLC_AST_SEM = threading.BoundedSemaphore(2)
+_SOLC_AST_SEM = threading.BoundedSemaphore(4)
 
 
 def verify_solidity_formal_ast(
@@ -35172,6 +35283,30 @@ def _is_forbidden_proxy_rpc_method(meth: str) -> bool:
     return any(ml.startswith(pfx) for pfx in _FORBIDDEN_PROXY_RPC_PREFIXES)
 
 
+_FORK_HOLDER_SLOTS_CACHE: Dict[str, Tuple[Tuple[str, int, bool], ...]] = {}
+_FORK_HOLDER_SLOTS_LOCK = threading.Lock()
+
+
+def _get_cached_holder_mapping_slots(h_addr: str) -> Tuple[Tuple[str, int, bool], ...]:
+    with _FORK_HOLDER_SLOTS_LOCK:
+        hit = _FORK_HOLDER_SLOTS_CACHE.get(h_addr)
+    if hit is not None:
+        return hit
+    a_pad = bytes(12) + bytes.fromhex(h_addr[2:])
+    items: List[Tuple[str, int, bool]] = []
+    for b_int in _FORK_PROXY_CANDIDATE_BASES:
+        b_pad = b_int.to_bytes(32, "big")
+        items.append(("0x" + _keccak256(a_pad + b_pad).hex(), b_int, False))
+        if b_int < 16:
+            items.append(("0x" + _keccak256(b_pad + a_pad).hex(), b_int, True))
+    res = tuple(items)
+    with _FORK_HOLDER_SLOTS_LOCK:
+        if len(_FORK_HOLDER_SLOTS_CACHE) >= 2048:
+            _FORK_HOLDER_SLOTS_CACHE.clear()
+        _FORK_HOLDER_SLOTS_CACHE[h_addr] = res
+    return res
+
+
 class _PinnedBlockForkProxy:
     """
     고정 블록(`block_pin > 0`) 전용 인프로세스 로컬(`127.0.0.1`) HTTP/1.1 Keep-Alive JSON-RPC 캐시·프리페치 프록시:
@@ -35203,15 +35338,22 @@ class _PinnedBlockForkProxy:
         self._upstreams: List[str] = [str(u) for u in dict.fromkeys(upstreams) if u and not str(u).startswith("http://127.0.0.1")]
         self._cache_file: Optional[Path] = cache_file
         self._tokens: List[str] = list(dict.fromkeys(na for a in token_addrs if (na := _norm_addr(a))))[:24]
+        self._caller_addr: str = _norm_addr(extra_addrs[0]) if extra_addrs else ""
         self._holders: List[str] = list(dict.fromkeys(na for a in (*extra_addrs[:4], *vault_addrs, *extra_addrs[4:]) if (na := _norm_addr(a))))[:48]
         self._all_addrs: List[str] = list(dict.fromkeys([*self._tokens, *self._holders]))[:64]
+        self._prewarm_addrs: List[str] = list(
+            dict.fromkeys([*self._tokens, *(na for a in extra_addrs[:8] if (na := _norm_addr(a)))])
+        )[:28]
 
         self._lock = threading.RLock()
+        self._flush_lock = threading.Lock()
         self._cache: Dict[str, Any] = {}
         self._block_hashes: Set[str] = set()
         self._inflight: Dict[str, threading.Event] = {}
         self._prefetched_events: Dict[Tuple[str, int, bool, str], threading.Event] = {}
-        self._slot_reverse_map: Dict[str, Tuple[int, bool]] = {}
+        self._slot_reverse_map: Dict[str, Tuple[int, bool, str]] = {}
+        self._slot_reverse_ready: bool = False
+        self._slot_hit_holders: Dict[Tuple[str, int, bool, str], Set[str]] = {}
         self._rr_idx: int = 0
         self._fail_counts: Dict[str, int] = {}
         _r_rtt_map = getattr(router, "_rtt_ms", None)
@@ -35221,6 +35363,8 @@ class _PinnedBlockForkProxy:
             _r_val = float(_r_rtt_map.get(_uk_u, 0.0) or 0.0) if isinstance(_r_rtt_map, dict) else 0.0
             self._rtt_ms[u] = _r_val if _r_val > 0.0 else (150.0 + (idx_u * 40.0))
         self._dirty: bool = False
+        self._dirty_count: int = 0
+        self._last_disk_flush_at: float = time.monotonic()
         self._stop_ev = threading.Event()
         self._srv: Optional[_QuietThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -35295,14 +35439,19 @@ class _PinnedBlockForkProxy:
         by_id: Mapping[Any, Dict[str, Any]],
     ) -> Dict[str, Dict[str, Any]]:
         err_by_ckey: Dict[str, Dict[str, Any]] = {}
+        stored_n = 0
         with self._lock:
             for q_id, ck_q in id_to_ckey:
                 r_q = by_id.get(q_id)
                 if isinstance(r_q, dict) and "result" in r_q:
                     self._cache[ck_q] = r_q["result"]
                     self._dirty = True
+                    self._dirty_count += 1
+                    stored_n += 1
                 elif isinstance(r_q, dict):
                     err_by_ckey[ck_q] = r_q
+        if stored_n > 0:
+            self._maybe_flush_disk_cache()
         return err_by_ckey
 
     def _get_cached_account_info_locked(self, a_l: str, b_norm: Any) -> Tuple[Any, Any, Any]:
@@ -35320,18 +35469,45 @@ class _PinnedBlockForkProxy:
             return {"jsonrpc": "2.0", "id": req_id, "result": {"balance": bal, "nonce": non, "code": cod}}, (bal, non, cod)
         return None, (bal, non, cod)
 
+    def _build_slot_reverse_map(self) -> None:
+        if self._slot_reverse_ready or not self._holders:
+            self._slot_reverse_ready = True
+            return
+        local_map: Dict[str, Tuple[int, bool, str]] = {}
+        for h_addr in self._holders:
+            if h_addr == self._caller_addr:
+                continue
+            for sl_h, b_int, is_vyp in _get_cached_holder_mapping_slots(h_addr):
+                local_map[sl_h] = (b_int, is_vyp, h_addr)
+        with self._lock:
+            if not self._slot_reverse_ready:
+                self._slot_reverse_map = local_map
+                self._slot_reverse_ready = True
+
     def _lookup_mapping_prefetch(
         self, params: Sequence[Any]
     ) -> Optional[Tuple[str, int, bool, Any, Any]]:
         if len(params) < 3 or not self._holders:
             return None
+        if not self._slot_reverse_ready:
+            self._build_slot_reverse_map()
         s_hex = "0x" + str(params[1]).lower().removeprefix("0x").zfill(64)
-        slot_hit = self._slot_reverse_map.get(s_hex)
-        if slot_hit is None:
-            return None
-        b_int, is_vyp = slot_hit
-        b_raw = params[2]
-        return (str(params[0]).lower(), b_int, is_vyp, b_raw, self._norm_block_tag(b_raw))
+        with self._lock:
+            slot_hit = self._slot_reverse_map.get(s_hex)
+            if slot_hit is None:
+                return None
+            b_int, is_vyp, h_addr = slot_hit
+            b_raw = params[2]
+            b_norm = self._norm_block_tag(b_raw)
+            c_addr = str(params[0]).lower()
+            hit_key = (c_addr, b_int, is_vyp, str(b_norm))
+            seen_h = self._slot_hit_holders.setdefault(hit_key, set())
+            seen_h.add(h_addr)
+            # 적응형 2-Hit 임계치: Phase 1 fast_screen에서 단일 타깃/플래시볼트 접근은 1 RPC만 수행(48-vault 팬아웃 0건),
+            # Phase 2 _snapshotAllVaultBalances()(VAULT_0, VAULT_1 연속 조회)에서는 2번째 조회 즉시 48개 일괄 프리페치 발동!
+            if len(seen_h) < 2:
+                return None
+        return (c_addr, b_int, is_vyp, b_raw, b_norm)
 
     def _call_upstream_batch(self, items: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not items or not self._upstreams:
@@ -35444,29 +35620,49 @@ class _PinnedBlockForkProxy:
     def _save_disk_cache(self) -> None:
         if not self._dirty or self._cache_file is None:
             return
-        try:
-            res_p = self._cache_file.resolve()
-            if not res_p.is_relative_to(AUDIT_ROOT.resolve()):
+        with self._flush_lock:
+            if not self._dirty or self._cache_file is None:
                 return
-            with self._lock:
-                entries_snap = dict(list(self._cache.items())[:12_000])
-                bhs_snap = sorted(self._block_hashes)
-            _write_json_atomic(
-                self._cache_file,
-                {"chain": self._chain, "block_pin": self._block_pin, "block_hashes": bhs_snap, "entries": entries_snap},
-            )
-            # Bounded LRU cap on shared _fork_rpc cache directory (keep latest 16 chain_block snapshots)
-            if self._cache_file.parent == _FORK_PROXY_CACHE_DIR and _FORK_PROXY_CACHE_DIR.is_dir():
-                c_files = sorted(
-                    (f for f in _FORK_PROXY_CACHE_DIR.glob("*.json") if f.is_file()),
-                    key=lambda f: f.stat().st_mtime,
-                    reverse=True,
+            try:
+                res_p = self._cache_file.resolve()
+                if not res_p.is_relative_to(AUDIT_ROOT.resolve()):
+                    return
+                with self._lock:
+                    entries_snap = dict(list(self._cache.items())[:12_000])
+                    bhs_snap = sorted(self._block_hashes)
+                    self._dirty = False
+                    self._dirty_count = 0
+                    self._last_disk_flush_at = time.monotonic()
+                _write_json_atomic(
+                    self._cache_file,
+                    {"chain": self._chain, "block_pin": self._block_pin, "block_hashes": bhs_snap, "entries": entries_snap},
                 )
-                for old_cf in c_files[16:]:
-                    try:
-                        old_cf.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                # Bounded LRU cap on shared _fork_rpc cache directory (keep latest 16 chain_block snapshots)
+                if self._cache_file.parent == _FORK_PROXY_CACHE_DIR and _FORK_PROXY_CACHE_DIR.is_dir():
+                    c_files = sorted(
+                        (f for f in _FORK_PROXY_CACHE_DIR.glob("*.json") if f.is_file()),
+                        key=lambda f: f.stat().st_mtime,
+                        reverse=True,
+                    )
+                    for old_cf in c_files[16:]:
+                        try:
+                            old_cf.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+            except _OS_CLEANUP_EXC:
+                pass
+
+    def _maybe_flush_disk_cache(self) -> None:
+        """스윕 중도 종료 시에도 포크 RPC 디스크 캐시가 유실되지 않도록 임계치/주기 도달 시 비차단 원자적 플러시."""
+        if self._cache_file is None or not self._dirty:
+            return
+        if self._dirty_count < 25 and (time.monotonic() - self._last_disk_flush_at) < 12.0:
+            return
+        if not self._flush_lock.acquire(blocking=False):
+            return
+        try:
+            self._flush_lock.release()
+            self._save_disk_cache()
         except _OS_CLEANUP_EXC:
             pass
 
@@ -35476,15 +35672,6 @@ class _PinnedBlockForkProxy:
                 self._cache[self._ckey("eth_chainId", [])] = hex(self._chain_id)
             if self._gas_price_wei > 0:
                 self._cache[self._ckey("eth_gasPrice", [])] = hex(self._gas_price_wei)
-
-        # Build reverse mapping-slot table for all tracked holders (~4ms for 48 holders)
-        for h_addr in self._holders:
-            a_pad = bytes(12) + bytes.fromhex(h_addr[2:])
-            for b_int in _FORK_PROXY_CANDIDATE_BASES:
-                b_pad = b_int.to_bytes(32, "big")
-                self._slot_reverse_map["0x" + _keccak256(a_pad + b_pad).hex()] = (b_int, False)
-                if b_int < 16:
-                    self._slot_reverse_map["0x" + _keccak256(b_pad + a_pad).hex()] = (b_int, True)
 
         # Ensure block header & EIP-1898 blockHash alias are cached (~0.3s single call)
         blk_ck = self._ckey("eth_getBlockByNumber", [self._block_hex, False])
@@ -35516,10 +35703,13 @@ class _PinnedBlockForkProxy:
     def _prewarm_background(self) -> None:
         if self._stop_ev.is_set():
             return
+        self._build_slot_reverse_map()
+        if self._stop_ev.is_set():
+            return
         warm_items: List[Tuple[Dict[str, Any], str]] = []
         rid = 1
         with self._lock:
-            for addr in self._all_addrs:
+            for addr in self._prewarm_addrs:
                 for meth in ("eth_getBalance", "eth_getTransactionCount", "eth_getCode"):
                     p_a = [addr, self._block_hex]
                     ck = self._ckey(meth, p_a)
@@ -35679,6 +35869,8 @@ class _PinnedBlockForkProxy:
                     with self._lock:
                         self._cache[ckey] = r["result"]
                         self._dirty = True
+                        self._dirty_count += 1
+                    self._maybe_flush_disk_cache()
                     return {"jsonrpc": "2.0", "id": req_id, "result": r["result"]}
                 return r
             finally:
@@ -36799,7 +36991,7 @@ def _render_stage4_fuzz_discovery_sol(
                 f"        vm.startPrank({c_chk}, {c_chk});\n"
                 "        {\n"
                 f"{pack_body}\n"
-                f"            FuzzFlashHelper _fh = new FuzzFlashHelper();\n"
+                "            _fh.resetCfg();\n"
                 f"{amm_setup}"
                 f"{unwrap_setup}"
                 f"{donate_setup}"
@@ -36852,10 +37044,12 @@ def _render_stage4_fuzz_discovery_sol(
     sweep_helper = ""
     flash_helper_cls = ""
     if has_flash_fuzz:
-        sw_lines = "\n".join(f"        t[{i}] = {tk};" for i, tk in enumerate(tok_list))
+        sw_list = tok_list[:4]
+        sw_lines = "\n".join(f"        t[{i}] = {tk};" for i, tk in enumerate(sw_list))
         sweep_helper = (
+            "    FuzzFlashHelper internal immutable _fh = new FuzzFlashHelper();\n\n"
             f"    function _sweepToks() internal pure returns (address[] memory t) {{\n"
-            f"        t = new address[]({len(tok_list)});\n"
+            f"        t = new address[]({len(sw_list)});\n"
             f"{sw_lines}\n"
             "    }\n\n"
         )
@@ -36875,6 +37069,9 @@ def _render_stage4_fuzz_discovery_sol(
             "    address internal _v3InTok;\n"
             "    address[] internal _tgts;\n"
             "    bytes[] internal _cds;\n"
+            "    function resetCfg() external {\n"
+            "        _ammPool = address(0); _ammKind = 0; _ammQuote = address(0); _ci = 0; _cj = 0; _cUnd = false; _ethUnwrap = false; _donate = false;\n"
+            "    }\n"
             "    function setAmm(address pool, uint8 kind, address quoteTok, int128 ci, int128 cj, bool isUnd) external {\n"
             "        _ammPool = pool; _ammKind = kind; _ammQuote = quoteTok; _ci = ci; _cj = cj; _cUnd = isUnd;\n"
             "    }\n"
@@ -37005,7 +37202,9 @@ def _render_stage4_fuzz_discovery_sol(
             "        }\n"
             "        ok;\n"
             "        uint256 bMain = _bo(tok); if (bMain > 0) { _tr(tok, ben, bMain); }\n"
+            "        if (_ammQuote != address(0) && _ammQuote != tok) { uint256 bQ = _bo(_ammQuote); if (bQ > 0) { _tr(_ammQuote, ben, bQ); } }\n"
             "        for (uint256 i = 0; i < swToks.length; i++) {\n"
+            "            if (swToks[i] == tok || swToks[i] == _ammQuote) { continue; }\n"
             "            uint256 bi = _bo(swToks[i]); if (bi > 0) { _tr(swToks[i], ben, bi); }\n"
             "        }\n"
             '        if (address(this).balance > 0) { (bool sOk, ) = ben.call{value: address(this).balance}(""); sOk; }\n'
@@ -49756,6 +49955,7 @@ def audit_single_protocol(
     session_id: str = "",
     cancel_event: Optional[threading.Event] = None,
     wall_budget_sec: float = 0.0,
+    abort_commit_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """
     단일 프로토콜에 대한 개념 기반 E1->E2->E3->E4 파이프라인 및 3대 종결 판정 수행:
@@ -49915,6 +50115,8 @@ def audit_single_protocol(
                 "net_krw": 0,
                 "reason": reason_txt,
             }
+            if (abort_commit_event is not None and abort_commit_event.is_set()) or getattr(store, "_closed", False):
+                return _yield_budget_result(block_pin)
             _write_json_atomic(pdir / "result.json", interim_d_res)
             store.set_queue_agent_state(slug, "awaiting_addresses", session_id=eff_sid)
             return interim_d_res
@@ -49930,7 +50132,8 @@ def audit_single_protocol(
         ) -> Dict[str, Any]:
             r_low = str(reason_txt or "").lower()
             if (
-                (cancel_event is not None and cancel_event.is_set())
+                (abort_commit_event is not None and abort_commit_event.is_set())
+                or (cancel_event is not None and cancel_event.is_set())
                 or getattr(store, "_closed", False)
                 or "closed database" in r_low
                 or "interpreter shutdown" in r_low
@@ -49965,6 +50168,8 @@ def audit_single_protocol(
             include_resumed: bool = True,
             forge_doc: Optional[Dict[str, Any]] = None,
         ) -> Dict[str, Any]:
+            if (abort_commit_event is not None and abort_commit_event.is_set()) or getattr(store, "_closed", False):
+                return _yield_budget_result(block_pin if audit_blk is None else audit_blk)
             safe_out: Dict[str, Any] = {
                 "slug": slug,
                 "chain": chain,
@@ -51843,7 +52048,6 @@ def audit_single_protocol(
             ),
         )
         s4_target_addrs = list(dict.fromkeys([primary_target, *protocol_vault_addrs, *ext_spenders_s4, *closure.all_addresses]))
-        gas_price_w = fetch_gas_price_wei(router, chain, block_pin) if block_pin > 0 else 1_000_000_000
 
         def _compute_flash_plan_s4() -> Dict[str, Any]:
             return discover_optimal_flash_sources_for_tokens(
@@ -51876,6 +52080,18 @@ def audit_single_protocol(
         def _get_flash_plan_s4() -> Dict[str, Any]:
             _flash_ev_s4.wait(timeout=15.0)
             return _flash_plan_box[0] if isinstance(_flash_plan_box[0], dict) else {}
+
+        _ckpt_gp_w = int(ckpt.get("gas_price_wei") or 0) if block_pin > 0 else 0
+        if _ckpt_gp_w > 0:
+            gas_price_w = _ckpt_gp_w
+        else:
+            gas_price_w = fetch_gas_price_wei(router, chain, block_pin) if block_pin > 0 else 1_000_000_000
+            if block_pin > 0 and gas_price_w > 0:
+                ckpt["gas_price_wei"] = int(gas_price_w)
+                try:
+                    _write_json_atomic(ckpt_path, ckpt)
+                except OSError:
+                    pass
 
         _emit_progress(
             "S3_SLICES_READY",
@@ -51971,6 +52187,7 @@ def audit_single_protocol(
                 forge_payload["trace_summary"] = dict(forge_out.trace_summary or {})
 
             flash_slices_s4: List[CausalSlice] = []
+            flash_exec_failed_reason: str = ""
             if forge_out.executed and not forge_out.conservation_gains:
                 flash_slices_s4 = _build_stage4_flash_wrapped_slices(
                     prescreened,
@@ -52002,17 +52219,20 @@ def audit_single_protocol(
                         timeout_sec=75,
                         ckpt_path=None,
                         ckpt_data={"completed_chunks": 800},
-                        slice_chunk_size=12,
+                        slice_chunk_size=6,
                         vault_addresses=harness_vault_addrs,
                         gas_price_wei=gas_price_w,
                         exit_routes=closure.verified_exit_pools,
-                        max_tests_per_chunk=72,
+                        max_tests_per_chunk=36,
                         target_addrs=s4_target_addrs,
                         session_id=eff_sid,
                         fork_proxy_url=_s4_proxy_url,
                     )
                     if flash_out.executed:
                         _merge_s4_forge_outcome(flash_out)
+                    else:
+                        flash_exec_failed_reason = str(flash_out.error_reason or "FLASH_FORGE_FAILED")
+                        forge_payload["flash_error_reason"] = flash_exec_failed_reason
             if forge_out.executed and not forge_out.conservation_gains and (prescreened or flash_slices_s4):
                 _fz_slices_in = [*prescreened[:16], *flash_slices_s4[:8]]
                 _emit_progress(
@@ -52090,6 +52310,8 @@ def audit_single_protocol(
             audit_blk: Optional[int] = None,
             extra_fields: Optional[Dict[str, Any]] = None,
         ) -> Dict[str, Any]:
+            if (abort_commit_event is not None and abort_commit_event.is_set()) or getattr(store, "_closed", False):
+                return _yield_budget_result(block_pin if audit_blk is None else audit_blk)
             interim_out: Dict[str, Any] = {
                 "slug": slug,
                 "chain": chain,
@@ -52121,6 +52343,8 @@ def audit_single_protocol(
             mechanical_cap: Optional[int] = None,
         ) -> List[Path]:
             nonlocal _cached_inc_sources
+            if (abort_commit_event is not None and abort_commit_event.is_set()) or getattr(store, "_closed", False):
+                return []
             if _cached_inc_sources is None:
                 _cached_inc_sources = (
                     True,
@@ -52135,6 +52359,7 @@ def audit_single_protocol(
                     "passed_tests": int(forge_out.passed_tests),
                     "failed_tests": int(forge_out.failed_tests),
                     "error_reason": str(forge_out.error_reason or ""),
+                    **({"flash_error_reason": flash_exec_failed_reason} if flash_exec_failed_reason else {}),
                     "conservation_gain_count": len(forge_out.conservation_gains or ()),
                     "nft_gain_count": len(forge_out.nft_gains or ()),
                 },
@@ -52143,6 +52368,9 @@ def audit_single_protocol(
                 mech_diag["nft_conservation_gains"] = list(forge_out.nft_gains[:8])
             if sub_threshold_best_usd:
                 mech_diag["sub_threshold_best_usd"] = sub_threshold_best_usd
+            eff_fp_emit = dict(_get_flash_plan_s4())
+            if flash_exec_failed_reason:
+                eff_fp_emit["flash_search_needed"] = True
             return emit_poc_requests_for_slug(
                 slug=slug,
                 chain=chain,
@@ -52159,7 +52387,7 @@ def audit_single_protocol(
                 incident_sources=_cached_inc_sources[1],
                 compact_single_bundle=True,
                 pre_diagnostics=mech_diag,
-                flash_plan=_get_flash_plan_s4(),
+                flash_plan=eff_fp_emit,
             )
 
         # 보존 법칙 이익 이벤트가 포착된 경우 테스트별로 모든 자산 이득을 합산하여 정밀 회계 정산 수행
@@ -52528,10 +52756,18 @@ def audit_single_protocol(
         # (4) Foundry 하네스가 RPC/컴파일 제약으로 실행되지 못한 경우(not forge_out.executed),
         #     절대 허위 "안전"으로 종결하지 않고 에이전트 poc_request로 위임하거나 판단불가로 기록한다!
         needs_agent_s4 = any(s.needs_agent_synthesis for s in prescreened[:48])
-        if needs_agent_s4 or slices_truncated or s4_closure_uncertain or not forge_out.executed or bool(forge_out.nft_gains):
+        if (
+            needs_agent_s4
+            or slices_truncated
+            or s4_closure_uncertain
+            or not forge_out.executed
+            or bool(flash_exec_failed_reason)
+            or bool(forge_out.nft_gains)
+        ):
             req_files = _emit_compact_poc_bundle(
                 force_all=(
                     not forge_out.executed
+                    or bool(flash_exec_failed_reason)
                     or bool(forge_out.nft_gains)
                     or s4_closure_uncertain
                     or (slices_truncated and len(prescreened) <= 48)
@@ -52545,15 +52781,19 @@ def audit_single_protocol(
                         f"Foundry harness execution incomplete ({forge_out.error_reason}); delegated to agent PoC synthesis"
                         if not forge_out.executed
                         else (
-                            f"Permissionless ERC-721/1155 NFT conservation gain detected ({len(forge_out.nft_gains)}); delegated for on-chain floor liquidation verification"
-                            if forge_out.nft_gains
+                            f"Foundry flash-loan verification incomplete ({flash_exec_failed_reason}); delegated to agent PoC synthesis"
+                            if flash_exec_failed_reason
                             else (
-                                "Closure observation incomplete (rpc_balance_incomplete/closure_truncated/unpriced_token); delegated to agent PoC synthesis"
-                                if s4_closure_uncertain
+                                f"Permissionless ERC-721/1155 NFT conservation gain detected ({len(forge_out.nft_gains)}); delegated for on-chain floor liquidation verification"
+                                if forge_out.nft_gains
                                 else (
-                                    f"Prescreened slices ({trunc_cnt_lbl}) exceeded mechanical harness cap (48); delegated to agent PoC synthesis"
-                                    if slices_truncated
-                                    else "Awaiting agent PoC synthesis for non-mechanical semantic boundary"
+                                    "Closure observation incomplete (rpc_balance_incomplete/closure_truncated/unpriced_token); delegated to agent PoC synthesis"
+                                    if s4_closure_uncertain
+                                    else (
+                                        f"Prescreened slices ({trunc_cnt_lbl}) exceeded mechanical harness cap (48); delegated to agent PoC synthesis"
+                                        if slices_truncated
+                                        else "Awaiting agent PoC synthesis for non-mechanical semantic boundary"
+                                    )
                                 )
                             )
                         )
@@ -52563,6 +52803,8 @@ def audit_single_protocol(
 
             if not forge_out.executed:
                 return _finish_blocked(f"FORGE_EXECUTION_FAILED:{forge_out.error_reason}", forge_doc=forge_payload)
+            if flash_exec_failed_reason:
+                return _finish_blocked(f"FLASH_FORGE_EXECUTION_FAILED:{flash_exec_failed_reason}", forge_doc=forge_payload)
             if s4_closure_uncertain:
                 return _finish_blocked("CLOSURE_UNCERTAIN_FAIL_OPEN:incomplete closure observation cannot conclude safe", forge_doc=forge_payload)
             if slices_truncated:
@@ -53136,6 +53378,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             last_clone_prune_m = 0.0
             fast_lock_misses = 0
             stop_sweep = threading.Event()
+            abort_commit_ev = threading.Event()
             hit_profit_sweep = False
             hit_skip_sweep = False
 
@@ -53169,6 +53412,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                     session_id=sid,
                     cancel_event=stop_sweep,
                     wall_budget_sec=per_tgt_budget,
+                    abort_commit_event=abort_commit_ev,
                 )
                 if not (stop_sweep.is_set() and str(res_c.get("early_exit") or "") == "YIELDED_BUDGET"):
                     _emit_progress(
@@ -53417,7 +53661,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                 if cancelled_slugs:
                     store.release_claimed_to_pending(cancelled_slugs, sid)
                 if still_running:
-                    drain_timeout = 2.0 if (hit_profit_sweep or hit_skip_sweep) else 15.0
+                    drain_timeout = 2.0 if (hit_profit_sweep or hit_skip_sweep) else 20.0
                     done_tail, not_done_tail = concurrent.futures.wait(
                         list(still_running.keys()),
                         timeout=drain_timeout,
@@ -53425,6 +53669,8 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                     for f_run in done_tail:
                         _harvest_done_future(f_run, still_running[f_run])
                     if not_done_tail:
+                        # RUN_DONE 스냅샷 직전 커밋 펜스 설정: 드레인 이후 잔여 스트래글러의 사후 DB 덮어쓰기 원천 차단
+                        abort_commit_ev.set()
                         pool_wait_on_exit = False
                         straggler_futs.extend(not_done_tail)
                         unfinished_slugs = [still_running[f_nd] for f_nd in not_done_tail if still_running.get(f_nd)]
@@ -53604,7 +53850,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
         return 0
     finally:
         if straggler_futs:
-            concurrent.futures.wait(straggler_futs, timeout=5.0)
+            concurrent.futures.wait(straggler_futs, timeout=0.5)
         if not straggler_futs or all(f.done() for f in straggler_futs):
             store.close()
         else:

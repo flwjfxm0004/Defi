@@ -1,10 +1,10 @@
 // ==============================================================================
-// TropiCore-Omega ASI-Zero v15.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
+// TropiCore-Omega ASI-Zero v16.0 — Thread-Safe Multi-GPU SM120 Blackwell CUDA 13 Engine
 // Target Node (`장비.md` Track A):
 //   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 7.168 TB/s, 14.044 PFLOPS FP4)
 //   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5) + 1,000 GB DDR5-6400 ECC
 //
-// ABI = 1500 (100% Thread-Safe, Hardware-Exact NVFP4 RNE, Fused RMSNorm/SwiGLU, ZERO Dead Symbols!):
+// ABI = 1600 (Zero-Copy AllReduce, Hardware-Exact NVFP4 RNE, Fused RMSNorm/SwiGLU, ZERO Dead Symbols!):
 //   1. Thread-Safe Persistent GDDR7 Tensor Handle Pool (`g_pool_mtx` + per-GPU `ctx.mtx`):
 //      `tensor_create / tensor_upload / tensor_download / tensor_free` across GPUs `0..N-1`
 //   2. `tropicore_sm120_embedding_fwd` / `bwd`      : Live GPU-Resident Byte Embedding Lookup & Scatter
@@ -14,7 +14,7 @@
 //   6. `tropicore_sm120_contractive_step_fwd` / `bwd`: Live-wired Input-Anchored Contractive Equilibrium
 //   7. `tropicore_sm120_byte_ce_fwd_bwd`            : Exact 256-way Byte Cross-Entropy + Softmax Grad
 //   8. `tropicore_sm120_adamw_resident_inplace`     : Fused GPU AdamW + Banach Row-L_inf + Exact NVFP4 RNE STE
-//   9. `tropicore_sm120_allreduce_mean`             : Multi-Shard / 4-GPU Gradient AllReduce Averaging
+//   9. `tropicore_sm120_allreduce_mean`             : Zero-Copy `const float* const*` Multi-Shard AllReduce
 // ==============================================================================
 
 #include <cuda_runtime.h>
@@ -25,7 +25,7 @@
 #include <mutex>
 #include <vector>
 
-static constexpr int32_t TROPICORE_SM120_ABI = 1500;
+static constexpr int32_t TROPICORE_SM120_ABI = 1600;
 static constexpr int MAX_GPUS = 4;
 static constexpr int MAX_DEV_TENSORS = 16384;
 
@@ -796,7 +796,7 @@ int32_t tropicore_sm120_swiglu_bwd(
 }
 
 int32_t tropicore_sm120_allreduce_mean(
-    float* const* shard_grads, float* out_grad, int32_t n_shards, int32_t n_elems
+    const float* const* shard_grads, float* out_grad, int32_t n_shards, int32_t n_elems
 ) {
     if (n_shards <= 0 || n_elems <= 0) return -1;
     float inv_n = 1.0f / static_cast<float>(n_shards);

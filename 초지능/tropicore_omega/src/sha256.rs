@@ -15,7 +15,7 @@ const SHA256_K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-pub fn sha256_hex(data: &[u8]) -> String {
+pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -76,11 +76,23 @@ pub fn sha256_hex(data: &[u8]) -> String {
         h[7] = h[7].wrapping_add(hh);
     }
 
-    let mut out = String::with_capacity(64);
-    for word in h {
-        out.push_str(&format!("{:08x}", word));
+    let mut out = [0u8; 32];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..(i + 1) * 4].copy_from_slice(&word.to_be_bytes());
     }
     out
+}
+
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    bytes_to_hex(&sha256_bytes(data))
 }
 
 pub fn append_vault_jsonl(path: &Path, line: &str) -> Result<(), String> {
