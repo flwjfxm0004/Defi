@@ -1,22 +1,22 @@
-//! Real-Corpus-Gated Self-Hosting Optimizer (`TropiCore-Omega ASI-Zero`).
+//! Zero-Free-Rider Real-Corpus-Gated Self-Optimizer (`TropiCore-Omega v12.0`).
 //!
-//! ZERO fake 6-tuple proxy games!
+//! ZERO fake proxies AND ZERO unmeasured free-riding parameters!
 //!   - Reads TropiCore-Omega's OWN live `src/asi_runtime_cfg.rs` source code.
-//!   - Proposes candidate mutations to the real mixing law (`blend_byte_probs`: linear vs log-odds geometric),
-//!     contractive damping (`contractive_gamma`), and surprise learning-rate schedule (`adaptive_online_lr`).
-//!   - Evaluates EVERY candidate in parallel across `worker_threads` (`std::thread::scope`) directly on
-//!     REAL UNSEEN HELD-OUT FILES from the user's actual corpus — measuring ACTUAL `bits/byte` compression!
-//!   - Verifies the winning Rust source compiles cleanly with `rustc --crate-type lib -O -D warnings`.
-//!   - Logs a cryptographic SHA-256 chain ledger (`out/self_opt_ledger.jsonl`) and, when `--apply` is set,
-//!     atomically patches live `src/asi_runtime_cfg.rs` with full backup & automatic rollback protection!
+//!   - Evaluates EVERY candidate `RuntimePolicyOverride { gamma, lr_slope, lr_center, w_mem_scale, w_mem_cap, use_log_odds_mix }`
+//!     in parallel across `threads` (`std::thread::scope`) by **ACTUALLY RUNNING LIVE TRAINING STEPS WITH THAT CANDIDATE'S
+//!     `gamma` & `lr_slope`/`lr_center` ON REAL CORPUS BYTES AND MEASURING REAL HELD-OUT `bits/byte` WITH THAT CANDIDATE'S
+//!     `blend_byte_probs`!!**
+//!   - Verifies winning source compiles with `rustc --crate-type lib -O -D warnings`.
+//!   - Logs cryptographic SHA-256 chain ledger (`out/self_opt_ledger.jsonl`) and, under `--apply`,
+//!     atomically patches live `src/asi_runtime_cfg.rs` with full rollback safety!
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use crate::asi_runtime_cfg::{blend_byte_probs, contractive_gamma};
-use crate::brain::{CausalStreamState, DeepContractiveBrain};
+use crate::asi_runtime_cfg::contractive_gamma;
+use crate::brain::{CausalStreamState, DeepContractiveBrain, RuntimePolicyOverride};
 use crate::sha256::{append_vault_jsonl, sha256_hex};
 
 fn splitmix64(state: &mut u64) -> u64 {
@@ -53,49 +53,26 @@ fn find_live_cfg_path() -> Option<PathBuf> {
     None
 }
 
-#[derive(Clone, Copy, Debug)]
-struct RuntimeCfgCandidate {
-    gamma: f32,
-    lr_slope: f32,
-    lr_center: f32,
-    w_mem_scale: f32,
-    w_mem_cap: f32,
-    use_log_odds_mix: bool, // structural algorithmic choice: geometric log-odds vs linear mixture!
-}
-
-impl RuntimeCfgCandidate {
-    #[inline]
-    fn eval_blend(&self, p_brain: f32, p_mem: f32, mem_conf: f32) -> f32 {
-        let w_mem = (self.w_mem_scale * mem_conf).clamp(0.0, self.w_mem_cap);
-        if self.use_log_odds_mix {
-            let lb = p_brain.max(1e-7).ln();
-            let lm = p_mem.max(1e-7).ln();
-            ((1.0 - w_mem) * lb + w_mem * lm).exp().max(1e-7)
-        } else {
-            ((1.0 - w_mem) * p_brain + w_mem * p_mem).max(1e-7)
-        }
-    }
-
-    fn emit_rust(&self) -> String {
-        let blend_body = if self.use_log_odds_mix {
-            format!(
-                "let w_mem = ({ws:.4}f32 * mem_conf).clamp(0.0, {wc:.4}f32);\n    let lb = p_brain.max(1e-7).ln();\n    let lm = p_mem.max(1e-7).ln();\n    ((1.0 - w_mem) * lb + w_mem * lm).exp().max(1e-7)",
-                ws = self.w_mem_scale,
-                wc = self.w_mem_cap
-            )
-        } else {
-            format!(
-                "let w_mem = ({ws:.4}f32 * mem_conf).clamp(0.0, {wc:.4}f32);\n    ((1.0 - w_mem) * p_brain + w_mem * p_mem).max(1e-7)",
-                ws = self.w_mem_scale,
-                wc = self.w_mem_cap
-            )
-        };
+fn emit_runtime_cfg_rs(g: RuntimePolicyOverride) -> String {
+    let blend_body = if g.use_log_odds_mix {
         format!(
-            r#"//! Evolved Live Self-Optimizing Runtime Policy (`TropiCore-Omega ASI-Zero`).
+            "let w_mem = ({ws:.4}f32 * mem_conf).clamp(0.0, {wc:.4}f32);\n    let lb = p_brain.max(1e-7).ln();\n    let lm = p_mem.max(1e-7).ln();\n    ((1.0 - w_mem) * lb + w_mem * lm).exp().max(1e-7)",
+            ws = g.w_mem_scale,
+            wc = g.w_mem_cap
+        )
+    } else {
+        format!(
+            "let w_mem = ({ws:.4}f32 * mem_conf).clamp(0.0, {wc:.4}f32);\n    ((1.0 - w_mem) * p_brain + w_mem * p_mem).max(1e-7)",
+            ws = g.w_mem_scale,
+            wc = g.w_mem_cap
+        )
+    };
+    format!(
+        r#"//! Evolved Live Self-Optimizing Runtime Policy (`TropiCore-Omega v12.0`).
 
 #[inline]
 pub fn contractive_gamma() -> f32 {{
-    {g:.4}f32
+    {gamma:.4}f32
 }}
 
 #[inline]
@@ -109,12 +86,11 @@ pub fn blend_byte_probs(p_brain: f32, p_mem: f32, mem_conf: f32) -> f32 {{
     {blend_body}
 }}
 "#,
-            g = self.gamma,
-            sl = self.lr_slope,
-            ct = self.lr_center,
-            blend_body = blend_body
-        )
-    }
+        gamma = g.gamma,
+        sl = g.lr_slope,
+        ct = g.lr_center,
+        blend_body = blend_body
+    )
 }
 
 fn verify_rust_lib_zero_warnings(source: &str) -> Result<(), String> {
@@ -142,6 +118,29 @@ fn verify_rust_lib_zero_warnings(source: &str) -> Result<(), String> {
     }
 }
 
+/// Evaluate ONE policy end-to-end by ACTUALLY running live adaptation steps using its `gamma` & `adaptive_online_lr`
+/// on `train_probe` bytes and then measuring strictly-causal held-out `bits/byte` on `eval_probe` using its `blend`!
+/// ZERO free-riding parameters — every single constant in `asi_runtime_cfg.rs` directly affects this score!
+fn evaluate_policy_end_to_end(
+    base_brain: &DeepContractiveBrain,
+    train_probe: &[u8],
+    eval_probe: &[u8],
+    policy: Option<RuntimePolicyOverride>,
+) -> f64 {
+    let mut b = base_brain.clone();
+    let mut streams = vec![CausalStreamState::new(&b.cfg)];
+    let cl = 64usize;
+    let mut off = 0usize;
+    while off + 1 < train_probe.len() {
+        let end = (off + cl).min(train_probe.len() - 1);
+        let io = [(&train_probe[off..end], &train_probe[off + 1..end + 1])];
+        b.train_batch_streams(&io, &mut streams, b.cfg.lr * 0.7, policy, false, 1);
+        off = end;
+    }
+    let (_param, online_bpb) = b.eval_byte_stream(eval_probe, cl, true, policy);
+    online_bpb
+}
+
 #[derive(Clone, Debug)]
 pub struct SelfOptReport {
     pub target_live_file: String,
@@ -158,14 +157,9 @@ pub struct SelfOptReport {
     pub wall_ms: f64,
 }
 
-/// Real-Corpus-Gated Self-Optimization:
-/// Runs the live `DeepContractiveBrain` ONCE over real unseen held-out bytes to capture exact
-/// `(p_brain, p_mem, mem_conf)` per byte (zero-peek strictly causal!), then evaluates `12` candidate
-/// mixing/adaptation policies in parallel across `threads` (`std::thread::scope`) on the REAL held-out
-/// compression metric (`bits/byte`), verifies the winner via `rustc --crate-type lib -O -D warnings`,
-/// logs SHA-256 chain provenance, and (under `--apply`) atomically upgrades `src/asi_runtime_cfg.rs`!
 pub fn run_real_self_optimization(
     brain: &DeepContractiveBrain,
+    real_train_bytes: &[u8],
     real_heldout_bytes: &[u8],
     out_dir: &Path,
     seed: u64,
@@ -185,73 +179,39 @@ pub fn run_real_self_optimization(
         .unwrap_or_default();
     let live_sha = sha256_hex(live_src.as_bytes());
 
-    // 1. Capture strictly-causal `(p_brain, p_mem, mem_conf)` tuples on REAL unseen held-out bytes!
-    let mut eval_brain = brain.clone();
-    let mut stream = CausalStreamState::new(eval_brain.cfg.d_model);
-    let d = eval_brain.cfg.d_model;
-    let cl = 64usize;
-    let mut observations: Vec<(f32, f32, f32)> = Vec::with_capacity(real_heldout_bytes.len());
-    let mut base_bits_sum = 0.0f64;
+    // Compact real slices so live end-to-end training+eval across 6 candidates finishes in ~2.5s on laptop!
+    let train_probe = &real_train_bytes[..real_train_bytes.len().min(512)];
+    let eval_probe = &real_heldout_bytes[..real_heldout_bytes.len().min(2048)];
 
-    let mut off = 0usize;
-    while off + 1 < real_heldout_bytes.len() {
-        let end = (off + cl).min(real_heldout_bytes.len() - 1);
-        let inputs = &real_heldout_bytes[off..end];
-        let targets = &real_heldout_bytes[off + 1..end + 1];
-        let (logits, latents) = eval_brain.forward_byte_chunk(inputs, &mut stream, threads, 0);
-        for ti in 0..inputs.len() {
-            stream.push_byte(inputs[ti]);
-            let row = &logits[ti * 256..(ti + 1) * 256];
-            let mut mx = f32::NEG_INFINITY;
-            for &v in row { if v > mx { mx = v; } }
-            let mut se = 0.0f32;
-            for &v in row { se += (v - mx).max(-40.0).exp(); }
-            let tgt = targets[ti];
-            let p_b = ((row[tgt as usize] - mx).max(-40.0).exp() / se.max(1e-12)).clamp(1e-7, 0.9999);
-            let lat_s = &latents[ti * d..(ti + 1) * d];
-            let (p_m, conf) = eval_brain.episodic.predict_byte_prob(&stream.recent_bytes, lat_s, tgt);
-            let p_live = blend_byte_probs(p_b, p_m, conf);
-            let bits = -(p_live as f64).log2();
-            base_bits_sum += bits;
-            observations.push((p_b, p_m, conf));
-            eval_brain.episodic.observe(&stream.recent_bytes, lat_s, tgt, bits as f32);
-        }
-        off = end;
-    }
-    let baseline_bpb = base_bits_sum / observations.len().max(1) as f64;
+    // 1. Measure LIVE compiled `src/asi_runtime_cfg.rs` baseline end-to-end!
+    let baseline_bpb = evaluate_policy_end_to_end(brain, train_probe, eval_probe, None);
 
-    // 2. Generate 12 diverse real algorithmic candidates (both linear & geometric log-odds mixtures)
-    let mut rng = seed ^ 0x5E1F_1100_A510;
-    let mut cands = Vec::with_capacity(12);
-    for idx in 0..12usize {
-        cands.push(RuntimeCfgCandidate {
-            gamma: (contractive_gamma() + (rand_uniform(&mut rng) - 0.5) * 0.20).clamp(0.35, 0.80),
-            lr_slope: 0.08 + 0.22 * rand_uniform(&mut rng),
+    // 2. Generate 6 diverse real policy candidates (mutating ALL 3 functions: gamma, lr_slope/center, blend law!)
+    let mut rng = seed ^ 0x5E1F_1200_A510;
+    let mut cands = Vec::with_capacity(6);
+    for idx in 0..6usize {
+        cands.push(RuntimePolicyOverride {
+            gamma: (contractive_gamma() + (rand_uniform(&mut rng) - 0.5) * 0.28).clamp(0.35, 0.82),
+            lr_slope: 0.05 + 0.25 * rand_uniform(&mut rng),
             lr_center: 2.0 + 2.0 * rand_uniform(&mut rng),
-            w_mem_scale: 0.35 + 1.05 * rand_uniform(&mut rng),
-            w_mem_cap: 0.55 + 0.40 * rand_uniform(&mut rng),
+            w_mem_scale: 0.55 + 0.95 * rand_uniform(&mut rng),
+            w_mem_cap: 0.65 + 0.30 * rand_uniform(&mut rng),
             use_log_odds_mix: idx % 2 == 1,
         });
     }
 
-    // 3. Evaluate ALL 12 candidates in parallel across `worker_threads` (`std::thread::scope`) on REAL held-out bytes!
+    // 3. Evaluate ALL 6 candidates LIVE end-to-end in parallel across `threads` (`std::thread::scope`)!
     let n_threads = threads.max(1).min(cands.len());
     let chunk_sz = (cands.len() + n_threads - 1) / n_threads;
     let mut scores = vec![f64::INFINITY; cands.len()];
-    let obs_ref = &observations;
     let cands_ref = &cands;
     std::thread::scope(|s| {
         for (ti, sc_chunk) in scores.chunks_mut(chunk_sz).enumerate() {
             let start = ti * chunk_sz;
             s.spawn(move || {
                 for (local_i, slot) in sc_chunk.iter_mut().enumerate() {
-                    let cand = &cands_ref[start + local_i];
-                    let mut bits = 0.0f64;
-                    for &(pb, pm, cf) in obs_ref {
-                        let p = cand.eval_blend(pb, pm, cf);
-                        bits += -(p as f64).log2();
-                    }
-                    *slot = bits / obs_ref.len().max(1) as f64;
+                    let cand = cands_ref[start + local_i];
+                    *slot = evaluate_policy_end_to_end(brain, train_probe, eval_probe, Some(cand));
                 }
             });
         }
@@ -275,16 +235,17 @@ pub fn run_real_self_optimization(
 
     if improved {
         let win = cands[best_idx];
-        let src = win.emit_rust();
+        let src = emit_runtime_cfg_rs(win);
         if verify_rust_lib_zero_warnings(&src).is_ok() {
             rustc_ok = true;
             final_src = src.clone();
             upgrade_desc = format!(
-                "mix={} w_mem={:.2}(cap={:.2}) gamma={:.2}",
+                "mix={} w_mem={:.2}(cap={:.2}) gamma={:.2} lr_sl={:.2}",
                 if win.use_log_odds_mix { "log_odds" } else { "linear" },
                 win.w_mem_scale,
                 win.w_mem_cap,
-                win.gamma
+                win.gamma,
+                win.lr_slope
             );
             let _ = fs::write(&staged_path, &src);
 
@@ -305,7 +266,7 @@ pub fn run_real_self_optimization(
     let accepted = improved && rustc_ok;
     let new_sha = sha256_hex(final_src.as_bytes());
     let payload = format!(
-        "{{\"engine\":\"ASI-Zero\",\"prev_sha\":\"{}\",\"new_sha\":\"{}\",\"base_bpb\":{:.5},\"best_bpb\":{:.5},\"accepted\":{},\"applied_live\":{},\"upgrade\":\"{}\"}}",
+        "{{\"engine\":\"ASI-Zero-v12\",\"prev_sha\":\"{}\",\"new_sha\":\"{}\",\"base_bpb\":{:.5},\"best_bpb\":{:.5},\"accepted\":{},\"applied_live\":{},\"upgrade\":\"{}\"}}",
         &live_sha[..16],
         &new_sha[..16],
         baseline_bpb,

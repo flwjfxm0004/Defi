@@ -1,6 +1,6 @@
 [package]
 name = "tropicore_omega"
-version = "11.0.0"
+version = "12.0.0"
 edition = "2021"
 description = "TropiCore-Omega ASI-Zero: Zero-Toy, Zero-LLM, First-Principles Deep Contractive NVFP4 General Superintelligence Engine (4x RTX PRO 6000 Blackwell SM120 Ready)"
 

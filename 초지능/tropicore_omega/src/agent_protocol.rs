@@ -1,29 +1,19 @@
-//! Domain-Agnostic External `UniversalAgent` Open-World Protocol (`TropiCore-Omega ASI-Zero`).
+//! Domain-Agnostic External `UniversalAgent` Open-World Protocol (`TropiCore-Omega v12.0`).
 //!
 //! ZERO toy worlds baked inside the ASI core!
-//! Plugs into ANY external real-world simulator, game, robotics engine (MuJoCo/Isaac/Genesis),
-//! market orderbook, or OS harness via a simple stdin/stdout JSON-Line stream:
-//!
-//!   External World -> ASI (`stdin`):
-//!     {"obs":[0.12, -0.45, ...], "reward":0.0, "done":false}
-//!
-//!   ASI -> External World (`stdout`):
-//!     {"action":[0.31, -0.77, ...], "pred_reward":0.14, "surprise":0.02, "epistemic_unc":0.08, "updates":42}
-//!
-//! Architecture (100% Zero-Prior POMDP Latent World Model):
-//!   - Encodes raw external sensor vector `obs` via `DeepContractiveBrain::encode_raw_sensor_vector`
-//!     (ZERO handcrafted domain features!)
-//!   - Maintains recurrent POMDP belief state `b_t = 0.65 * b_{t-1} + 0.35 * z_t` + latent velocity `(z_t - z_{t-1})`
-//!     so partial observability (hidden velocity/momentum) is inferred purely from raw sensor history!
-//!   - Learns a 2-Head Epistemic Latent Dynamics + Reward Ensemble (`f_0, f_1: (b_t, a_t) -> (Δb_{t+1}, r̂_{t+1})`)
-//!     purely online from experience, with surprise-triggered rapid replay on sudden regime shifts!
-//!   - Plans continuous actions via Latent CEM Shooting maximizing `E[r̂] + curiosity_w * EpistemicDisagreement`!
+//! Supports BOTH numeric sensor vectors (`{"obs":[...]}`) AND arbitrary raw text/byte observations
+//! (`{"obs_text":"..."}`) via stdin/stdout JSON-Line protocol, AND 100% Bit-Exact Lossless `TOMA12`
+//! SHA-256 Persistence (`--agent-ckpt`) so external world-model knowledge NEVER resets across restarts!
 
+use std::fs;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 
 use crate::brain::DeepContractiveBrain;
+use crate::sha256::sha256_hex;
 
-const LAT_DIM: usize = 16; // Compact compressed latent belief slice from DeepContractiveBrain
+const AGENT_MAGIC: &[u8; 6] = b"TOMA12";
+const LAT_DIM: usize = 16;
 const HID_DIM: usize = 32;
 
 fn splitmix64(state: &mut u64) -> u64 {
@@ -44,7 +34,6 @@ fn rand_normal(rng: &mut u64) -> f32 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
 }
 
-/// Residual Latent Dynamics + Reward Predictor MLP: `(belief[LAT] + action[act_dim]) -> (Δbelief[LAT], reward[1])`.
 #[derive(Clone, Debug)]
 struct LatentModelMlp {
     in_dim: usize,
@@ -58,15 +47,15 @@ struct LatentModelMlp {
 
 impl LatentModelMlp {
     fn new(act_dim: usize, seed: u64) -> Self {
-        let mut rng = seed ^ 0xA6E0_1100_9999;
+        let mut rng = seed ^ 0xA6E0_1200_9999;
         let in_dim = LAT_DIM + act_dim;
-        let out_dim = LAT_DIM + 1; // Δbelief + scalar reward
+        let out_dim = LAT_DIM + 1;
         let s1 = (1.0 / in_dim as f32).sqrt() * 0.6;
         let s2 = (1.0 / HID_DIM as f32).sqrt() * 0.2;
         let w1 = (0..HID_DIM * in_dim).map(|_| (rand_uniform(&mut rng) * 2.0 - 1.0) * s1).collect();
         let b1 = vec![0.0; HID_DIM];
         let w2 = (0..out_dim * HID_DIM).map(|_| (rand_uniform(&mut rng) * 2.0 - 1.0) * s2).collect();
-        let w_lin = vec![0.0; out_dim * in_dim]; // zero prior!
+        let w_lin = vec![0.0; out_dim * in_dim];
         let b2 = vec![0.0; out_dim];
         Self { in_dim, out_dim, w1, b1, w2, w_lin, b2 }
     }
@@ -75,14 +64,11 @@ impl LatentModelMlp {
         let mut x = Vec::with_capacity(self.in_dim);
         x.extend_from_slice(belief);
         x.extend_from_slice(act);
-
         let mut h = [0.0f32; HID_DIM];
         for r in 0..HID_DIM {
             let row = r * self.in_dim;
             let mut acc = self.b1[r];
-            for c in 0..self.in_dim {
-                acc += self.w1[row + c] * x[c];
-            }
+            for c in 0..self.in_dim { acc += self.w1[row + c] * x[c]; }
             h[r] = acc.tanh();
         }
         let mut out = vec![0.0f32; self.out_dim];
@@ -90,20 +76,13 @@ impl LatentModelMlp {
             let row = o * HID_DIM;
             let lrow = o * self.in_dim;
             let mut acc = self.b2[o];
-            for c in 0..HID_DIM {
-                acc += self.w2[row + c] * h[c];
-            }
-            for c in 0..self.in_dim {
-                acc += self.w_lin[lrow + c] * x[c];
-            }
+            for c in 0..HID_DIM { acc += self.w2[row + c] * h[c]; }
+            for c in 0..self.in_dim { acc += self.w_lin[lrow + c] * x[c]; }
             out[o] = acc;
         }
         let mut next_b = [0.0f32; LAT_DIM];
-        for i in 0..LAT_DIM {
-            next_b[i] = (belief[i] + out[i]).clamp(-4.0, 4.0);
-        }
-        let pred_r = out[LAT_DIM];
-        (next_b, pred_r, h, x)
+        for i in 0..LAT_DIM { next_b[i] = (belief[i] + out[i]).clamp(-4.0, 4.0); }
+        (next_b, out[LAT_DIM], h, x)
     }
 
     fn train_step(&mut self, belief: &[f32; LAT_DIM], act: &[f32], next_b: &[f32; LAT_DIM], reward: f32, lr: f32) -> f32 {
@@ -116,7 +95,7 @@ impl LatentModelMlp {
             mse += e * e;
         }
         let er = (pred_r - reward).clamp(-3.0, 3.0);
-        err[LAT_DIM] = er * 1.5; // prioritize reward prediction accuracy
+        err[LAT_DIM] = er * 1.5;
         mse = (mse / LAT_DIM as f32) + er * er;
 
         let mut dh = [0.0f32; HID_DIM];
@@ -143,6 +122,48 @@ impl LatentModelMlp {
         }
         mse
     }
+
+    fn write_binary(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&(self.in_dim as u32).to_le_bytes());
+        out.extend_from_slice(&(self.out_dim as u32).to_le_bytes());
+        for sl in [&self.w1, &self.b1, &self.w2, &self.w_lin, &self.b2] {
+            out.extend_from_slice(&(sl.len() as u32).to_le_bytes());
+            for &v in sl { out.extend_from_slice(&v.to_le_bytes()); }
+        }
+    }
+
+    fn read_binary(data: &[u8], pos: &mut usize) -> Result<Self, String> {
+        let take_u32 = |d: &[u8], p: &mut usize| -> Result<u32, String> {
+            if *p + 4 > d.len() { return Err("agent mlp EOF u32".into()); }
+            let v = u32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]);
+            *p += 4;
+            Ok(v)
+        };
+        let take_vec = |d: &[u8], p: &mut usize| -> Result<Vec<f32>, String> {
+            let n = take_u32(d, p)? as usize;
+            if *p + n * 4 > d.len() { return Err("agent mlp EOF vec".into()); }
+            let mut v = Vec::with_capacity(n);
+            for _ in 0..n {
+                v.push(f32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]));
+                *p += 4;
+            }
+            Ok(v)
+        };
+        let in_dim = take_u32(data, pos)? as usize;
+        let out_dim = take_u32(data, pos)? as usize;
+        let w1 = take_vec(data, pos)?;
+        let b1 = take_vec(data, pos)?;
+        let w2 = take_vec(data, pos)?;
+        let w_lin = take_vec(data, pos)?;
+        let b2 = take_vec(data, pos)?;
+        Ok(Self { in_dim, out_dim, w1, b1, w2, w_lin, b2 })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ExternalObservation {
+    Numeric(Vec<f32>),
+    RawBytes(Vec<u8>),
 }
 
 #[derive(Clone, Debug)]
@@ -183,7 +204,7 @@ impl UniversalOpenWorldAgent {
             replay: Vec::with_capacity(512),
             online_updates: 0,
             surprise_triggers: 0,
-            rng: seed ^ 0xCAFE_1100,
+            rng: seed ^ 0xCAFE_1200,
         }
     }
 
@@ -200,7 +221,6 @@ impl UniversalOpenWorldAgent {
                 }
             }
         }
-        // Recurrent POMDP belief integrates raw latent + first-order temporal difference (emergent velocity!)
         let half = LAT_DIM / 2;
         let mut b = [0.0f32; LAT_DIM];
         for i in 0..half {
@@ -225,20 +245,13 @@ impl UniversalOpenWorldAgent {
         (mean_b, 0.5 * (r0 + r1), (dis2 / (LAT_DIM as f32 + 1.0)).sqrt())
     }
 
-    /// Receive ONE raw observation + reward + done signal from ANY external real world,
-    /// update the zero-prior latent world model online, and return the planned continuous action!
-    pub fn step(
-        &mut self,
-        brain: &DeepContractiveBrain,
-        raw_obs: &[f32],
-        reward: f32,
-        done: bool,
-        threads: usize,
-    ) -> AgentStepOutput {
-        let z_full = brain.encode_raw_sensor_vector(raw_obs, threads);
+    pub fn step(&mut self, brain: &DeepContractiveBrain, obs: &ExternalObservation, reward: f32, done: bool) -> AgentStepOutput {
+        let z_full = match obs {
+            ExternalObservation::Numeric(v) => brain.encode_raw_sensor_vector(v),
+            ExternalObservation::RawBytes(bytes) => brain.encode_raw_bytes_to_latent(bytes),
+        };
         let b_cur = self.compress_to_belief(&z_full);
 
-        // 1. Online Learning from previous transition `(b_prev, a_prev) -> (b_cur, reward)`
         let mut surprise = 0.0f32;
         if let (Some(bp), Some(ap)) = (self.prev_belief, self.prev_action.clone()) {
             let l0 = self.m0.train_step(&bp, &ap, &b_cur, reward, 0.025);
@@ -246,12 +259,9 @@ impl UniversalOpenWorldAgent {
             surprise = 0.5 * (l0 + l1);
             self.online_updates += 1;
 
-            if self.replay.len() >= 512 {
-                self.replay.remove(0);
-            }
+            if self.replay.len() >= 512 { self.replay.remove(0); }
             self.replay.push((bp, ap, b_cur, reward));
 
-            // Surprise-triggered rapid online replay (adapts automatically to non-stationary world shifts!)
             if surprise > 0.18 && self.replay.len() >= 8 {
                 self.surprise_triggers += 1;
                 let n = self.replay.len();
@@ -280,7 +290,6 @@ impl UniversalOpenWorldAgent {
             };
         }
 
-        // 2. Latent CEM Shooting Planner maximizing Self-Learned Reward + Epistemic Curiosity!
         const H: usize = 5;
         const POP: usize = 24;
         const ELITES: usize = 5;
@@ -289,7 +298,6 @@ impl UniversalOpenWorldAgent {
 
         let mut mean = vec![vec![0.0f32; ad]; H];
         let mut std = vec![vec![0.85f32; ad]; H];
-
         for _ in 0..2 {
             let mut cands: Vec<(f32, Vec<Vec<f32>>)> = Vec::with_capacity(POP);
             for _ in 0..POP {
@@ -334,11 +342,86 @@ impl UniversalOpenWorldAgent {
             online_updates: self.online_updates,
         }
     }
+
+    /// 100% Bit-Exact Lossless `TOMA12` SHA-256 Agent Persistence (ZERO world-model amnesia!).
+    pub fn save_checkpoint(&self, path: &Path) -> Result<String, String> {
+        if let Some(p) = path.parent() { let _ = fs::create_dir_all(p); }
+        let mut buf = Vec::with_capacity(32 * 1024);
+        buf.extend_from_slice(AGENT_MAGIC);
+        buf.extend_from_slice(&(self.act_dim as u32).to_le_bytes());
+        buf.extend_from_slice(&(self.online_updates as u64).to_le_bytes());
+        buf.extend_from_slice(&(self.surprise_triggers as u64).to_le_bytes());
+        buf.extend_from_slice(&self.rng.to_le_bytes());
+        self.m0.write_binary(&mut buf);
+        self.m1.write_binary(&mut buf);
+        let sha = sha256_hex(&buf);
+        buf.extend_from_slice(sha.as_bytes());
+        fs::write(path, &buf).map_err(|e| format!("agent ckpt write err: {}", e))?;
+        Ok(sha)
+    }
+
+    pub fn load_checkpoint(path: &Path) -> Result<(Self, String), String> {
+        let raw = fs::read(path).map_err(|e| format!("agent ckpt read err: {}", e))?;
+        if raw.len() < 70 || &raw[0..6] != AGENT_MAGIC {
+            return Err("invalid TOMA12 agent checkpoint".into());
+        }
+        let split = raw.len() - 64;
+        let payload = &raw[..split];
+        let stored = std::str::from_utf8(&raw[split..]).map_err(|_| "corrupt agent sha")?;
+        let computed = sha256_hex(payload);
+        if stored != computed {
+            return Err("agent checkpoint SHA-256 mismatch".into());
+        }
+        let mut pos = 6usize;
+        let take_u32 = |d: &[u8], p: &mut usize| -> Result<u32, String> {
+            if *p + 4 > d.len() { return Err("agent EOF u32".into()); }
+            let v = u32::from_le_bytes([d[*p], d[*p + 1], d[*p + 2], d[*p + 3]]);
+            *p += 4;
+            Ok(v)
+        };
+        let take_u64 = |d: &[u8], p: &mut usize| -> Result<u64, String> {
+            if *p + 8 > d.len() { return Err("agent EOF u64".into()); }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&d[*p..*p + 8]);
+            *p += 8;
+            Ok(u64::from_le_bytes(arr))
+        };
+        let act_dim = take_u32(payload, &mut pos)? as usize;
+        let online_updates = take_u64(payload, &mut pos)? as usize;
+        let surprise_triggers = take_u64(payload, &mut pos)? as usize;
+        let rng = take_u64(payload, &mut pos)?;
+        let m0 = LatentModelMlp::read_binary(payload, &mut pos)?;
+        let m1 = LatentModelMlp::read_binary(payload, &mut pos)?;
+        Ok((
+            Self {
+                act_dim,
+                m0,
+                m1,
+                cur_belief: [0.0; LAT_DIM],
+                prev_z: [0.0; LAT_DIM],
+                prev_belief: None,
+                prev_action: None,
+                replay: Vec::with_capacity(512),
+                online_updates,
+                surprise_triggers,
+                rng,
+            },
+            computed,
+        ))
+    }
 }
 
-/// Zero-dependency JSON-Line parser for `{"obs":[...], "reward":f32, "done":bool}`.
-pub fn parse_env_jsonl(line: &str) -> Result<(Vec<f32>, f32, bool), String> {
-    let obs = if let Some(start) = line.find("\"obs\"") {
+/// Zero-dependency JSON-Line parser supporting BOTH `{"obs":[...]}` AND `{"obs_text":"..."}`!
+pub fn parse_env_jsonl(line: &str) -> Result<(ExternalObservation, f32, bool), String> {
+    let obs = if let Some(start) = line.find("\"obs_text\"") {
+        let rest = &line[start + 10..];
+        let colon = rest.find(':').ok_or("missing ':' in obs_text")?;
+        let after = rest[colon + 1..].trim_start();
+        let q1 = after.find('"').ok_or("missing opening quote in obs_text")?;
+        let inner = &after[q1 + 1..];
+        let q2 = inner.find('"').ok_or("missing closing quote in obs_text")?;
+        ExternalObservation::RawBytes(inner[..q2].as_bytes().to_vec())
+    } else if let Some(start) = line.find("\"obs\"") {
         let rest = &line[start..];
         let lb = rest.find('[').ok_or("missing '[' in obs")?;
         let rb = rest[lb..].find(']').ok_or("missing ']' in obs")?;
@@ -350,9 +433,9 @@ pub fn parse_env_jsonl(line: &str) -> Result<(Vec<f32>, f32, bool), String> {
                 v.push(t.parse::<f32>().map_err(|e| format!("bad obs float '{}': {}", t, e))?);
             }
         }
-        v
+        ExternalObservation::Numeric(v)
     } else {
-        return Err("missing \"obs\" field".into());
+        return Err("missing \"obs\" or \"obs_text\" field".into());
     };
 
     let reward = if let Some(start) = line.find("\"reward\"") {
@@ -381,23 +464,30 @@ pub fn format_agent_jsonl(out: &AgentStepOutput) -> String {
     )
 }
 
-/// Run interactive stdin/stdout JSON-Line Universal Open-World Agent server (`tropicore_omega serve-agent`).
-pub fn serve_universal_agent_stdio(brain: &DeepContractiveBrain, act_dim: usize, threads: usize) {
-    let mut agent = UniversalOpenWorldAgent::new(act_dim, 2026_1125);
+/// Interactive stdin/stdout JSON-Line Universal Open-World Agent Server with Lossless Persistence!
+pub fn serve_universal_agent_stdio(brain: &DeepContractiveBrain, act_dim: usize, agent_ckpt: Option<&Path>) {
+    let mut agent = if let Some(p) = agent_ckpt {
+        if p.exists() {
+            UniversalOpenWorldAgent::load_checkpoint(p)
+                .map(|(a, _)| a)
+                .unwrap_or_else(|_| UniversalOpenWorldAgent::new(act_dim, 2026_1125))
+        } else {
+            UniversalOpenWorldAgent::new(act_dim, 2026_1125)
+        }
+    } else {
+        UniversalOpenWorldAgent::new(act_dim, 2026_1125)
+    };
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line_res in stdin.lock().lines() {
         let Ok(line) = line_res else { break };
         let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed == "QUIT" || trimmed == "{\"cmd\":\"quit\"}" {
-            break;
-        }
+        if trimmed.is_empty() { continue; }
+        if trimmed == "QUIT" || trimmed == "{\"cmd\":\"quit\"}" { break; }
         match parse_env_jsonl(trimmed) {
             Ok((obs, reward, done)) => {
-                let out = agent.step(brain, &obs, reward, done, threads);
+                let out = agent.step(brain, &obs, reward, done);
                 let _ = writeln!(stdout, "{}", format_agent_jsonl(&out));
                 let _ = stdout.flush();
             }
@@ -406,5 +496,9 @@ pub fn serve_universal_agent_stdio(brain: &DeepContractiveBrain, act_dim: usize,
                 let _ = stdout.flush();
             }
         }
+    }
+
+    if let Some(p) = agent_ckpt {
+        let _ = agent.save_checkpoint(p);
     }
 }

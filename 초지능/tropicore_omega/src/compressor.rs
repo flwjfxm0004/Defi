@@ -1,10 +1,10 @@
-//! Real-World Universal Byte-Stream Solomonoff Learner & Compressor (`TropiCore-Omega ASI-Zero`).
+//! Real-World Universal Byte-Stream Solomonoff Learner & Multi-Stream Trainer (`TropiCore-Omega v12.0`).
 //!
 //! ZERO toy datasets, ZERO pretrained tokenizers, ZERO LLMs:
 //!   - Reads ANY real file or directory on disk (source code, logs, financial ticks, scientific data, binaries)
 //!   - Splits cleanly into Train vs Unseen Held-Out real bytes/files
-//!   - Measures exact causal Shannon/Solomonoff cross-entropy in `bits/byte` (`-log2 P(b_t | b_{<t})`)
-//!     from random init (~8.000 bpb) -> real learned generalization + online episodic compression!
+//!   - Runs lock-free Multi-Stream Data-Parallel Batch Training (`B` independent sequences across `threads`)
+//!     through `DeepContractiveBrain::train_batch_streams` (calling `allreduce_grad_shards`!)
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,6 @@ pub fn collect_real_files(root: &Path) -> Vec<PathBuf> {
                 }
             } else if p.is_file() {
                 if let Ok(meta) = p.metadata() {
-                    // Skip empty or huge binary lockfiles > 32 MB in default directory scan
                     if meta.len() >= 128 && meta.len() <= 32 * 1024 * 1024 {
                         out.push(p);
                     }
@@ -54,8 +53,6 @@ pub struct CorpusSplit {
     pub heldout_label: String,
 }
 
-/// Load a real file or directory into a clean `(train_bytes, unseen_heldout_bytes)` split.
-/// If `max_bytes_per_split > 0`, caps byte volume cleanly (useful for fast zero-lag laptop runs; `0` = unbounded!).
 pub fn load_real_corpus_split(path: &Path, max_train_bytes: usize, max_heldout_bytes: usize) -> Result<CorpusSplit, String> {
     let files = collect_real_files(path);
     if files.is_empty() {
@@ -70,12 +67,8 @@ pub fn load_real_corpus_split(path: &Path, max_train_bytes: usize, max_heldout_b
         let split = (raw.len() * 85) / 100;
         let mut tr = raw[..split].to_vec();
         let mut ho = raw[split..].to_vec();
-        if max_train_bytes > 0 && tr.len() > max_train_bytes {
-            tr.truncate(max_train_bytes);
-        }
-        if max_heldout_bytes > 0 && ho.len() > max_heldout_bytes {
-            ho.truncate(max_heldout_bytes);
-        }
+        if max_train_bytes > 0 && tr.len() > max_train_bytes { tr.truncate(max_train_bytes); }
+        if max_heldout_bytes > 0 && ho.len() > max_heldout_bytes { ho.truncate(max_heldout_bytes); }
         return Ok(CorpusSplit {
             train_bytes: tr,
             heldout_bytes: ho,
@@ -84,7 +77,6 @@ pub fn load_real_corpus_split(path: &Path, max_train_bytes: usize, max_heldout_b
         });
     }
 
-    // Multi-file directory: hold out the LAST real file completely UNSEEN during training!
     let held_path = files.last().unwrap().clone();
     let mut train_bytes = Vec::new();
     let mut train_files = 0usize;
@@ -118,6 +110,7 @@ pub struct CompressionRunReport {
     pub heldout_bytes: usize,
     pub heldout_label: String,
     pub epochs: usize,
+    pub n_streams: usize,
     pub untrained_heldout_bpb: f64,
     pub trained_param_heldout_bpb: f64,
     pub trained_blended_heldout_bpb: f64,
@@ -129,8 +122,9 @@ pub struct CompressionRunReport {
     pub wall_ms: f64,
 }
 
-/// Train `DeepContractiveBrain` + `TropicalEpisodicMemory` directly on REAL files on disk
-/// and measure strictly-causal out-of-sample `bits/byte` on completely unseen held-out real code/data!
+/// Multi-Stream Data-Parallel Training on REAL files on disk!
+/// Splits `corpus.train_bytes` into `B` independent streams trained concurrently across `threads` workers,
+/// then measures strictly-causal out-of-sample `bits/byte` on completely unseen real held-out code/data!
 pub fn run_real_byte_training(
     brain: &mut DeepContractiveBrain,
     corpus: &CorpusSplit,
@@ -142,31 +136,46 @@ pub fn run_real_byte_training(
     let cl = chunk_len.max(16);
 
     // 1. Measure baseline `bits/byte` on UNSEEN held-out file BEFORE this training phase
-    let (pre_param_bpb, _) = brain.eval_byte_stream(&corpus.heldout_bytes, cl, false, threads);
+    let (pre_param_bpb, _) = brain.eval_byte_stream(&corpus.heldout_bytes, cl, false, None);
 
-    // 2. Train on REAL training bytes (multi-layer backprop + AdamW + Banach projection + NVFP4 STE!)
+    // 2. Multi-Stream Data-Parallel Batch Training (`B` parallel streams across `threads`)!
+    let n_streams = (threads.max(1) * 2).min(corpus.train_bytes.len() / (cl * 2)).clamp(1, 16);
+    let stride = corpus.train_bytes.len() / n_streams;
     let mut total_processed = 0usize;
+
     for ep in 0..epochs.max(1) {
-        let mut stream = CausalStreamState::new(brain.cfg.d_model);
+        let mut streams: Vec<CausalStreamState> = (0..n_streams)
+            .map(|_| CausalStreamState::new(&brain.cfg))
+            .collect();
         let decay = (0.88f32).powi(ep as i32);
         let lr = brain.cfg.lr * decay;
+        let update_ep = ep == epochs.saturating_sub(1);
+
         let mut off = 0usize;
-        while off + 1 < corpus.train_bytes.len() {
-            let end = (off + cl).min(corpus.train_bytes.len() - 1);
-            let inputs = &corpus.train_bytes[off..end];
-            let targets = &corpus.train_bytes[off + 1..end + 1];
-            brain.train_byte_chunk(inputs, targets, &mut stream, Some(lr), ep == epochs.saturating_sub(1), threads, 0);
-            total_processed += inputs.len();
-            off = end;
+        while off + 1 < stride {
+            let step_len = cl.min(stride - 1 - off);
+            let mut batch_io: Vec<(&[u8], &[u8])> = Vec::with_capacity(n_streams);
+            for si in 0..n_streams {
+                let base = si * stride + off;
+                if base + step_len < corpus.train_bytes.len() {
+                    batch_io.push((
+                        &corpus.train_bytes[base..base + step_len],
+                        &corpus.train_bytes[base + 1..base + 1 + step_len],
+                    ));
+                    total_processed += step_len;
+                }
+            }
+            if !batch_io.is_empty() {
+                brain.train_batch_streams(&batch_io, &mut streams, lr, None, update_ep, threads);
+            }
+            off += step_len;
         }
     }
 
-    // 3. Evaluate on COMPLETELY UNSEEN real held-out file:
-    //    (a) Frozen (parametric only vs parametric + episodic trained on OTHER files)
-    //    (b) Strictly-causal online adaptation (predict byte t BEFORE observing byte t!)
-    let (post_param_bpb, post_blend_bpb) = brain.eval_byte_stream(&corpus.heldout_bytes, cl, false, threads);
+    // 3. Strictly-Causal Evaluation on COMPLETELY UNSEEN real held-out file
+    let (post_param_bpb, post_blend_bpb) = brain.eval_byte_stream(&corpus.heldout_bytes, cl, false, None);
     let mut online_brain = brain.clone();
-    let (_, online_adapted_bpb) = online_brain.eval_byte_stream(&corpus.heldout_bytes, cl, true, threads);
+    let (_, online_adapted_bpb) = online_brain.eval_byte_stream(&corpus.heldout_bytes, cl, true, None);
 
     let wall_s = t0.elapsed().as_secs_f64().max(1e-6);
     let throughput_kb_s = ((total_processed + corpus.heldout_bytes.len()) as f64 / 1024.0) / wall_s;
@@ -178,6 +187,7 @@ pub fn run_real_byte_training(
         heldout_bytes: corpus.heldout_bytes.len(),
         heldout_label: corpus.heldout_label.clone(),
         epochs,
+        n_streams,
         untrained_heldout_bpb: pre_param_bpb,
         trained_param_heldout_bpb: post_param_bpb,
         trained_blended_heldout_bpb: post_blend_bpb,
