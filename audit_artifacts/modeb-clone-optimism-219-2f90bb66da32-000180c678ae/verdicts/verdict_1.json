@@ -1,0 +1,6 @@
+{
+  "audit_block": 159860700,
+  "candidate_id": 1,
+  "notes": "Audited all 10 funded vaults >= $100 in optimism@159860700 cluster: OP-Stack system predeploys L2ToL1MessagePasser ($176.27M) & L2CrossDomainMessenger ($6.76K), Lido stETH ERC20RebasableBridgedPermit ($120.1K) & wstETH ($1.88K), canonical UniswapV3Pool WETH/WBTC ($77.9K) & wstETH/WETH ($34.5K) & NonfungiblePositionManager ($2.15K allow), Merkl Distributor ($26.65K, verified full source: MerkleProof cumulative claims + nonReentrant + AccessControlManager + initialized), ACryptoS UniswapV3 Vault 0x5e09cD62... ($2.15K, paused() == true with deposits disabled and balanceStaked() == 0), and canonical WBTC ($914). No unmitigated Moonwell/Compound-v2 supplyCap/exchangeRate vulnerability exists in this cluster.",
+  "verdict": "안전"
+}

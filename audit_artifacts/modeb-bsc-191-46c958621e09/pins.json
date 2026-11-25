@@ -1,0 +1,15 @@
+{
+  "audit_block": 0,
+  "chain": "bsc",
+  "file_sha256": {
+    "result.json": "e14ab3535206c0af0dd2deb4b42776a8185d848f9317417acaa2b977763dbaa9",
+    "verdicts/verdict_1.json": "c0efd92ee85f3d77758a3419706f6a08f7bfb086a82819ea4cd2293e3a7c08b9"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795319918,
+  "slug": "modeb-bsc-191-46c958621e09",
+  "verdict": "미검증 차단"
+}

@@ -1,0 +1,10 @@
+{
+  "audit_block": 28124323,
+  "chain": "pulsechain",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-pulsechain-224-fe8189d4287a-213a15f1f5a6",
+  "verdict": "안전"
+}

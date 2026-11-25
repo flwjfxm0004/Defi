@@ -1,6 +1,6 @@
 {
-  "audit_block": 100889415,
+  "audit_block": 101089461,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=87553.25 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on pinned avalanche@101089461 local fork. TARGET 0xAD276dA5aAad4181B991fd93Bc7dCCFb46811003 (GovernanceTreasury, owner=pendingOwner=0xec39480f...) strictly reverts on claim, setOwner, and acceptOwner for unprivileged callers. Connected PairFees 0xc48A9E25 ($94.30) enforces pair-only claimFeesFor, and Solidly pairs 0x7fE7277F ($235.70) / 0x907f956F ($154.54) enforce K-invariants on swap. The $269.5K vault 0xc7198437 is Avalanche Bridge canonical USDT.e (BridgeToken.sol).",
   "verdict": "안전"
 }

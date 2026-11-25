@@ -1,0 +1,15 @@
+{
+  "audit_block": 101086844,
+  "chain": "avalanche",
+  "file_sha256": {
+    "result.json": "4b5c09021124c34a84cfee395188d0ae0b327a1d47712deacf6999d5e7ce849a",
+    "verdicts/verdict_1.json": "c245101bf2271f9f66b4e81caf638ca005ae3175e40e3268d2d3b017511ab96a"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795365969,
+  "slug": "modeb-clone-avalanche-209-51ff485242a8-35e9d8779fe2",
+  "verdict": "안전"
+}

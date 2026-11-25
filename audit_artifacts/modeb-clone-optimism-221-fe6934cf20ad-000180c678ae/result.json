@@ -1,0 +1,10 @@
+{
+  "audit_block": 159886214,
+  "chain": "optimism",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-optimism-221-fe6934cf20ad-000180c678ae",
+  "verdict": "안전"
+}

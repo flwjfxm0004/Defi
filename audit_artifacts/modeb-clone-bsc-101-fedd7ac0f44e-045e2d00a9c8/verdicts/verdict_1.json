@@ -1,6 +1,6 @@
 {
-  "audit_block": 134685005,
+  "audit_block": 135096243,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=13663.81 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified full sources and local fork invariants at bsc@135096243 (ZetaChain CREATE2 BSC deployment): (1) TARGET 0x1FfF55ccf855212F6b5530C468B44f9a5246572E ($0.00) is an unattached legacy GatewayEVM implementation with _disableInitializers() active; initialize and upgradeToAndCall revert. (2) $39,712.97 vault 0x0Bad40D9e9C369f2223c835E108f43a45fd223B5 is ZetaChain ERC20Custody (impl 0x245a2e9a...); already initialized and all outflows/admin paths (withdraw, refundStrandedFunds, updateTSSAddress, upgradeToAndCall) enforce onlyRole(WITHDRAWER_ROLE/DEFAULT_ADMIN_ROLE) and nonReentrant. (3) Active GatewayEVM 0x48B9AACC350b20147001f88821d31731Ba4C30ed points to remediated impl 0x9D7aD582... with _executeArbitraryCall() completely removed, ArbitraryCallDisabled() enforced when sender==address(0), execute/executeWithERC20 role-gated, and 0 USDT/USDC allowance from ERC20Custody.",
   "verdict": "안전"
 }

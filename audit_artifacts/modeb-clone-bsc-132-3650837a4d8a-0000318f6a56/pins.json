@@ -1,15 +1,15 @@
 {
-  "audit_block": 134712632,
+  "audit_block": 135031378,
   "chain": "bsc",
   "file_sha256": {
-    "result.json": "71516550a257ca9391d16898930a8614e4a555404fa3f730e0d9096db21cc5be",
-    "verdicts/verdict_1.json": "78b4b7860103377f51c71eec7584f66965b7cfc8f382b7ad62f1dfd54e7362fb"
+    "result.json": "53104144af9369b96b2f8192cacb438af9c25e179bd8f735bb1f011a0e80ed88",
+    "verdicts/verdict_1.json": "9d84bd0a7840e1dd0bd42731c7c87b7413aa2c495b8d4cedbaf24ae35ea386ff"
   },
   "net_krw": 0,
   "net_krw_exact": "0",
   "net_usd": 0.0,
   "schema_version": 5,
-  "sealed_at": 1795186408,
+  "sealed_at": 1795329716,
   "slug": "modeb-clone-bsc-132-3650837a4d8a-0000318f6a56",
   "verdict": "안전"
 }

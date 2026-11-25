@@ -1,6 +1,6 @@
 {
-  "audit_block": 28097790,
+  "audit_block": 28123821,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=0.00 similarity=1.0000 vuln_preserved=None",
+  "notes": "Verified on pinned pulsechain@28123821 local fork (test_candidate_1 passed, 0 conservation gains): Both Hypervisor vaults (0x85CBeD523459b7f6F81C11e710DF969703a8A70C and 0xc86B1e7FA86834CaC1468937cdd53ba3cCbC1153) and DepositProxies (0x38037294..., 0x7CF8431E...) hold $0.00 direct balance and share UniswapV3Pool 0xE8c2030686fC3b0161Ee1def0E8d01dFe4FAc0Ac containing only 16,550.54 forked WETH9 (~$0.08 USD at $0.00000487/PLS, << $100.00 floor; E1 bounded) and 1,444.69 dead pFLOAT ($0.00). TARGET 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 is byte-for-byte identical canonical immutable Ethereum WETH9 inherited from the PulseChain state fork and reverts withdraw(1) under ZERO_STATE_CALLER.",
   "verdict": "안전"
 }

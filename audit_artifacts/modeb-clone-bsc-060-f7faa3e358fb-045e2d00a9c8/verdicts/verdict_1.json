@@ -1,6 +1,6 @@
 {
-  "audit_block": 134667501,
+  "audit_block": 135100067,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=10371992122.13 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on pinned bsc@135100067 local fork (test_candidate_1 passed, 0 conservation gains): Venus Core Pool VTokens (vBNB 0xA07c5b74, vXVS 0x151B1e26->0xCDfea50f, vTHE 0x86e06EAf, VBep20Delegate 0x1be1CE83) enforce strict Compound V2 subUInt(accountTokens[redeemer], redeemTokens) underflow checks before doTransferOut with nonReentrant guards (remediating the Keom redeemFresh balance-cap accounting defect), and legacy GErc20Delegator 0x045e2Df6 has getCash()==0. All connected Venus governance vaults (Comptroller Diamond 0xfD36E2c2 with authorizedFlashLoan/ensureAdmin, VTreasury 0xF322942f onlyOwner, VAIVault 0x0667Eed0 NormalTimelock-gated, ProtocolShareReserve 0xCa01D5A9 initialized/owned, PrimeV2 0x059EabA8 AccessControlledV8) enforce strict access control and zero unauthorized outflow under ZERO_STATE_CALLER.",
   "verdict": "안전"
 }

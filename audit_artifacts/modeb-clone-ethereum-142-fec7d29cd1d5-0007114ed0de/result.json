@@ -1,12 +1,11 @@
 {
-  "audit_block": 26457190,
+  "audit_block": 26471211,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 17107472.24,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=17107472.24 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified sources and local fork invariants at ethereum@26471211: (1) TARGET 0x4Fe93ebC4Ce6Ae4f81601cC7Ce7139023919E003 is EnsoShortcuts (stateless Weiroll router, $0.01 balance, 0 monitored approved owners). (2) The sole >$1K address in the cluster (0x3E5c63644E683549055b9Be8653de26E0B4CD36E, $29,984.31 USDC) is the canonical GnosisSafeL2 v1.3.0 singleton (threshold=1, caller not owner; setup() and execTransaction() permanently locked; USDC is stranded). (3) Remaining addresses hold <$530 combined (below net profit floor) and share zero AROS claimPrincipal/claimYield signature-replay surface.",
   "slug": "modeb-clone-ethereum-142-fec7d29cd1d5-0007114ed0de",
   "verdict": "안전"
 }

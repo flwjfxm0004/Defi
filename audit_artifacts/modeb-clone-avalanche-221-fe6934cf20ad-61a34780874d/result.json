@@ -1,0 +1,11 @@
+{
+  "audit_block": 101052187,
+  "chain": "avalanche",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": "0",
+  "reason": "False-positive bytecode match from Cronos Tectonic Compound v2 tTONIC donation incident (modeb-cronos-221-fe6934cf20ad); no Compound v2 lending market exists in this Avalanche closure. Audited verified Routescan sources of AllBlueV2Factory (0x6FEa5651...) and AllBlueV2Pair (0x049dC1E6..., $961 WETH.e) — standard UniswapV2 fork with feeToSetter/onlyOwner/onlyCreator guards and strict K invariant check (protocol swap fee <= 0.15% < 0.30% LP fee deducted after K check). Audited WETH10 (0xAB4fBa02..., $26.3K native AVAX) — canonical Dapphub WETH10 wrapper with CEI burn before ETH send. Remaining funded vaults are canonical UniswapV3Pool ($2.13M, $20.4K) and Avalanche BridgeToken WETH.e ($90.3K). Verified zero-state reverts on Avalanche fork@101052187.",
+  "slug": "modeb-clone-avalanche-221-fe6934cf20ad-61a34780874d",
+  "verdict": "안전"
+}

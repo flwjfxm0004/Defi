@@ -1,15 +1,15 @@
 {
-  "audit_block": 28104881,
+  "audit_block": 28124323,
   "chain": "pulsechain",
   "file_sha256": {
-    "result.json": "aa18564f2800e8870cc3b880ac5c4d198425a52c505e6fb55a8137c3ead8f466",
-    "verdicts/verdict_1.json": "0e4917a48cb3287e255e0778d26ba2f575ce780d0b9d75a9f53ae722e77e3942"
+    "result.json": "4552dbbb2756e2e511c2ded191f40eb4711f7fbf26a69b6f97e7a1dc3df627bc",
+    "verdicts/verdict_1.json": "9d691ecc49a3b2460b582b93288c81d7af4080186b93d05e44f502d0d317b71f"
   },
   "net_krw": 0,
   "net_krw_exact": "0",
   "net_usd": 0.0,
   "schema_version": 5,
-  "sealed_at": 1795167296,
+  "sealed_at": 1795368825,
   "slug": "modeb-clone-pulsechain-083-1d6f03d66666-0d697f709af6",
   "verdict": "안전"
 }

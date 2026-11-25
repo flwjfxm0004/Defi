@@ -1,12 +1,11 @@
 {
-  "audit_block": 134689379,
+  "audit_block": 135048767,
   "chain": "bsc",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 259140.45,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=259140.45 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "False-positive bytecode match from Ethereum TrustedVolumes RFQ proxy incident (modeb-ethereum-114-eeeeee051756, registerAllowedOrderSigner/signer-funder mismatch); no TrustedVolumes RFQ proxy exists in this BSC closure. Audited new funded vault 0x4cD00E387622C35bDDB9b4c962C136462338BC31 ($678.24K) from verified RelayDepository.sol — strictly gates setAllocator to onlyOwner and execute() to EIP-712 allocator SignatureCheckerLib with expiration and replay protection (callRequests[structHash]=true before calls). All other funded contracts (InputSettlerEscrowLIFI $163.4K, Token $162.2K, ERC20Custody $39.7K, LisUSD $1.19K) already audited and confirmed safe on BSC fork@135048767.",
   "slug": "modeb-clone-bsc-114-eeeeee051756-045e2d00a9c8",
   "verdict": "안전"
 }

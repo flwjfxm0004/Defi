@@ -1,0 +1,6 @@
+{
+  "audit_block": 135012115,
+  "candidate_id": 1,
+  "notes": "Cross-chain match of Ankr FlowStakingPool (modeb-flow-224-fe8189d4287a, stakeBondsWithCode missing bondStakingUnpaused). Verified on BSC@135012115 that 0xfe8189a3016cb6a3668b8ccdac520ce572d4287a is a retired/unreferenced old implementation holding 0 BNB, while Ankr's live BSC BinancePool proxy (0x9e347af362059bf2e55839002c699f7a5bafe86e) has already upgraded to patched implementation 0x6bfe89c9e722debea67372cda35b842f60e9526a (Sourcify verified contracts/patched/ReferralLiquidTokenStakingPoolFixed.sol enforcing bondStakingUnpaused on stakeBondsWithCode). Audited all other funded closure contracts including LisUSD (0x0782b6d8..., onlyMinter/onlyAdmin), canonical PancakeSwap MasterChef, ERC-4337 EntryPoint, Binance-Peg tokens, LiFiDiamond, MerchantTrade, Token, and ERC20Custody — all revert under zero-state caller.",
+  "verdict": "안전"
+}

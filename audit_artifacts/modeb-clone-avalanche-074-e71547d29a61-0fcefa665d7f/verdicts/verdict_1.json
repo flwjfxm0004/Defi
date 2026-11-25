@@ -1,6 +1,6 @@
 {
-  "audit_block": 100863019,
+  "audit_block": 101090639,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91322.09 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on pinned avalanche@101090639 local fork. TARGET 0xB74749b2213916b1dA3b869E41c7c57f1db69393 (Secured Finance TokenVault, BUSL-1.1) strictly reverts on registerCurrency (onlyOwner), addDepositAmount/transferFrom (onlyLendingMarketController), withdraw (collateral check), and pause (onlyOperator). Match against BSC BNBDeposit.sol was a compiler-boilerplate locus FP (shared_nonbp=0, raw=6.4%, ssg=9.8%).",
   "verdict": "안전"
 }

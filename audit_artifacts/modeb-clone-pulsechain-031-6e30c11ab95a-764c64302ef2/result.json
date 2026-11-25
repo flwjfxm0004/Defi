@@ -1,12 +1,11 @@
 {
-  "audit_block": 28104393,
+  "audit_block": 28122460,
   "chain": "pulsechain",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 0.0,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=0.00 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified directly against TARGET 0x764C64b2A09b09Acb100B80d8c505Aa6a0302EF2 on pulsechain@28122460: TARGET is a Truebit Purchase genesis fork (not HPAY staking), forceExit() reverts/absent, AccessControl role queries succeed cleanly, and total cluster native PLS plus PulseX V1/V2 pTRU/WPLS exit reserves remain strictly below $33 (< $100 floor).",
   "slug": "modeb-clone-pulsechain-031-6e30c11ab95a-764c64302ef2",
   "verdict": "안전"
 }

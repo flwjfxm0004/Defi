@@ -1,0 +1,10 @@
+{
+  "audit_block": 97774789,
+  "chain": "polygon",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-polygon-215-7c687f53bdde-d68b05f06395",
+  "verdict": "안전"
+}

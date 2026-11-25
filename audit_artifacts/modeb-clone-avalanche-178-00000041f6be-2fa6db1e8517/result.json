@@ -1,0 +1,10 @@
+{
+  "audit_block": 101094924,
+  "chain": "avalanche",
+  "early_exit": "E3_PROXY_ALREADY_PATCHED",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone proxy live implementation already patched below containment threshold",
+  "slug": "modeb-clone-avalanche-178-00000041f6be-2fa6db1e8517",
+  "verdict": "안전"
+}

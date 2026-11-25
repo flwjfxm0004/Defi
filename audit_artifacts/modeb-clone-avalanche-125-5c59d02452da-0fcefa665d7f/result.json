@@ -1,12 +1,11 @@
 {
-  "audit_block": 100880053,
+  "audit_block": 101091074,
   "chain": "avalanche",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 90588.05,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=90588.05 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on pinned avalanche@101091074 local fork. TARGET AlgebraPool 0x41100C6D ($319K, plus sibling pools 0x76eB2c0C $166K and 0x8FEF4fE4 $72.6K) enforces callback payment invariant on unbacked swap; SafeProxy 0xdD900B9F ($171K) is canonical Gnosis Safe; Blackhole Bribe 0x0F33f798 enforces nonReentrant + voter/gaugeManager/onlyAllowed on deposit/withdraw/getReward/emergencyRecoverERC20/setOwner; Black token 0xcd94a876 ($1.8K) enforces minter-only mint/setMinter. Match vs 1.2KB EtherRouterCreate3 was caused solely by shared setOwner(address) / resolver() boilerplate.",
   "slug": "modeb-clone-avalanche-125-5c59d02452da-0fcefa665d7f",
   "verdict": "안전"
 }

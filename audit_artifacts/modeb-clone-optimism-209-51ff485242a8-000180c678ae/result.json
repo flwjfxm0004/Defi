@@ -1,0 +1,11 @@
+{
+  "audit_block": 159874066,
+  "chain": "optimism",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": "0",
+  "reason": "Audited all 21 funded vaults >= $100 in optimism@159874066 cluster ($1.66M total): WOOFi WooPPV2.2 ($500.1K, owner/wooracle/quoteToken active), Velodrome CLPool/Voter/Pair ($405.2K/$217.7K/$66.4K/$49.0K/$17.8K/$12.5K/$2.6K/$958), Lido stETH ($123.8K) & wstETH ($1.94K), canonical UniswapV3Pool ($94.6K/$79.9K/$35.5K), Merkl Distributor ($27.5K), OP token ($14.5K), SolidlyV3Pool ($8.7K), ACryptoS Vault ($2.2K, paused & deposits disabled), Chainlink KeeperRegistry1_3 ($1.2K), canonical WBTC ($939), and Ownable fee wallet 0x28BF6006 ($668, withdraw guarded). None of these contracts contain Atomic Green's 0xa806010f partialBurn signature-replay vulnerability.",
+  "slug": "modeb-clone-optimism-209-51ff485242a8-000180c678ae",
+  "verdict": "안전"
+}

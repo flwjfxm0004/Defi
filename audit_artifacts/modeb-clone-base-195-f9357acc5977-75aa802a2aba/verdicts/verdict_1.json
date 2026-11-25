@@ -1,0 +1,6 @@
+{
+  "audit_block": 60889013,
+  "candidate_id": 1,
+  "notes": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "verdict": "안전"
+}

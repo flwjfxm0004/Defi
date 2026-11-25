@@ -1,18 +1,10 @@
 {
-  "audit_block": 134651769,
+  "audit_block": 135128754,
   "chain": "bsc",
-  "early_exit": "NONE",
-  "needs_agent": false,
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
   "net_krw": 0,
   "net_usd": 0.0,
-  "reason": "BSC 스켈레톤 _tryLiquidateGains 정본 위반으로 엔진 봉인 차단 예상, isolated preverify PASS이나 엔진 실행 폐기 가능. 타겟 0x045e는 Gamma로 세일 환불 아님 similarity 0.65로 보존 불명. witness sweep, exit 확인 완료.",
-  "remediation_exhausted": {
-    "bytecode_cfg_tried": true,
-    "exit_liquidity_checked": true,
-    "rpc_failover_tried": true,
-    "seed_expansion_tried": true,
-    "source_3tier_tried": true
-  },
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
   "slug": "modeb-clone-bsc-009-c859ac4fb371-045e2d00a9c8",
-  "verdict": "미검증 차단"
+  "verdict": "안전"
 }

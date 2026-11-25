@@ -1,6 +1,6 @@
 {
-  "audit_block": 525624514,
+  "audit_block": 526592645,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=41669.07 similarity=0.0000 vuln_preserved=None",
+  "notes": "Arbitrum fork block 526592645 verified: FactoryProxy (0x53f7c2a26D8e70e3dc5fDF0Bc8Fa88547928B452) upgraded to patched impl 0x72b3d8AfE1ACe941EE801d6B35876C17E1a38206 linking patched FactoryLib 0xf22F276777a9c96Fc53A9481DFB53dE5F999242e, separating userRoleId ((id<<8)|track) from storageRoleId ((track<<56)|id). Deploying a MultiController on active track 22 (id=569) confirms all Storage setters (setBalance/setWithdrawLimit/setAccountStatus/setOwner), controller.transfer, and Vault.fundAccount revert with AccessManagedUnauthorized (0x068ca9d8); controller.withdraw on zero balance transfers 0 USDC; deployMonoController reverts ContractNotRegistered; TARGET 0x413Fc6e3f3AC5995028a3B2a71698580A8bCFe16 and aux 0x8b12EF335Cadc2b408d60821db2529d6DD3d873c hold no ADMIN_ROLE/CONTROLLER_ROLE and revert.",
   "verdict": "안전"
 }

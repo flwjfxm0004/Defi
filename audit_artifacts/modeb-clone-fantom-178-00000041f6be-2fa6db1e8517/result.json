@@ -1,0 +1,10 @@
+{
+  "audit_block": 124165223,
+  "chain": "fantom",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-fantom-178-00000041f6be-2fa6db1e8517",
+  "verdict": "안전"
+}

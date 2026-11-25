@@ -1,6 +1,6 @@
 {
-  "audit_block": 159780746,
+  "audit_block": 159883130,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=112299.52 similarity=0.0990 vuln_preserved=None",
+  "notes": "Verified on pinned optimism@159883130 local fork (test_candidate_1 passed, 0 conservation gains): All 3 Mode-B seeds (ACryptoS V2 BeaconProxies 0x5e09cD62 $2,217.67 and 0x61A34758 $0.31 -> impl 0xD1981327, plus 0xacfd0281 $0.00) score sc=0.0000 against GydL1CCIPEscrow (016), are already initialized (totalSupply > 0, slot 0 == 1), reject 0-share withdraw, and show zero balance change on ccipReceive selector 0x85572ffb. Connected Merkl Distributor (0x3Ef3D8bA $27,381.57) has live Merkle root via tree() (0xfd54b228) and enforces Merkle proof & admin gating on claim/upgrade; remaining balances sit in canonical UniswapV3Pool, NonfungiblePositionManager, wstETH, and WBTC.",
   "verdict": "안전"
 }

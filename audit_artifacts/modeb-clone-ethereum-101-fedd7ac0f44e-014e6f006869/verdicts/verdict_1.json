@@ -1,6 +1,6 @@
 {
-  "audit_block": 26455911,
+  "audit_block": 26470946,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=481356.65 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified full sources and on-chain fork invariants at ethereum@26470946: (1) TARGET 0x57DC5c2911Ec03F73e5778A3066e61f50695C4D3 is ValinityRegistrar (OZ AccessControl, $0 balance); setContract/removeContract require ADMIN_ROLE and grantRole requires DEFAULT_ADMIN_ROLE. (2) $101,009.58 vault 0x0Bad40D9e9C369f2223c835E108f43a45fd223B5 is ZetaChain ERC20Custody (impl 0x245a2e9a...); already initialized and all outflows/admin paths (withdraw, withdrawAndCall, withdrawAndRevert, refundStrandedFunds, updateTSSAddress, upgradeToAndCall) enforce onlyRole(WITHDRAWER_ROLE/DEFAULT_ADMIN_ROLE) and nonReentrant. (3) GatewayEVM 0x48B9AACC350b20147001f88821d31731Ba4C30ed points to remediated impl 0x9D7aD5821A40B9e90199E343f3AfC1591FbDfa52 which completely removes _executeArbitraryCall(), enforces ArbitraryCallDisabled() when sender==address(0), restricts execute/executeWithERC20 to TSS_ROLE/ASSET_HANDLER_ROLE + Callable.onCall(), and holds 0 USDT/USDC allowance from ERC20Custody. Remaining cluster addresses hold <$300 combined (below net profit floor).",
   "verdict": "안전"
 }

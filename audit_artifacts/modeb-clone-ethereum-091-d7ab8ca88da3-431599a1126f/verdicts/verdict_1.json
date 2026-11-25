@@ -1,6 +1,6 @@
 {
-  "audit_block": 26455632,
+  "audit_block": 26471941,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=306331.40 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on pinned ethereum@26471941 local fork (test_candidate_1 passed, replay_executed=true, conservation_gains=[]). TARGET 0x4315990D9eeAFFdFAfD49958b4851F203FA1126f is an initialized EIP-2535 Diamond (isInitialized()=true, owner()!=0x0) where delegateBySelf (0x16bc3b74) enforces msg.sender==address(this) and emergencyWithdraw (0x4782f779) enforces onlyOwner; connected EIP-7702 account 0x681878dc ($32.5K ETH) enforces CALLER==self with read-only TLOAD; Curve stETH/ETH (0xDC24316b) and Lido stETH (0xae7ab965) are canonical audited infrastructure.",
   "verdict": "안전"
 }

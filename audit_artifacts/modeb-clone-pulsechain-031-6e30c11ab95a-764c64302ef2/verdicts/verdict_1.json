@@ -1,6 +1,6 @@
 {
-  "audit_block": 28104393,
+  "audit_block": 28122460,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=0.00 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified directly against TARGET 0x764C64b2A09b09Acb100B80d8c505Aa6a0302EF2 on pulsechain@28122460: TARGET is a Truebit Purchase genesis fork (not HPAY staking), forceExit() reverts/absent, AccessControl role queries succeed cleanly, and total cluster native PLS plus PulseX V1/V2 pTRU/WPLS exit reserves remain strictly below $33 (< $100 floor).",
   "verdict": "안전"
 }

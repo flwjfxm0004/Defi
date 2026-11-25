@@ -1,0 +1,11 @@
+{
+  "audit_block": 159880044,
+  "chain": "optimism",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": "0",
+  "reason": "Verified sources and local fork invariants at optimism@159880044: (1) Kept seed 0x00000000723d330721a63A2B04834D4Fd056A302 is an already-initialized EIP-2535 Diamond (12 active facets, owner=0x2e8d..., initialize(address) reverts with 'Diamond: already initialized') with 0.0000 similarity to FleetCommander across all 12 facets. (2) TARGET 0x7Deb78148E23c18B12a9Edb638d57F3aCdEfB849 is a canonical Velodrome CLPool; all >$1K vaults in the $963K cluster are canonical UniswapV3Pool, Velodrome Pool, Velodrome CLPool, and Pair contracts (protocol fee & swap invariants hold; 0 monitored approved owners; zero FleetCommander/SiloManagedVaultArk ERC-4626 donation surface).",
+  "slug": "modeb-clone-optimism-176-98c49e9ecf17-00000056a302",
+  "verdict": "안전"
+}

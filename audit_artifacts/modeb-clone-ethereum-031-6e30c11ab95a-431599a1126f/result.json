@@ -1,12 +1,11 @@
 {
-  "audit_block": 26455012,
+  "audit_block": 26468171,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 317949.79,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=317949.79 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on local Ethereum fork at block 26468171: TARGET 0x00071196A9129b7068404523E2047ef79F4Ed0de is MAP Protocol LightNodeProxy delegating to LightNodeV2 (0x6859b2aE7CE9fb0c4FAA71798aC5498B41B42D7A), unrelated to BSC HPAY forceExit staking (matched only via ERC1967 proxy boilerplate). Confirmed already initialized (admin=0x7f4cba3d7f20bf5146e4e5f8929b676ca05a5545, pendingAdmin=0x0), zero ETH/ERC20 custody, and all privileged state-mutating functions (initialize, changeAdmin, upgradeTo, updateMultisig, togglePause) revert for unprivileged ZERO_STATE_CALLER while public notifyLightClient/updateBlockHeader perform no value transfer.",
   "slug": "modeb-clone-ethereum-031-6e30c11ab95a-431599a1126f",
   "verdict": "안전"
 }

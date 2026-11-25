@@ -1,6 +1,6 @@
 {
-  "audit_block": 28104443,
+  "audit_block": 28122436,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=0.00 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on PulseChain block 28122436 fork: cluster contains Truebit Purchase clone 0x764C64b2... ($0.058 native PLS, pTRU total PulseX V1+V2 exit depth ~$32.70) and empty Verus Bridge clone 0xA9299C29.../0x9a42e293... ($0.00). Total cluster realizable exposure (~$32.76) is strictly below $100 profit floor and none of the contracts implement L1BlockOracleUpdater.receiveMessage.",
   "verdict": "안전"
 }

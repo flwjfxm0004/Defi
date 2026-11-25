@@ -1,0 +1,10 @@
+{
+  "audit_block": 526567062,
+  "chain": "arbitrum",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-arbitrum-194-da6fc5c6bef0-7dca6b2bf2dc",
+  "verdict": "안전"
+}

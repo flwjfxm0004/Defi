@@ -1,0 +1,6 @@
+{
+  "audit_block": 60886708,
+  "candidate_id": 1,
+  "notes": "Verified on pinned base@60886708 local fork. TARGET 0x67b93f6676bd1911c5FAe7Ffa90fFf5f35E14dCd (dynBaseUSDCv3, totalAssets=104.19 USDC) reverts on setDepositLimits, setRouterRegistry, setReferenceAssetOracle, feeTransfer, and doSwap for unprivileged callers, and protects deposit/mint/withdraw/redeem with ReentrancyGuard and StrategyLossProtection. Underlying StableYieldVault 0x0FF79b6D6c0FB5faf54BD26db5Ce97062A105f81 (REN-USDC-B, totalAssets=117.69 USDC) enforces onlyOwner on harvestFees/sweepToken/vault upgrades and conservative Floor/Ceil ERC-4626 rounding.",
+  "verdict": "안전"
+}

@@ -1,12 +1,10 @@
 {
-  "audit_block": 100772280,
+  "audit_block": 101089823,
   "chain": "avalanche",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "E3_PROXY_ALREADY_PATCHED",
   "net_krw": 0,
   "net_usd": 0.0,
-  "realizable_usd": 88439.91,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=88439.91 similarity=0.0703 vuln_preserved=None",
-  "similarity": 0.0703,
+  "reason": "Early Exit: Matched Mode B clone proxy live implementation already patched below containment threshold",
   "slug": "modeb-clone-avalanche-223-85cbeda8a70c-b74749b69393",
   "verdict": "안전"
 }

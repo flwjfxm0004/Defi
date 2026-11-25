@@ -1,0 +1,6 @@
+{
+  "audit_block": 60412759,
+  "candidate_id": 1,
+  "notes": "forge test_candidate_1 executed clean (1 passed, 0 failed) with target causally called and no cheatcode violations; conservation gains empty so no extractable profit proven on Base@60412759.",
+  "verdict": "안전"
+}

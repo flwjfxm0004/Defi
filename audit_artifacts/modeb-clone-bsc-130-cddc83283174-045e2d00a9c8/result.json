@@ -1,12 +1,11 @@
 {
-  "audit_block": 134703530,
+  "audit_block": 135036060,
   "chain": "bsc",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 285862.66,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=285862.66 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Pre-Patch-4 bytecode similarity false positive from ElevateFi Polygon incident (0xcddc83...); none of the BSC closure contracts implement ElevateFi's spot-reserve getPriceUSD()/stakeEFI() oracle pattern. All funded vaults ($159.4K Token 0x2b9A..., $39.7K ZetaChain ERC20Custody 0x0Bad..., $3.7K TransparentUpgradeableProxy 0x5340..., $429 ERC1967Proxy 0xAE40..., $429 APower 0xB7b7...) and TARGET (0xADD1...) are initialized and enforce strict owner/TSS/role access control; verified on BSC fork@135036060 (passed_tests=1, failed_tests=0, conservation_gains=0).",
   "slug": "modeb-clone-bsc-130-cddc83283174-045e2d00a9c8",
   "verdict": "안전"
 }

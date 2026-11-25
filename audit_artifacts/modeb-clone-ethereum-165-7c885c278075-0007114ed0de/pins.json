@@ -1,0 +1,15 @@
+{
+  "audit_block": 26471832,
+  "chain": "ethereum",
+  "file_sha256": {
+    "result.json": "897a3f905bfb3d368b2b473f3b4cb3601394365f0597576d180ceeafce1d6ae8",
+    "verdicts/verdict_1.json": "e3b0472c08744d5aec1d5d52f4019094e6a66a663116c2b7bd6f08fbfb7ae2b0"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795364719,
+  "slug": "modeb-clone-ethereum-165-7c885c278075-0007114ed0de",
+  "verdict": "안전"
+}

@@ -1,6 +1,6 @@
 {
-  "audit_block": 100872053,
+  "audit_block": 101091609,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91362.30 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on pinned avalanche@101091609 local fork. TARGET AllBlueSplitRouter 0x06c13f4650C25eC8395FB62dE9a5A3D3e8ca67a0 holds $0 own balances (its $4,653 exposure is user ERC-20 allowances) and delegates executeSwap to swapMgr 0xb30fE6e64B12DADAFe6188955b0F7216a5a83A0a, whose bytecode disassembly confirms its sole transferFrom (0x23b872dd at PC=0x0588) hardcodes from=CALLER and to=ADDRESS, blocking any third-party allowance pull. setSwapMgr/pause enforce onlyOwner, and direct swapMgr calls revert. 0x0100000000000000000000000000000000000000 ($34.4M) is Avalanche system/burn address; AlgebraPool 0x41100C6D ($319K) and Pair 0x65f83CCa ($77.7K) were already audited.",
   "verdict": "안전"
 }

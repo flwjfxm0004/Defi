@@ -1,0 +1,11 @@
+{
+  "audit_block": 60892247,
+  "chain": "base",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": "0",
+  "reason": "Verified on pinned base@60892247 local fork. Same DynaVault cluster audited in base-209: TARGET 0x67b93f6676bd1911c5FAe7Ffa90fFf5f35E14dCd enforces governance/manager checks on setDepositLimits, setRouterRegistry, and feeTransfer, and underlying StableYieldVault 0x0FF79b6D enforces onlyOwner on harvestFees. Direct bytecode similarity against incident 187 seeds is 0.0000; contract was retained only due to outbound library selector PUSH4 0x8129fc1c.",
+  "slug": "modeb-clone-base-187-4d5cab5883d3-39f36eee1a32",
+  "verdict": "안전"
+}

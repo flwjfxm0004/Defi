@@ -1,15 +1,15 @@
 {
-  "audit_block": 159782875,
+  "audit_block": 159882315,
   "chain": "optimism",
   "file_sha256": {
-    "result.json": "18da5cd94e705c3ad107d0f5141e818a24a6af7681c500dadfb3992afea642f4",
-    "verdicts/verdict_1.json": "3359dd065e4e8b18b44d23b64e931cf20a8b7ee2a17fb0913cbef594c4842e50"
+    "result.json": "5a7a61bf235f0d07987ae41eeb1f86f0fc65d5ed56265170eb25ec3a8f200f23",
+    "verdicts/verdict_1.json": "37bec3ccfbbb9fcc5b554c2115840565613ec17ba50aec8cb3595720b8f86c6b"
   },
   "net_krw": 0,
   "net_krw_exact": "0",
   "net_usd": 0.0,
   "schema_version": 5,
-  "sealed_at": 1795164741,
+  "sealed_at": 1795363425,
   "slug": "modeb-clone-optimism-056-86e06e33739f-4e26b6b474c7",
   "verdict": "안전"
 }

@@ -1,0 +1,6 @@
+{
+  "audit_block": 135032934,
+  "candidate_id": 1,
+  "notes": "Verified on bsc@135032934 local fork: TARGET 0x02Ca1cc2... (EIP-7702 TokenPocketSimple7702Account holding $11.3K USDT) enforces _requireForExecute() (self or EntryPoint 0x4337084D...) and ECDSA.recover == address(this); Staking 0xa479Bdcd... ($616.90 USDT, ATM/USDT pair $2.28M) has 0 live unburned expired rewards for burnExpiredReward() and sync() ($617 USDT = 0.027% of pool) cannot overcome ATMToken's 5% buy + 5-30% sell tax; Token ($159.5K stranded BNB), ERC20Custody ($39.7K), EntryPoint ($4.0K), APower ($429) all strictly access-controlled. None contain modeb-ethereum-184 DaiDripsHub uint128->int128 cast bug.",
+  "verdict": "안전"
+}

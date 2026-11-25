@@ -1,0 +1,6 @@
+{
+  "audit_block": 159860617,
+  "candidate_id": 1,
+  "notes": "Audited all funded vaults >= $100 in optimism@159860617 cluster (UniswapV3Pool $34.5K/$18.5K, Velodrome Pool $8.7K, UMA OptimisticOracle $2.57K, ACryptoS UniswapV3 Vault 0x5e09cD62... $2.14K, Lido wstETH $1.88K, TetherTokenV2 $1.73K, Velodrome v1 Pair $702, Kyber MetaAggregationRouterV2 $315). Seed 0xd68b055f is Fake Wrapped Matic (pre-Patch-4 ERC20 match). ACryptoS vault 0x5e09cD62... (beacon impl 0xD1981327...) has paused() == true with deposits disabled (deposit, depositAll, depositMulti revert with 'deposits disabled'), admin controls guarded by !strategist/!governance/active-proxy/Initializable, balanceStaked() == 0, and permissionless maintenance calls preserve vault asset conservation. No exploitable path found.",
+  "verdict": "안전"
+}

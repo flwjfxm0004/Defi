@@ -1,0 +1,10 @@
+{
+  "audit_block": 135116899,
+  "chain": "bsc",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-bsc-287-1ee09a4c6002-1ee09a4c6002",
+  "verdict": "안전"
+}

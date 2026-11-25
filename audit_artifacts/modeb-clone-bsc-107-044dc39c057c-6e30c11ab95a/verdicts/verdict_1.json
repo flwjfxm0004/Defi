@@ -1,6 +1,6 @@
 {
-  "audit_block": 134687579,
+  "audit_block": 135110049,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=10355999075.45 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on pinned bsc@135110049 local fork (test_candidate_1 passed, 0 conservation gains): Cluster matches the same BSC contracts already audited (MerchantTrade 0xcD678A28->0xe7c1322a $2,225.59, AIFT 0xB3e80863 $3,377.60, Point 0x82692312 $466.57, plus minor sub-$100 vaults GnosisSafeProxy 0x6FF5A4e3 $56.08, CapitalVault 0xcf28e744 $36.54, etc.). Zero EIP-7702 BatchExecutor/BatchCall (0xf38f59d7/0x34fcd5be) selectors or delegation-chain vulnerabilities exist; MerchantTrade is initialized (OZ v5 slot==1) with renounced owner and withdrawWallet gating, AIFT has renounced owner (0xdead) and no USDT withdraw, Point enforces MINTER_ROLE, and GnosisSafeProxy rejects non-owner ZERO_STATE_CALLER.",
   "verdict": "안전"
 }

@@ -1,12 +1,24 @@
 {
-  "audit_block": 26449887,
+  "audit_block": 26483881,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 57559.34,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=57559.34 similarity=0.0000 vuln_preserved=None",
-  "similarity": 0.0,
+  "net_usd": "0",
+  "reason": "RPC trust-closure failure on ethereum@26483881: Cannot operate on a closed database.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "remediation_steps": [
+    "source_3tier_tried",
+    "rpc_failover_tried",
+    "seed_expansion_tried",
+    "bytecode_cfg_tried",
+    "exit_liquidity_checked"
+  ],
   "slug": "modeb-ethereum-281-f490559b8ef5",
-  "verdict": "안전"
+  "verdict": "미검증 차단"
 }

@@ -1,0 +1,10 @@
+{
+  "audit_block": 26472039,
+  "chain": "ethereum",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
+  "net_krw": 0,
+  "net_usd": 0.0,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "slug": "modeb-clone-ethereum-226-a331fd340d24-0000318f6a56",
+  "verdict": "안전"
+}

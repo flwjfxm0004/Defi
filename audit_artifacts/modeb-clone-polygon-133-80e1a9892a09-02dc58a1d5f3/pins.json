@@ -1,0 +1,15 @@
+{
+  "audit_block": 97774789,
+  "chain": "polygon",
+  "file_sha256": {
+    "result.json": "974d97f54873b6d6cda0167f75657f1d98e08169776f039465cad6fee1450379",
+    "verdicts/verdict_1.json": "43468cc90ae92c977ef71566855012979e78087c32ae504e746fae50924acd33"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795367717,
+  "slug": "modeb-clone-polygon-133-80e1a9892a09-02dc58a1d5f3",
+  "verdict": "안전"
+}

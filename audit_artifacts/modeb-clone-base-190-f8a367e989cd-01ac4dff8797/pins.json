@@ -1,0 +1,15 @@
+{
+  "audit_block": 60870178,
+  "chain": "base",
+  "file_sha256": {
+    "result.json": "6c8191ccf3ddc0bb21e8fbb80eff828140970dd1ab963bd11b75ae3e93969613",
+    "verdicts/verdict_1.json": "4887b399dc9ac0052a2ffcdd6bdef5221039b05517a708166d355424ed5120d2"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795364417,
+  "slug": "modeb-clone-base-190-f8a367e989cd-01ac4dff8797",
+  "verdict": "안전"
+}

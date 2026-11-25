@@ -1,12 +1,11 @@
 {
-  "audit_block": 26455164,
+  "audit_block": 26468829,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 480577.58,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=480577.58 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on ethereum@26468829 local fork: TARGET YieldBasis LiquidityGauge (0x30ba8b27...; $2.3K) rejects unbacked withdraw/redeem via ERC4626 owner/balance checks; AsyncRedeemer BeaconProxy (0x1303c26c...; $37.5K USDC) restricts finalizeRequests to onlyMechanic and claimAssets to ERC721 ownerOf(requestId) and rejects re-initialization; TokenVault (0xB74749b2...; $75.2K) restricts transferFrom/executeForcedReset to onlyLendingMarketController; EmptyProxy (0x9abd0b88...; $44.7K) and TBTC (0x18084fbA...; $252) are strictly access-controlled. None contain modeb-bsc-053 Sareon checkranks() missing cpool update.",
   "slug": "modeb-clone-ethereum-053-135606775015-014e6f006869",
   "verdict": "안전"
 }

@@ -1,6 +1,6 @@
 {
-  "audit_block": 525626161,
+  "audit_block": 526526550,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=94078.20 similarity=0.0703 vuln_preserved=None",
+  "notes": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
   "verdict": "안전"
 }

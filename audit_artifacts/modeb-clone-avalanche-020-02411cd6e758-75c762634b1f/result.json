@@ -1,12 +1,10 @@
 {
-  "audit_block": 100787032,
+  "audit_block": 101089326,
   "chain": "avalanche",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
   "net_krw": 0,
   "net_usd": 0.0,
-  "realizable_usd": 261279.97,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=261279.97 similarity=0.1120 vuln_preserved=None",
-  "similarity": 0.112,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
   "slug": "modeb-clone-avalanche-020-02411cd6e758-75c762634b1f",
   "verdict": "안전"
 }

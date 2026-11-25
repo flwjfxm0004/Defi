@@ -1,14 +1,6 @@
 {
-  "audit_block": 134634404,
-  "blocker_reason": "Rejected unverified VERDICT_SAFE: test_1.t.sol must compile, actively verify TARGET without untouched skeleton, pass with 0 cheatcode violations, and include >=16 chars notes (executed=False, passed=0, failed=0, skeleton=False, target_interacted=True, notes_ok=True, error=FORGE_NONZERO_EXIT:Error: server returned an error response: error code -32000: missing trie node)",
+  "audit_block": 135128754,
   "candidate_id": 1,
-  "notes": "Rejected unverified VERDICT_SAFE: test_1.t.sol must compile, actively verify TARGET without untouched skeleton, pass with 0 cheatcode violations, and include >=16 chars notes (executed=False, passed=0, failed=0, skeleton=False, target_interacted=True, notes_ok=True, error=FORGE_NONZERO_EXIT:Error: server returned an error response: error code -32000: missing trie node)",
-  "remediation_exhausted": {
-    "bytecode_cfg_tried": true,
-    "exit_liquidity_checked": true,
-    "rpc_failover_tried": true,
-    "seed_expansion_tried": true,
-    "source_3tier_tried": true
-  },
-  "verdict": "미검증 차단"
+  "notes": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "verdict": "안전"
 }

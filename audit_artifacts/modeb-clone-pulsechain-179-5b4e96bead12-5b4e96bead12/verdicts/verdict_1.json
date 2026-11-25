@@ -1,0 +1,6 @@
+{
+  "audit_block": 28121323,
+  "candidate_id": 1,
+  "notes": "PulseChain Ethereum-state fork of PyroWETH10 incident (modeb-ethereum-179-5b4e96bead12). On PulseChain block 28121323, PyroWETH10 wrapper (0x5b4e9699...) holds 0.00 PLS and 0.00 WPLS, and underlying pWETH10 (0x4f5704...) holds only 56,176 PLS (~$0.25 USD at ~$0.0000045/PLS), while all forked Ethereum tokens (pWETH 0xc02a..., pUSDC 0xa0b8..., pDAI 0x6b17...) have negligible/zero real exit liquidity in this closure (real_usd=$0.00, verified_exit_pools=0). Strictly below $100 extractable profit floor; verified zero-state reverts on PulseChain fork@28121323.",
+  "verdict": "안전"
+}

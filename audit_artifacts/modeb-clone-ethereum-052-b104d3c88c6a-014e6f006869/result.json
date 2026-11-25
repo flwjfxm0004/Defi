@@ -1,12 +1,11 @@
 {
-  "audit_block": 26455064,
+  "audit_block": 26468172,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 306769.16,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=306769.16 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on ethereum@26468172 local fork: TARGET LightNodeProxy (0x00071196...; $0 custody) rejects unauthorized initialize/upgradeTo; funded TokenVault (0xB74749b2...; Secured Finance) restricts transferFrom/removeDepositAmount/executeForcedReset to onlyLendingMarketController; L1ScrollMessenger (0x6774Bcbd...) and SPX6900 (0xE0f63A42...) are unrelated to modeb-base-052 L1BlockOracleUpdater.receiveMessage() short-circuit bug; AdminUpgradeabilityProxy (0x764C64b2...) rejects unauthorized upgrades. No unprivileged extraction path exists.",
   "slug": "modeb-clone-ethereum-052-b104d3c88c6a-014e6f006869",
   "verdict": "안전"
 }

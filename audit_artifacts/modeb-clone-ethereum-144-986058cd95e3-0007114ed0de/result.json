@@ -1,12 +1,11 @@
 {
-  "audit_block": 26461917,
+  "audit_block": 26471245,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 39346507.76,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=39346507.76 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified sources and local fork invariants at ethereum@26471245: (1) TARGET 0x34CfAC646f301356fAa8B21e94227e3583Fe3F5F ($16.31 ETH) is the canonical GnosisSafe v1.1.1 singleton (locked threshold=1, caller not owner, execTransaction reverts). (2) The sole >$1K vault 0xa6e8772af29b29B9202a073f8E36f447689BEef6 ($2,442.05 USDC/wstETH) is a canonical GnosisSafeProxy delegating to GnosisSafe v1.3.0 (0xd9Db270c...) with threshold>=1, caller not owner, and both execTransaction/setup protected. (3) Notional v1 Portfolios proxy (0x0A472111...) holds $0.00; zero ATM Token recycle()/burnExpiredReward() pair-sync surface exists.",
   "slug": "modeb-clone-ethereum-144-986058cd95e3-0007114ed0de",
   "verdict": "안전"
 }

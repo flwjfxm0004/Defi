@@ -1,15 +1,15 @@
 {
-  "audit_block": 525881328,
+  "audit_block": 526516010,
   "chain": "arbitrum",
   "file_sha256": {
-    "result.json": "5e7fbd03d467a52cf03b149372dde66b606e04c819da38bf60b9474143dedd4d",
-    "verdicts/verdict_1.json": "4b0e7bb0d2f7596126d129b77c11aa30c21d5ce903f7dae3eef20026d93fccb2"
+    "result.json": "dbd2f328e75aedcc60948b07ba58929c0fa7c1076bd25f213d8b2f91f1975326",
+    "verdicts/verdict_1.json": "7f992c4afe1e1a43c0da73f2a46e66ec875ee8e974ae0973cb644335ab9500b4"
   },
   "net_krw": 0,
   "net_krw_exact": "0",
   "net_usd": 0.0,
   "schema_version": 5,
-  "sealed_at": 1795165214,
+  "sealed_at": 1795350778,
   "slug": "modeb-clone-arbitrum-060-f7faa3e358fb-1630f008bbbc",
   "verdict": "안전"
 }

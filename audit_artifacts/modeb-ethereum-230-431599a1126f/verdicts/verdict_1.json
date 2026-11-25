@@ -1,6 +1,14 @@
 {
-  "audit_block": 26453944,
+  "audit_block": 26484329,
+  "blocker_reason": "RPC trust-closure failure on ethereum@26484329: Cannot operate on a closed database.",
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=276271.25 similarity=0.0000 vuln_preserved=None",
-  "verdict": "안전"
+  "notes": "RPC trust-closure failure on ethereum@26484329: Cannot operate on a closed database.",
+  "remediation_exhausted": {
+    "bytecode_cfg_tried": true,
+    "exit_liquidity_checked": true,
+    "rpc_failover_tried": true,
+    "seed_expansion_tried": true,
+    "source_3tier_tried": true
+  },
+  "verdict": "미검증 차단"
 }

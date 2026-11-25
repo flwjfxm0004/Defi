@@ -1,12 +1,11 @@
 {
-  "audit_block": 525877681,
+  "audit_block": 526472129,
   "chain": "arbitrum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 91387.4,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91387.40 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "False-positive bytecode match from BSC Sareon staking checkranks()/cpool incident (modeb-bsc-053-135606775015); no Sareon referral staking contract exists in this Arbitrum closure. Audited both funded vaults >=$100 from verified sources: GovernanceTreasury (0x1b94Ca0d..., $455.35) enforces strict msg.sender==owner on claim() and 2-step ownership transfer; Chronos Pair (0x4F7ecB89..., $742.12) enforces reentrancy lock and post-fee K curve invariant on swap(). Verified zero-state reverts on Arbitrum fork@526472129.",
   "slug": "modeb-clone-arbitrum-053-135606775015-1630f008bbbc",
   "verdict": "안전"
 }

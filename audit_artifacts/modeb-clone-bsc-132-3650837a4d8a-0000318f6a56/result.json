@@ -1,12 +1,11 @@
 {
-  "audit_block": 134712632,
+  "audit_block": 135031378,
   "chain": "bsc",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 506438.49,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=506438.49 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on bsc@135031378 local fork: TARGET (0xADD14A54...) holds $0 and rejects unbacked transfer; $159.4K Token (0x2b9A6623...) holds stranded BNB that swapAndLiquify never spends (strictly uses address(this).balance - initialBalance) with zero withdraw/transfer BNB paths and owner-gated admin functions; $39.7K ERC20Custody (0x0Bad40D9...) enforces WITHDRAWER_ROLE on withdraw/withdrawAndCall/withdrawAndRevert and rejects re-initialization; $2.2K MerchantTrade (0xcD678A28...) enforces onlyWithdrawWallet on emergencyWithdraw/emergencyWithdrawNative and rejects re-initialization; $429 APower and $106 TMM enforce onlyOwner/onlyVault. None expose modeb-ethereum-132 MureDistribution.distribute() ERC-1271 spoof bug.",
   "slug": "modeb-clone-bsc-132-3650837a4d8a-0000318f6a56",
   "verdict": "안전"
 }

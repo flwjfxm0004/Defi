@@ -1,6 +1,6 @@
 {
-  "audit_block": 134702574,
+  "audit_block": 135039947,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=214770.48 similarity=0.6500 vuln_preserved=None",
+  "notes": "False-positive bytecode match from Verus-Ethereum bridge (modeb-ethereum-128-715185cd7f63, checkCCEValues/submitImports flaw); no BSC closure contract implements Verus bridge import verification. Audited full verified sources of all new funded closure contracts: InputSettlerEscrowLIFI (0x00fC00ed..., $3.27K) enforces strict msg.value/Permit2/ERC-3009 balance-delta checks, orderStatus CEI locking, signed oracle fill verification, and 7d timelocked onlyOwner GovernanceFee; MerchantTrade UUPS proxy (0xcD678A28... -> 0xe7c1322a..., $2.22K) disables impl initializers and restricts withdrawals to onlyWithdrawWallet and upgrades to onlyOwner; Point/MCoin (0x82692312..., $466) restricts mint to MINTER_ROLE. Remaining funded contracts are canonical Binance-Peg BEP20s/CAKE/PancakePair and previously verified Token/ERC20Custody. Verified zero-state reverts on BSC fork@135039947.",
   "verdict": "안전"
 }

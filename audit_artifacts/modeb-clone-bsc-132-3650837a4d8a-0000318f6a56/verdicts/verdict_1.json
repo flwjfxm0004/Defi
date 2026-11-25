@@ -1,6 +1,6 @@
 {
-  "audit_block": 134712632,
+  "audit_block": 135031378,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=506438.49 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified on bsc@135031378 local fork: TARGET (0xADD14A54...) holds $0 and rejects unbacked transfer; $159.4K Token (0x2b9A6623...) holds stranded BNB that swapAndLiquify never spends (strictly uses address(this).balance - initialBalance) with zero withdraw/transfer BNB paths and owner-gated admin functions; $39.7K ERC20Custody (0x0Bad40D9...) enforces WITHDRAWER_ROLE on withdraw/withdrawAndCall/withdrawAndRevert and rejects re-initialization; $2.2K MerchantTrade (0xcD678A28...) enforces onlyWithdrawWallet on emergencyWithdraw/emergencyWithdrawNative and rejects re-initialization; $429 APower and $106 TMM enforce onlyOwner/onlyVault. None expose modeb-ethereum-132 MureDistribution.distribute() ERC-1271 spoof bug.",
   "verdict": "안전"
 }

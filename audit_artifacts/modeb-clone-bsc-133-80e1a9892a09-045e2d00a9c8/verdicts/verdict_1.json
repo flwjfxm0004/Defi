@@ -1,6 +1,6 @@
 {
-  "audit_block": 134713694,
+  "audit_block": 135048020,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=495141.89 similarity=0.6500 vuln_preserved=None",
+  "notes": "False-positive bytecode similarity match from Arbitrum Fractal Protocol vault rounding incident (modeb-arbitrum-133-80e1a9892a09); no Fractal vault exists in this BSC closure. Audited new funded spender 0x2c34A2Fb1d0b4f55de51E1d0bDEfaDDce6b7cDD6 ($910.93 live allowance) from Sourcify verified TokenApprove.sol — confirmed initialized (slot0=1, owner=0xace2..., tokenApproveProxy=0xd99c...) and strictly restricts claimTokens to tokenApproveProxy and setApproveProxy to onlyOwner. All other funded contracts (InputSettlerEscrowLIFI $162.6K, ZetaChain ERC20Custody $39.7K, LiFiDiamond $23.4K, TokenPocketSimple7702Account $1.3K) already verified safe; zero-state reverts confirmed on BSC fork@135048020.",
   "verdict": "안전"
 }

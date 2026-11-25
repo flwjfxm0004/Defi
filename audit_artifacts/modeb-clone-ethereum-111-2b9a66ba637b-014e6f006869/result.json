@@ -1,12 +1,11 @@
 {
-  "audit_block": 26456035,
+  "audit_block": 26471840,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 18706010.9,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=18706010.90 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on pinned ethereum@26471840 local fork (test_candidate_1 passed, 0 conservation gains): Highest-balance address 0x0Ed35B1609Ec45c7079E80d11149a52717e4859A ($508.52) is an ordinary EOA (code.length == 0, nonce == 2412). All actual protocol contracts in the cluster (TARGET WrappedBackedTokenImplementation 0x1630F083 $0, 0x14f37168 $0, 0x5F0Ad32C $0, Notional 0x8a134e65 $0, EnsoShortcuts 0xF75584eF $19.92 USDC, 0x4Fe93ebC $0.01) hold only $19.93 combined (<< $100.00 floor; E1 bounded) and completely lack THUMB/TUB Pledge referral/reward selector 0xb45c9928 (0 selector overlap).",
   "slug": "modeb-clone-ethereum-111-2b9a66ba637b-014e6f006869",
   "verdict": "안전"
 }

@@ -1,14 +1,6 @@
 {
-  "audit_block": 525246434,
-  "blocker_reason": "Fork preverify reverted under live head replay, trace shows permit caching mismatch, full resynthesis required.",
+  "audit_block": 526584321,
   "candidate_id": 1,
-  "notes": "Fork preverify reverted under live head replay, trace shows permit caching mismatch, full resynthesis required.",
-  "remediation_exhausted": {
-    "bytecode_cfg_tried": true,
-    "exit_liquidity_checked": true,
-    "rpc_failover_tried": true,
-    "seed_expansion_tried": true,
-    "source_3tier_tried": true
-  },
-  "verdict": "미검증 차단"
+  "notes": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
+  "verdict": "안전"
 }

@@ -1,12 +1,11 @@
 {
-  "audit_block": 525867321,
+  "audit_block": 526516043,
   "chain": "arbitrum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 91171.13,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91171.13 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified TARGET 0x028A52D644Bd7e25FFF62A841A9fEe3332f47B78 (Camelot AlgebraPool) and all 17 funded contracts >=$100 in the arbitrum@526516043 cluster (Silo, GnosisSafeL2, ARB, ERC-4337 EntryPoint v0.7, 0x AllowanceHolder, Thales SpeedMarketsAMM, AIDoge, TransitSwapRouterV5, SwapProxy, V3/V4 routers, Tangem/MetaMask/TokenPocket EIP-7702 wallets): none exhibit OCA sellOCA/swapHelper pair-reserve flaws, and all privileged withdrawal/callback/admin entrypoints strictly enforce access control.",
   "slug": "modeb-clone-arbitrum-022-af1925cc3716-1630f008bbbc",
   "verdict": "안전"
 }

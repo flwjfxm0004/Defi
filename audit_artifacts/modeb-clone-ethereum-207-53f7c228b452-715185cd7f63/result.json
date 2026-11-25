@@ -1,12 +1,10 @@
 {
-  "audit_block": 26449350,
+  "audit_block": 26472067,
   "chain": "ethereum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
   "net_krw": 0,
   "net_usd": 0.0,
-  "realizable_usd": 180694.12,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=180694.12 similarity=0.0729 vuln_preserved=None",
-  "similarity": 0.0729,
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
   "slug": "modeb-clone-ethereum-207-53f7c228b452-715185cd7f63",
   "verdict": "안전"
 }

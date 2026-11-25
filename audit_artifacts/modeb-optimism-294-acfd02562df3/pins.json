@@ -1,15 +1,15 @@
 {
-  "audit_block": 159777185,
+  "audit_block": 159958248,
   "chain": "optimism",
   "file_sha256": {
-    "result.json": "566acd7cbb5200f58e9a5773297fc0319aae22b3239befedb1e2e292d274556a",
-    "verdicts/verdict_1.json": "dc31db6579b68e6387c4b9aad5f36f33c76ea1a5dab70339b32e28d1a78455b0"
+    "result.json": "e48118a8fe884bb9ab63101085b33abe0e5239ff417fad7d69c8280dfcc6f6c2",
+    "verdicts/verdict_1.json": "98f140bc2ce77efe422a822a9d9abc46d6a4a4ef20584e0071737fd665a1f45a"
   },
   "net_krw": 0,
   "net_krw_exact": "0",
-  "net_usd": 0.0,
+  "net_usd": "0",
   "schema_version": 5,
-  "sealed_at": 1795153252,
+  "sealed_at": 1795515670,
   "slug": "modeb-optimism-294-acfd02562df3",
-  "verdict": "안전"
+  "verdict": "미검증 차단"
 }

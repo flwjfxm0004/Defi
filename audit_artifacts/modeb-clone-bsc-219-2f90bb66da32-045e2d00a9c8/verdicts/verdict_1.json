@@ -1,0 +1,6 @@
+{
+  "audit_block": 135011706,
+  "candidate_id": 1,
+  "notes": "Cross-chain similarity match from Base Moonwell mMAMO Compound v2 exchange-rate donation incident (modeb-base-219-2f90bb66da32). All Compound v2 fork seeds in BSC closure (GErc20Delegator 0x045e2d..., GErc20Delegate 0x2f6420..., Venus 0x86e06e..., 0xcfb6b8...) hold $0.00 extractable liquidity at block 135011706. Audited new funded vault 0x4e8E101924eDE233C13e2D8622DC8aED2872d505 ($78.68K, impl 0xC7B70293...) — confirmed canonical Across Protocol Universal_SpokePool enforcing Helios L1 storage proofs, Merkle root verification, and 24h timelocked onlyOwner multisig fallback. All other funded contracts (MasterChef, BEP20Ethereum/CAKE/XRP, ERC20Custody, LiFiDiamond, EntryPoint, InputSettlerEscrowLIFI) verified safe with zero unauthorized extraction on BSC fork@135011706.",
+  "verdict": "안전"
+}

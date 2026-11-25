@@ -1,0 +1,6 @@
+{
+  "audit_block": 101094924,
+  "candidate_id": 1,
+  "notes": "Early Exit: Matched Mode B clone proxy live implementation already patched below containment threshold",
+  "verdict": "안전"
+}

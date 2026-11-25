@@ -1,12 +1,11 @@
 {
-  "audit_block": 134673365,
+  "audit_block": 135116176,
   "chain": "bsc",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 10359428674.74,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=10359428674.74 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on pinned bsc@135116176 local fork. TARGET 0x0782b6d8c4551B9760e74c0545a9bCD90bdc41E5 (Lista USD ERC-20 proxy, admin ProxyAdmin->TimeLock) reverts on initialize, rely, mint, and setSupplyCap for unprivileged callers and has no token-recovery function for stray balances. Raw implementation 0xF5bd9b192092517D60E90c9AF17b69b134c4d7f8 holds $0 and contains zero DELEGATECALL/SELFDESTRUCT/upgrade hooks, so proxy wards and storage remain completely isolated.",
   "slug": "modeb-clone-bsc-090-f28273d7d3b9-0782b6dc41e5",
   "verdict": "안전"
 }

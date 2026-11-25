@@ -1,12 +1,11 @@
 {
-  "audit_block": 100863019,
+  "audit_block": 101090639,
   "chain": "avalanche",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 91322.09,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91322.09 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on pinned avalanche@101090639 local fork. TARGET 0xB74749b2213916b1dA3b869E41c7c57f1db69393 (Secured Finance TokenVault, BUSL-1.1) strictly reverts on registerCurrency (onlyOwner), addDepositAmount/transferFrom (onlyLendingMarketController), withdraw (collateral check), and pause (onlyOperator). Match against BSC BNBDeposit.sol was a compiler-boilerplate locus FP (shared_nonbp=0, raw=6.4%, ssg=9.8%).",
   "slug": "modeb-clone-avalanche-074-e71547d29a61-0fcefa665d7f",
   "verdict": "안전"
 }

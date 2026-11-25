@@ -48,3 +48,13 @@ audit_artifacts/_live_progress_*.json
 audit_artifacts/*.db
 audit_artifacts/*/forge/foundry.toml
 wsl_del.log
+
+# TropiCore-Omega (초지능) & 작품 reproducible build artifacts / checkpoints / scratch outputs
+초지능/tropicore_omega/target/
+초지능/tropicore_omega/out/
+작품/target/
+
+# Additional push-hygiene ignores (prevents untracked tmp profiler dirs & forge scratch from leaking into temp/푸시.bat)
+audit_artifacts/_tmp_*/
+audit_artifacts/*/forge_output.json
+audit_artifacts/*/forge/_isolated_env.json

@@ -1,0 +1,15 @@
+{
+  "audit_block": 64572170,
+  "chain": "unichain",
+  "file_sha256": {
+    "result.json": "341e7ebe1ed347ce1d0a29e6172f4c2a9450a2ee2c53cd398f403ebcb6b3a24c",
+    "verdicts/verdict_1.json": "2153ce6666dbdb828e563f18aa1d1eeaff09dafdf91f7815d2789aaaa2b60662"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795367174,
+  "slug": "modeb-clone-unichain-226-a331fd340d24-0000318f6a56",
+  "verdict": "안전"
+}

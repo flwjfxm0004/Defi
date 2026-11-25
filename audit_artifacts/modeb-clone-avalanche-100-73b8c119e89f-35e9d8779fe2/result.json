@@ -1,18 +1,10 @@
 {
-  "audit_block": 100761786,
+  "audit_block": 101094111,
   "chain": "avalanche",
-  "early_exit": "NONE",
-  "needs_agent": false,
+  "early_exit": "E3_CLONE_NO_LIVE_SIM_MATCH",
   "net_krw": 0,
   "net_usd": 0.0,
-  "reason": "forge_output executed false with bytecode cheatcode violation for helper harness address coupling, multi-leg chained probe performed under two-argument prank produced no settled gain evidence, blocked from safe determination pending canonical restore and re-verify.",
-  "remediation_exhausted": {
-    "bytecode_cfg_tried": true,
-    "exit_liquidity_checked": true,
-    "rpc_failover_tried": true,
-    "seed_expansion_tried": true,
-    "source_3tier_tried": true
-  },
+  "reason": "Early Exit: Matched Mode B clone live seeds below multi-tier similarity threshold",
   "slug": "modeb-clone-avalanche-100-73b8c119e89f-35e9d8779fe2",
-  "verdict": "미검증 차단"
+  "verdict": "안전"
 }

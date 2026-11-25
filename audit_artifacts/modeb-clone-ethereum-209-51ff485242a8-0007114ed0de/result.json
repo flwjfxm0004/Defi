@@ -1,0 +1,11 @@
+{
+  "audit_block": 26471165,
+  "chain": "ethereum",
+  "early_exit": "NONE",
+  "needs_agent": false,
+  "net_krw": 0,
+  "net_usd": "0",
+  "reason": "Verified full sources and local fork invariants across all >$1K vaults in ethereum@26471165 ($20.1M cluster): Cluster was captured only via legacy TransparentUpgradeableProxy stub in modeb-arbitrum-209 seed pool, with zero Atomic Green 0xa806010f signature-replay surface. (1) TARGET 0xd8655672... ($33.8K) is a MetaMask EIP-7702 account delegating to EIP7702StatelessDeleGator (0x63c0c19a...); execute/redeemDelegations/withdrawDeposit enforce onlyEntryPointOrSelf. (2) 0x6774Bcbd... ($16.24M ETH) is Scroll L1ScrollMessenger (already initialized; relayMessageWithProof enforces finalized L1 Merkle proof). (3) 0xf1AF3b23... ($3.43M USDC) is Scroll L1USDCGateway (already initialized; finalizeWithdrawERC20 enforces onlyCallByCounterpart, burnAllLockedUSDC enforces circleCaller). (4) 0x8FA3b457... ($365.4K ETH) is canonical GnosisSafeProxy and 0x3E5c6364... ($30.0K USDC) is GnosisSafeL2 singleton (threshold=1, 0 owners). (5) 0x720Ff46C... ($1.6K ETH) is Chainlink ScrollValidator (validate enforces checkAccess, setGasLimit enforces onlyOwner).",
+  "slug": "modeb-clone-ethereum-209-51ff485242a8-0007114ed0de",
+  "verdict": "안전"
+}

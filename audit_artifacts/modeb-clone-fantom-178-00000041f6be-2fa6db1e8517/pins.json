@@ -1,0 +1,15 @@
+{
+  "audit_block": 124165223,
+  "chain": "fantom",
+  "file_sha256": {
+    "result.json": "d7419ca28b20b7c6c399fbef25a555f7d24be2380ef548146a69de8e5ce9d8a6",
+    "verdicts/verdict_1.json": "a1bd4f50126cd121c82227824d1d9751deeb893da3f68891ec4656a34bff255b"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795371357,
+  "slug": "modeb-clone-fantom-178-00000041f6be-2fa6db1e8517",
+  "verdict": "안전"
+}

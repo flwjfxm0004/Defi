@@ -1,12 +1,11 @@
 {
-  "audit_block": 28112819,
+  "audit_block": 28120367,
   "chain": "pulsechain",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 0.0,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=0.00 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on pulsechain@28120367 local fork (passed_tests=1, target_called_in_trace=true): TARGET 0x22341fB5D92D3d801144aA5A925F401A91418A05 is an initialized GnosisSafe proxy holding 34.9 gwei PLS ($0.00); all 67 non-WETH9 closure contracts hold ~$0.055 USD total (<$100 threshold) and 0 ERC20 tokens; forked WETH9 (0xC02aaA39...) rejects unbacked withdraw from zero-state caller. None of the targets contain modeb-bsc-149 BOSS userMint() logic.",
   "slug": "modeb-clone-pulsechain-149-876d451735cf-0d697f709af6",
   "verdict": "안전"
 }

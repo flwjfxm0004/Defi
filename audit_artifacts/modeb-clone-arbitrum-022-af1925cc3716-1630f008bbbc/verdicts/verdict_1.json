@@ -1,6 +1,6 @@
 {
-  "audit_block": 525867321,
+  "audit_block": 526516043,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91171.13 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified TARGET 0x028A52D644Bd7e25FFF62A841A9fEe3332f47B78 (Camelot AlgebraPool) and all 17 funded contracts >=$100 in the arbitrum@526516043 cluster (Silo, GnosisSafeL2, ARB, ERC-4337 EntryPoint v0.7, 0x AllowanceHolder, Thales SpeedMarketsAMM, AIDoge, TransitSwapRouterV5, SwapProxy, V3/V4 routers, Tangem/MetaMask/TokenPocket EIP-7702 wallets): none exhibit OCA sellOCA/swapHelper pair-reserve flaws, and all privileged withdrawal/callback/admin entrypoints strictly enforce access control.",
   "verdict": "안전"
 }

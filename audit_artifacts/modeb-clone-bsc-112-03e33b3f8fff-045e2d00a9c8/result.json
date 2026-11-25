@@ -1,12 +1,11 @@
 {
-  "audit_block": 134688473,
+  "audit_block": 135035051,
   "chain": "bsc",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 388567.26,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=388567.26 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on bsc@135035051 local fork: TARGET LiFiDiamond (0x1231DEB6...; $28.7K residual aggregator dust) enforces diamond ownership on diamondCut/transferOwnership and uses audited v3 facets with no LeverageLine stETH Curve spot-liquidation vulnerability; Token ($159.4K stranded BNB), ERC20Custody ($39.7K), EntryPoint ($4.0K), TransparentUpgradeableProxy ($3.7K), APower ($429) are all strictly access-controlled. None contain modeb-ethereum-112 LeverageLine 0x55c2a77d zero-slippage liquidation bug.",
   "slug": "modeb-clone-bsc-112-03e33b3f8fff-045e2d00a9c8",
   "verdict": "안전"
 }

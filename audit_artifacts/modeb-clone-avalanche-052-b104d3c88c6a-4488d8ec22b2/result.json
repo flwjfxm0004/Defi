@@ -1,12 +1,11 @@
 {
-  "audit_block": 100858696,
+  "audit_block": 101068828,
   "chain": "avalanche",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 91382.64,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=91382.64 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified full verified sources of the entire Pangolin cluster on avalanche@101068828: Timelock (0xEB5c91bE..., Compound Timelock), StakingRewards (0x88afdaE1..., $269K PNG, Synthetix CEI+nonReentrant+onlyOwner), MiniChefV2 (0x1f806f7C..., $30K PNG, onlyOwner/onlyFunder), FeeCollector (0xAc61FD93..., OZ AccessControl), GnosisSafeProxy (0x66c048d2..., $10.4K PNG, Safe L2 v1.3.0), Png, and PangolinFactory. Unrelated to L1BlockOracleUpdater; all admin/privileged paths strictly revert for ZERO_STATE_CALLER.",
   "slug": "modeb-clone-avalanche-052-b104d3c88c6a-4488d8ec22b2",
   "verdict": "안전"
 }

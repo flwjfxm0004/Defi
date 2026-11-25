@@ -1,12 +1,11 @@
 {
-  "audit_block": 134662212,
+  "audit_block": 135108743,
   "chain": "bsc",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 10408361591.68,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=10408361591.68 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified on pinned bsc@135108743 local fork (test_candidate_1 passed, 0 conservation gains): TARGET 0xcD678A28609a3B141c40bd879E7624dF139ffc83 (ERC1967Proxy -> MerchantTrade 0xe7c1322a, $2,225.50 USDT) is already initialized (OZ v5 ERC-7201 Initializable slot == 1), owner() == address(0) (renounced), withdrawWallet == 0xdbbc3db1..., and completely lacks L1BlockOracleUpdater receiveMessage() logic (0/14 selector overlap; prior score came solely from acceptGovernance() boilerplate locus). Connected AIFT token (0xB3e80863..., $3,377.46 USDT) has renounced owner (0xdead), no USDT withdraw function (surplus swapAndLiquify USDT permanently locked), STAKING-gated recycle(), and $0.22 PancakePair; Point (0x82692312..., $466.55 USDT) is standard AccessControl ERC20Burnable with MINTER_ROLE and no USDT withdraw.",
   "slug": "modeb-clone-bsc-052-b104d3c88c6a-0782b6dc41e5",
   "verdict": "안전"
 }

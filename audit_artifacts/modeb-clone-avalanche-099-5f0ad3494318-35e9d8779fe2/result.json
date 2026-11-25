@@ -1,18 +1,10 @@
 {
-  "audit_block": 100625346,
+  "audit_block": 101094111,
   "chain": "avalanche",
-  "early_exit": "NONE",
-  "needs_agent": false,
+  "early_exit": "E3_PROXY_ALREADY_PATCHED",
   "net_krw": 0,
   "net_usd": 0.0,
-  "reason": "Fork preverify reverted under live head replay, trace shows permit caching mismatch, full resynthesis required.",
-  "remediation_exhausted": {
-    "bytecode_cfg_tried": true,
-    "exit_liquidity_checked": true,
-    "rpc_failover_tried": true,
-    "seed_expansion_tried": true,
-    "source_3tier_tried": true
-  },
+  "reason": "Early Exit: Matched Mode B clone proxy live implementation already patched below containment threshold",
   "slug": "modeb-clone-avalanche-099-5f0ad3494318-35e9d8779fe2",
-  "verdict": "미검증 차단"
+  "verdict": "안전"
 }

@@ -1,0 +1,15 @@
+{
+  "audit_block": 135116899,
+  "chain": "bsc",
+  "file_sha256": {
+    "result.json": "8c1c1602108c65bf16dea931b395f4467f7152b85931472dcd524cf3515b08f1",
+    "verdicts/verdict_1.json": "36a03177d531909ca7608278423ef3b41083d2da4711f2b5ebf1a168523473de"
+  },
+  "net_krw": 0,
+  "net_krw_exact": "0",
+  "net_usd": 0.0,
+  "schema_version": 5,
+  "sealed_at": 1795367645,
+  "slug": "modeb-clone-bsc-178-00000041f6be-2fa6db1e8517",
+  "verdict": "안전"
+}

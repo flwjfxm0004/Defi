@@ -1,6 +1,6 @@
 {
-  "audit_block": 100958951,
+  "audit_block": 101068100,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=106210.10 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified full Routescan source of AllBlueV2Factory (0x6FEa5651...) and AllBlueV2Pair plus all 12 pairs and paired LayerZero V2 OFT tokens (SHELL/PEARL/sBWPM/sADOL/CLAM/bUSDT/JindoJinju) on avalanche@101068100: createPair is onlyCreator-guarded, fee setters are feeToSetter/onlyOwner-guarded, pair initialize is factory-guarded, swap enforces full 0.30% K-invariant before deducting <=0.15% protocol fee (swapFeeRate>=2), and no paired token has external pair-burn/sync flaws.",
   "verdict": "안전"
 }

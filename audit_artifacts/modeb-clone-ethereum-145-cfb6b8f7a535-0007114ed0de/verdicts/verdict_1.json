@@ -1,6 +1,6 @@
 {
-  "audit_block": 26462052,
+  "audit_block": 26471263,
   "candidate_id": 1,
-  "notes": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=40047094.51 similarity=0.6500 vuln_preserved=None",
+  "notes": "Verified sources and local fork invariants at ethereum@26471263: (1) TARGET 0x22341fB5D92D3d801144aA5A925F401A91418A05 ($1.00 USDC) and the sole >$1K vault 0xa6e8772af29b29B9202a073f8E36f447689BEef6 ($2,442.96 USDC/wstETH) are canonical GnosisSafeProxy multisigs (threshold>=1, caller not owner, execTransaction protected). (2) 0x0A4721117040ABF319b954aBF13F654505C34920 ($0.00) is Notional v1 Portfolios proxy already initialized (owner=TARGET in slot 0x5, initialize() reverts). (3) Zero ApeYieldVault migrateToVotingEscrow(uint256[]) duplicate poolId surface exists (all cluster contracts scored 0.0000 vs incident seed).",
   "verdict": "안전"
 }

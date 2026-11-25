@@ -1,12 +1,11 @@
 {
-  "audit_block": 525889182,
+  "audit_block": 526518560,
   "chain": "arbitrum",
-  "early_exit": "E1_FAST_FILTER_LOW_VALUE_OR_UNPRESERVED",
+  "early_exit": "NONE",
+  "needs_agent": false,
   "net_krw": 0,
-  "net_usd": 0.0,
-  "realizable_usd": 90363.8,
-  "reason": "Fast-filter E1: low realizable or low-similarity unpreserved clone real_usd=90363.80 similarity=0.6500 vuln_preserved=None",
-  "similarity": 0.65,
+  "net_usd": "0",
+  "reason": "Verified TARGET 0x05b759A27362d72F819b68e4270d65BF6a4De3c2 (Tangem EIP-7702 GaslessExecutor EOA) and all 16 funded contracts >=$100 in the arbitrum@526518560 cluster (Silo, GnosisSafeL2, ARB, Thales SpeedMarketsAMM, ParaSwap AugustusFeeVault $4.48K, AIDoge, TransitSwapRouterV5, SwapProxy, AlgebraPool, V3/V4 routers, MetaMask/TokenPocket EIP-7702 wallets): none exhibit TMM external pair-burn reserve manipulation, and exact executeTransaction signature check plus all privileged entrypoints strictly revert.",
   "slug": "modeb-clone-arbitrum-083-1d6f03d66666-1630f008bbbc",
   "verdict": "안전"
 }
