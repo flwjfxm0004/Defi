@@ -95,7 +95,8 @@ QUEUE_LOCK_PATH: Path = AUDIT_ROOT / "_queue.lock"
 
 _CPU_COUNT: int = max(2, int(os.cpu_count() or 8))
 _S4_CHUNK_WORKERS: int = min(6, max(2, _CPU_COUNT // 2))
-_DUCKDB_THREADS: int = min(6, max(2, _CPU_COUNT // 2))
+_DUCKDB_THREADS: int = min(4, max(2, _CPU_COUNT // 3))
+_DUCKDB_SUBPROC_SEM: threading.BoundedSemaphore = threading.BoundedSemaphore(2)
 _SINGLE_SESSION_PROTO_WORKERS: int = min(6, max(3, _CPU_COUNT // 2))
 _FORGE_MAX_CONCURRENT: int = min(4, max(2, _CPU_COUNT // 4))
 _BG_SUBPROC_THREADS: int = max(2, min(4, _CPU_COUNT // max(2, _FORGE_MAX_CONCURRENT)))
@@ -3472,9 +3473,9 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'apollo': ['https://mainnet-rpc.apolloscan.io'],
     'app': ['https://rpc.appchain.xyz/http'],
     'aqua': ['https://c.onical.org'],
-    'arbitrum': ['https://arbitrum.gateway.tenderly.co', 'https://arb-pokt.nodies.app', 'https://arbitrum.drpc.org', 'https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.blockreq.com/v1/rpc/public', 'https://arbitrum-one-rpc.publicnode.com', 'https://arbitrum.publicnode.com', 'https://arbitrum-one.publicnode.com'],
+    'arbitrum': ['https://arbitrum.gateway.tenderly.co', 'https://arb-pokt.nodies.app', 'https://arbitrum.drpc.org', 'https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com', 'https://arbitrum.publicnode.com', 'https://arbitrum-one.publicnode.com'],
     'arbitrumnova': ['https://arbitrum-nova.drpc.org', 'https://arbitrum-nova-rpc.publicnode.com', 'https://nova.arbitrum.io/rpc', 'https://arbitrum-nova.publicnode.com'],
-    'arc': ['https://rpc.quicknode.mainnet.arc.io', 'https://rpc.mainnet.arc.io', 'https://rpc.drpc.mainnet.arc.io', 'https://rpc.beamrpc.com', 'https://arc-rpc.blockreq.com/v1/rpc/public', 'https://arc.drpc.org'],
+    'arc': ['https://rpc.quicknode.mainnet.arc.io', 'https://rpc.mainnet.arc.io', 'https://rpc.drpc.mainnet.arc.io', 'https://rpc.beamrpc.com', 'https://arc.drpc.org'],
     'arcadia': ['https://arcadia.khalani.network'],
     'areumnetwork': ['https://mainnet-rpc.areum.network'],
     'artela': ['https://node-euro.artela.network/rpc'],
@@ -3487,14 +3488,14 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'aura': ['https://jsonrpc.aura.network'],
     'aurora': ['https://aurora.drpc.org', 'https://mainnet.aurora.dev', 'https://1rpc.io/aurora'],
     'autonity': ['https://autonity.rpc.web3cdn.network'],
-    'avalanche': ['https://api.avax.network/ext/bc/C/rpc', 'https://avalanche.drpc.org', 'https://avalanche-c-chain.publicnode.com', 'https://avalanche-c-chain-rpc.publicnode.com', 'https://avalanche-rpc.blockreq.com/v1/rpc/public', 'https://avalanche.publicnode.com'],
+    'avalanche': ['https://api.avax.network/ext/bc/C/rpc', 'https://avalanche.drpc.org', 'https://avalanche-c-chain.publicnode.com', 'https://avalanche-c-chain-rpc.publicnode.com', 'https://avalanche.publicnode.com'],
     'avicoin': ['https://rpc.avicoin.org'],
     'avios': ['https://rpc-os.avicoin.org'],
     'avocado': ['https://rpc.avocado.instadapp.io'],
     'b2hub': ['https://hub-rpc.bsquared.network'],
     'b2mainnet': ['https://rpc.bsquared.network'],
     'bana': ['https://rpc.banascan.com'],
-    'base': ['https://base.gateway.tenderly.co', 'https://mainnet.base.org', 'https://base-pokt.nodies.app', 'https://base.drpc.org', 'https://1rpc.io/base', 'https://base-rpc.blockreq.com/v1/rpc/public', 'https://api.blockvectra.com/v1/base_mainnet/public', 'https://base.daybreak-rpc.network'],
+    'base': ['https://base.gateway.tenderly.co', 'https://mainnet.base.org', 'https://base-pokt.nodies.app', 'https://base.drpc.org', 'https://1rpc.io/base', 'https://api.blockvectra.com/v1/base_mainnet/public', 'https://base.daybreak-rpc.network'],
     'basedai': ['https://mainnet.basedaibridge.com/rpc/'],
     'bchyper': ['https://datahub-asia02.bchscan.io', 'https://mainapi.bchscan.io'],
     'beam': ['https://subnets.avax.network/beam/mainnet/rpc', 'https://build.onbeam.com/rpc'],
@@ -3564,7 +3565,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'crab': ['https://crab-rpc.darwinia.network', 'https://crab-rpc.dcdao.box'],
     'cratd2c': ['https://node1.cratd2csmartchain.io'],
     'creditcoin': ['https://mainnet3.creditcoin.network'],
-    'cronos': ['https://cronos.drpc.org', 'https://evm.cronos.org', 'https://cronos-evm-rpc.publicnode.com', 'https://cronos.publicnode.com', 'https://cronos-rpc.blockreq.com/v1/rpc/public'],
+    'cronos': ['https://cronos.drpc.org', 'https://evm.cronos.org', 'https://cronos-evm-rpc.publicnode.com', 'https://cronos.publicnode.com'],
     'cronoszkevm': ['https://mainnet.zkevm.cronos.org', 'https://cronos-zkevm.drpc.org'],
     'crossfi': ['https://rpc.mainnet.ms'],
     'crymad': ['https://rpc.cmxofficial.com'],
@@ -3627,7 +3628,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'eoraptor': ['https://rpc.eoraptor.org'],
     'esyncnetwork': ['https://rpc.esync.network'],
     'eteria': ['https://mainnet.eteria.io/v1'],
-    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.blockreq.com/v1/rpc/public', 'https://eth.drpc.org', 'https://ethereum-rpc.publicnode.com'],
+    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://mainnet.gateway.tenderly.co', 'https://eth.drpc.org', 'https://ethereum-rpc.publicnode.com'],
     'ethereumclassic': ['https://geth-at.etc-network.info', 'https://etc.etcdesktop.com'],
     'etherlink': ['https://node.mainnet.etherlink.com'],
     'ethiq': ['https://rpc.ethiq.network'],
@@ -3639,7 +3640,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'excelon': ['https://edgewallet1.xlon.org/'],
     'expanse': ['https://node.expanse.tech'],
     'exsat': ['https://evm.exsat.network'],
-    'fantom': ['https://fantom.drpc.org', 'https://rpcapi.fantom.network', 'https://fantom.api.onfinality.io/public'],
+    'fantom': ['https://fantom.drpc.org', 'https://rpcapi.fantom.network', 'https://fantom.api.onfinality.io/public', 'https://1rpc.io/ftm'],
     'farm': ['https://rpc.fmcscan.com'],
     'fibonacci': ['https://node1.fibo-api.asia'],
     'filecoin': ['https://filfox.info/rpc/v1', 'https://filecoin.drpc.org'],
@@ -3872,7 +3873,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'opbnb': ['https://opbnb-rpc.publicnode.com', 'https://opbnb-mainnet-rpc.bnbchain.org', 'https://opbnb-mainnet.nodereal.io/v1/e9a36765eb8a40b9bd12e680a1fd2bc5', 'https://opbnb-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3', 'https://opbnb.drpc.org', 'https://opbnb.publicnode.com'],
     'opengpu': ['https://mainnet-rpc.ogpuscan.io'],
     'openledger': ['https://rpc.openledger.xyz'],
-    'optimism': ['https://optimism.gateway.tenderly.co', 'https://op-pokt.nodies.app', 'https://optimism.drpc.org', 'https://mainnet.optimism.io', 'https://optimism-rpc.publicnode.com', 'https://optimism-rpc.blockreq.com/v1/rpc/public', 'https://optimism.publicnode.com'],
+    'optimism': ['https://optimism.gateway.tenderly.co', 'https://op-pokt.nodies.app', 'https://optimism.drpc.org', 'https://mainnet.optimism.io', 'https://optimism-rpc.publicnode.com', 'https://optimism.publicnode.com'],
     'ordenglobal': ['https://ordenglobal-rpc.com'],
     'orderly': ['https://rpc.orderly.network'],
     'oxfun': ['https://rpc.oxscan.io'],
@@ -3904,7 +3905,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'pmt': ['https://node1.pmtchain.com'],
     'pocrnet': ['https://rpc2.pocrnet.ca-dag.work'],
     'pointpay': ['https://rpc-mainnet.pointpay.io'],
-    'polygon': ['https://polygon.publicnode.com', 'https://polygon.gateway.tenderly.co', 'https://rpc-mainnet.matic.quiknode.pro', 'https://polygon.drpc.org', 'https://polygon-bor-rpc.blockreq.com/v1/rpc/public', 'https://polygon-bor-rpc.publicnode.com'],
+    'polygon': ['https://polygon.publicnode.com', 'https://polygon.gateway.tenderly.co', 'https://rpc-mainnet.matic.quiknode.pro', 'https://polygon.drpc.org', 'https://polygon-bor-rpc.publicnode.com'],
     'polygonsupernetarianee': ['https://rpc.polygonsupernet.public.arianee.net'],
     'polygonzkevm': ['https://zkevm-rpc.com', 'https://polygon-zkevm.drpc.org'],
     'polynomial': ['https://rpc.polynomial.fi'],
@@ -3952,7 +3953,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'rinn': ['https://rpc.ri-nn.io'],
     'rise': ['https://rpc.risechain.com/'],
     'river': ['https://mainnet.rpc.river.build'],
-    'robinhood': ['https://robinhood.daybreak-rpc.network', 'https://robinhood.drpc.org', 'https://robinhood-mainnet-rpc.blockreq.com/v1/rpc/public', 'https://robinhood-rpc.publicnode.com', 'https://api.blockvectra.com/v1/robinhood_mainnet/public'],
+    'robinhood': ['https://robinhood.daybreak-rpc.network', 'https://robinhood.drpc.org', 'https://robinhood-rpc.publicnode.com', 'https://api.blockvectra.com/v1/robinhood_mainnet/public'],
     'roburna': ['https://dataseed.roburna.com'],
     'rollux': ['https://rpc.rollux.com'],
     'romerubicon': ['https://rubicon.mainnet.romeprotocol.xyz'],
@@ -4155,7 +4156,7 @@ KEYLESS_ARCHIVE_RPCS: Dict[str, List[str]] = {
     'ethereum': ['https://eth.drpc.org', 'https://mainnet.gateway.tenderly.co', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://ethereum.drpc.org'],
     'ethereumclassic': ['https://geth-at.etc-network.info'],
     'etherlink': ['https://node.mainnet.etherlink.com'],
-    'fantom': ['https://fantom.drpc.org', 'https://rpcapi.fantom.network', 'https://fantom.api.onfinality.io/public'],
+    'fantom': ['https://fantom.drpc.org', 'https://rpcapi.fantom.network', 'https://fantom.api.onfinality.io/public', 'https://1rpc.io/ftm'],
     'filecoin': ['https://filfox.info/rpc/v1'],
     'flare': ['https://flare.rpc.thirdweb.com'],
     'flow': ['https://mainnet.evm.nodes.onflow.org'],
@@ -6037,15 +6038,7 @@ def _run_duckdb_cli_json(
         eff_to = max(5.0, float(timeout_sec))
         q_file = subproc_dir / "query.sql"
         q_file.write_text(_build_full_sql("false"), encoding="utf-8")
-        cp = _run_subproc_tree_safe(
-            [str(DUCKDB_BIN), ":memory:", "-json", "-f", str(q_file)],
-            cwd=str(eff_scratch.resolve()),
-            env=sub_env,
-            timeout_sec=eff_to,
-            decode_text=False,
-        )
-        if cp.returncode != 0 and parquet_root is not None and parquet_root.is_dir():
-            q_file.write_text(_build_full_sql("true"), encoding="utf-8")
+        with _DUCKDB_SUBPROC_SEM:
             cp = _run_subproc_tree_safe(
                 [str(DUCKDB_BIN), ":memory:", "-json", "-f", str(q_file)],
                 cwd=str(eff_scratch.resolve()),
@@ -6053,6 +6046,15 @@ def _run_duckdb_cli_json(
                 timeout_sec=eff_to,
                 decode_text=False,
             )
+            if cp.returncode != 0 and parquet_root is not None and parquet_root.is_dir():
+                q_file.write_text(_build_full_sql("true"), encoding="utf-8")
+                cp = _run_subproc_tree_safe(
+                    [str(DUCKDB_BIN), ":memory:", "-json", "-f", str(q_file)],
+                    cwd=str(eff_scratch.resolve()),
+                    env=sub_env,
+                    timeout_sec=eff_to,
+                    decode_text=False,
+                )
         if cp.returncode != 0:
             return None
         out_txt = cp.stdout.decode("utf-8", errors="replace").strip()
@@ -10296,14 +10298,31 @@ def _extract_hex_addrs_from_sourcify_values(raw_text: str) -> List[str]:
     return sorted(found)
 
 
+_SOURCIFY_HINTS_CACHE: Dict[Tuple[int, Tuple[str, ...], bool], Dict[str, Any]] = {}
+_SOURCIFY_HINTS_CACHE_LOCK = threading.Lock()
+_SOURCIFY_HINTS_INFLIGHT: Dict[Tuple[int, Tuple[str, ...], bool], threading.Event] = {}
+
+
+def _clone_sourcify_hints_dict(src: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "original_bytecodes": dict(src.get("original_bytecodes") or {}),
+        "embedded_addresses": {k: list(v) for k, v in (src.get("embedded_addresses") or {}).items()},
+        "abi_zero_arg_getters": {k: list(v) for k, v in (src.get("abi_zero_arg_getters") or {}).items()},
+        "abi_bytes32_addr_getters": {k: list(v) for k, v in (src.get("abi_bytes32_addr_getters") or {}).items()},
+        "sibling_contracts": list(src.get("sibling_contracts") or ()),
+    }
+
+
 def _query_local_sourcify_deployment_hints(
     chain_id: int,
     addresses: Sequence[str],
     parquet_root: Optional[Path] = None,
+    *,
+    include_bytecodes: bool = True,
 ) -> Dict[str, Any]:
     """
     로컬 Sourcify v2 Parquet/사이드카 배치 힌트 추출:
-    - original_bytecodes: contracts/code 기준 원천 배포 런타임/크리에이션 바이트코드 (업그레이드·자기소멸 복원용)
+    - original_bytecodes: contracts/code 기준 원천 배포 런타임/크리에이션 바이트코드 (`include_bytecodes=True` 시에만 41GB 스캔)
     - embedded_addresses: verified_contracts creation_values/runtime_values 내 불변·생성자 주입 연결 금고 주소
     - abi_zero_arg_getters: 검증 ABI에서 추출한 0-인자 주소 게터 4바이트 hex 문자열 목록
     - abi_bytes32_addr_getters: 검증 ABI에서 추출한 단일 `bytes32` 매핑 주소 게터 4바이트 hex 문자열 목록
@@ -10321,245 +10340,274 @@ def _query_local_sourcify_deployment_hints(
     if chain_id <= 0 or not clean_addrs or not p_root.is_dir():
         return out
 
-    f_counts, c_types = _unpack_sourcify_v2_meta(p_root)
-    has_dep = int(f_counts.get("contract_deployments", 0)) > 0
-    if has_dep and DUCKDB_BIN.is_file():
-        d_cols = c_types.get("contract_deployments") or {}
-        ct_cols = c_types.get("contracts") or {}
-        vc_cols = c_types.get("verified_contracts") or {}
-        cc_cols = c_types.get("compiled_contracts") or {}
-        cid_pred, addr_in_pred = _sourcify_chain_and_addr_preds(
-            d_cols, chain_id, [a[2:].lower() for a in clean_addrs]
-        )
-        _, addr_proj = _sourcify_deployment_sql_parts(d_cols, chain_id)
-        has_dep_col = "deployer" in d_cols
-        dep_blob = "BLOB" in d_cols.get("deployer", "")
-        has_blk = "block_number" in d_cols
-        blk_proj = "CAST(d.block_number AS BIGINT) AS blk_num" if has_blk else "0::BIGINT AS blk_num"
-        dep_proj = (
-            "lower(hex(d.deployer))"
-            if dep_blob
-            else (
-                "lower(CASE WHEN typeof(d.deployer) = 'BLOB' THEN hex(d.deployer) ELSE replace(CAST(d.deployer AS VARCHAR), '0x', '') END)"
-                if has_dep_col
-                else "''"
-            )
-        )
-        # Step 1: Single 0.5s scan of contract_deployments (eliminates multi-way 40GB/60M joins when empty or small)
-        dep_rows = _run_duckdb_cli_json(
-            f"""
-            SELECT
-                CAST(d.id AS VARCHAR) AS dep_id,
-                CAST(d.contract_id AS VARCHAR) AS ct_id,
-                {addr_proj} AS addr_hex,
-                {dep_proj} AS dep_hex,
-                {blk_proj}
-            FROM contract_deployments d
-            WHERE {cid_pred} AND {addr_in_pred}
-            LIMIT 96
-            """,
-            parquet_root=p_root,
-            timeout_sec=12.0,
-        )
-        if dep_rows:
-            dep_id_to_addr: Dict[str, str] = {}
-            ct_id_to_addrs: Dict[str, List[str]] = {}
-            dep_blk_bounds: Dict[str, List[int]] = {}
-            for dr in dep_rows:
-                na_d = _norm_addr(str(dr.get("addr_hex") or ""))
-                if not na_d:
-                    continue
-                did_s = str(dr.get("dep_id") or "").strip()
-                cid_s = str(dr.get("ct_id") or "").strip()
-                if did_s:
-                    dep_id_to_addr.setdefault(did_s, na_d)
-                if cid_s:
-                    ct_id_to_addrs.setdefault(cid_s, []).append(na_d)
-                dh = str(dr.get("dep_hex") or "").replace("0x", "").strip().lower()
-                if len(dh) == 40 and int(dh, 16) > 0 and dh not in _KNOWN_FACTORY_DEPLOYER_HEXES:
-                    dep_blk_bounds.setdefault(dh, []).append(int(dr.get("blk_num") or 0))
-
-            # Step 2: Primary-key pushdown on `contracts` -> BLOB pushdown on `code` (~1.1s vs 15s+ timeout)
-            if ct_id_to_addrs and int(f_counts.get("contracts", 0)) > 0 and int(f_counts.get("code", 0)) > 0:
-                _resolve_sourcify_ct_ids_to_bytecodes(p_root, c_types, ct_id_to_addrs, out["original_bytecodes"], ct_timeout=12.0)
-
-            # Step 3: Primary-key pushdown on `verified_contracts` -> batch ABI lookup (NO 18.4GB `sources` scan!)
-            if dep_id_to_addr and int(f_counts.get("verified_contracts", 0)) > 0:
-                vc_dep_col = _sf_col(vc_cols, "deployment_id", "contract_deployment_id")
-                vc_comp_col = _sf_col(vc_cols, "compilation_id", "compiled_contract_id")
-                rv_expr = "CAST(vc.runtime_values AS VARCHAR)" if "runtime_values" in vc_cols else "''"
-                cv_expr = "CAST(vc.creation_values AS VARCHAR)" if "creation_values" in vc_cols else "''"
-                comp_expr = f"CAST(vc.{vc_comp_col} AS VARCHAR)" if (not vc_cols or vc_comp_col in vc_cols) else "''"
-                vc_in_pred = _sql_typed_id_in(f"vc.{vc_dep_col}", vc_cols.get(vc_dep_col, ""), list(dep_id_to_addr.keys()))
-                v_rows = _run_duckdb_cli_json(
-                    f"""
-                    SELECT CAST(vc.{vc_dep_col} AS VARCHAR) AS dep_id, {rv_expr} AS rv_str, {cv_expr} AS cv_str, {comp_expr} AS comp_id
-                    FROM verified_contracts vc
-                    WHERE {vc_in_pred}
-                    """,
-                    parquet_root=p_root,
-                    timeout_sec=12.0,
+    use_sf_cache = p_root.resolve() == SOURCIFY_PARQUET_DIR.resolve()
+    sf_ck = (int(chain_id), tuple(clean_addrs), bool(include_bytecodes))
+    sf_full_ck = (int(chain_id), tuple(clean_addrs), True)
+    sf_ev_own: Optional[threading.Event] = None
+    if use_sf_cache:
+        while True:
+            with _SOURCIFY_HINTS_CACHE_LOCK:
+                c_hit = _SOURCIFY_HINTS_CACHE.get(sf_ck) or (
+                    _SOURCIFY_HINTS_CACHE.get(sf_full_ck) if not include_bytecodes else None
                 )
-                abi_target_set = set(clean_addrs[:6])
-                comp_to_addrs: Dict[str, List[str]] = {}
+                if c_hit is not None:
+                    return _clone_sourcify_hints_dict(c_hit)
+                ev_w = _SOURCIFY_HINTS_INFLIGHT.get(sf_ck)
+                if ev_w is None:
+                    sf_ev_own = threading.Event()
+                    _SOURCIFY_HINTS_INFLIGHT[sf_ck] = sf_ev_own
+                    break
+            ev_w.wait(timeout=30.0)
 
-                def _merge_embedded(addr_k: str, embs_in: Sequence[str]) -> None:
-                    if embs_in:
-                        prev_e = list(out["embedded_addresses"].get(addr_k, []))
-                        out["embedded_addresses"][addr_k] = list(dict.fromkeys([*prev_e, *embs_in]))
-
-                for vr in v_rows or []:
-                    na = dep_id_to_addr.get(str(vr.get("dep_id") or "").strip(), "")
-                    if not na:
+    try:
+        f_counts, c_types = _unpack_sourcify_v2_meta(p_root)
+        has_dep = int(f_counts.get("contract_deployments", 0)) > 0
+        if has_dep and DUCKDB_BIN.is_file():
+            d_cols = c_types.get("contract_deployments") or {}
+            vc_cols = c_types.get("verified_contracts") or {}
+            cc_cols = c_types.get("compiled_contracts") or {}
+            cid_pred, addr_in_pred = _sourcify_chain_and_addr_preds(
+                d_cols, chain_id, [a[2:].lower() for a in clean_addrs]
+            )
+            _, addr_proj = _sourcify_deployment_sql_parts(d_cols, chain_id)
+            has_dep_col = "deployer" in d_cols
+            dep_blob = "BLOB" in d_cols.get("deployer", "")
+            has_blk = "block_number" in d_cols
+            blk_proj = "CAST(d.block_number AS BIGINT) AS blk_num" if has_blk else "0::BIGINT AS blk_num"
+            dep_proj = (
+                "lower(hex(d.deployer))"
+                if dep_blob
+                else (
+                    "lower(CASE WHEN typeof(d.deployer) = 'BLOB' THEN hex(d.deployer) ELSE replace(CAST(d.deployer AS VARCHAR), '0x', '') END)"
+                    if has_dep_col
+                    else "''"
+                )
+            )
+            # Step 1: Single scan of contract_deployments (eliminates multi-way 40GB/60M joins when empty or small)
+            dep_rows = _run_duckdb_cli_json(
+                f"""
+                SELECT
+                    CAST(d.id AS VARCHAR) AS dep_id,
+                    CAST(d.contract_id AS VARCHAR) AS ct_id,
+                    {addr_proj} AS addr_hex,
+                    {dep_proj} AS dep_hex,
+                    {blk_proj}
+                FROM contract_deployments d
+                WHERE {cid_pred} AND {addr_in_pred}
+                LIMIT 96
+                """,
+                parquet_root=p_root,
+                timeout_sec=12.0,
+            )
+            if dep_rows:
+                dep_id_to_addr: Dict[str, str] = {}
+                ct_id_to_addrs: Dict[str, List[str]] = {}
+                dep_blk_bounds: Dict[str, List[int]] = {}
+                for dr in dep_rows:
+                    na_d = _norm_addr(str(dr.get("addr_hex") or ""))
+                    if not na_d:
                         continue
-                    embs = _extract_hex_addrs_from_sourcify_values(
-                        f"{vr.get('rv_str') or ''} {vr.get('cv_str') or ''}"
-                    )
-                    _merge_embedded(na, embs)
-                    cid_v = str(vr.get("comp_id") or "").strip()
-                    if cid_v and na in abi_target_set:
-                        comp_to_addrs.setdefault(cid_v, []).append(na)
+                    did_s = str(dr.get("dep_id") or "").strip()
+                    cid_s = str(dr.get("ct_id") or "").strip()
+                    if did_s:
+                        dep_id_to_addr.setdefault(did_s, na_d)
+                    if cid_s:
+                        ct_id_to_addrs.setdefault(cid_s, []).append(na_d)
+                    dh = str(dr.get("dep_hex") or "").replace("0x", "").strip().lower()
+                    if len(dh) == 40 and int(dh, 16) > 0 and dh not in _KNOWN_FACTORY_DEPLOYER_HEXES:
+                        dep_blk_bounds.setdefault(dh, []).append(int(dr.get("blk_num") or 0))
 
-                if comp_to_addrs and int(f_counts.get("compiled_contracts", 0)) > 0 and cc_cols:
-                    cc_pk = _sf_col(cc_cols, "id", "compilation_id", "compiled_contract_id")
-                    abi_expr = "CAST(cc.abi AS VARCHAR)" if "abi" in cc_cols else "''"
-                    comp_art_expr = "CAST(cc.compilation_artifacts AS VARCHAR)" if "compilation_artifacts" in cc_cols else "''"
-                    cc_in_pred = _sql_typed_id_in(f"cc.{cc_pk}", cc_cols.get(cc_pk, ""), list(comp_to_addrs.keys()))
-                    cc_abi_rows = _run_duckdb_cli_json(
+                # Step 2: Primary-key pushdown on `contracts` -> BLOB pushdown on `code` ONLY when caller needs original_bytecodes
+                if include_bytecodes and ct_id_to_addrs and int(f_counts.get("contracts", 0)) > 0 and int(f_counts.get("code", 0)) > 0:
+                    _resolve_sourcify_ct_ids_to_bytecodes(p_root, c_types, ct_id_to_addrs, out["original_bytecodes"], ct_timeout=12.0)
+
+                # Step 3: Primary-key pushdown on `verified_contracts` -> batch ABI lookup (NO 18.4GB `sources` scan!)
+                if dep_id_to_addr and int(f_counts.get("verified_contracts", 0)) > 0:
+                    vc_dep_col = _sf_col(vc_cols, "deployment_id", "contract_deployment_id")
+                    vc_comp_col = _sf_col(vc_cols, "compilation_id", "compiled_contract_id")
+                    rv_expr = "CAST(vc.runtime_values AS VARCHAR)" if "runtime_values" in vc_cols else "''"
+                    cv_expr = "CAST(vc.creation_values AS VARCHAR)" if "creation_values" in vc_cols else "''"
+                    comp_expr = f"CAST(vc.{vc_comp_col} AS VARCHAR)" if (not vc_cols or vc_comp_col in vc_cols) else "''"
+                    vc_in_pred = _sql_typed_id_in(f"vc.{vc_dep_col}", vc_cols.get(vc_dep_col, ""), list(dep_id_to_addr.keys()))
+                    v_rows = _run_duckdb_cli_json(
                         f"""
-                        SELECT CAST(cc.{cc_pk} AS VARCHAR) AS comp_id, {abi_expr} AS abi_str, {comp_art_expr} AS comp_art_str
-                        FROM compiled_contracts cc
-                        WHERE {cc_in_pred}
+                        SELECT CAST(vc.{vc_dep_col} AS VARCHAR) AS dep_id, {rv_expr} AS rv_str, {cv_expr} AS cv_str, {comp_expr} AS comp_id
+                        FROM verified_contracts vc
+                        WHERE {vc_in_pred}
                         """,
                         parquet_root=p_root,
                         timeout_sec=12.0,
                     )
-                    missing_meta_cids: List[str] = []
-                    for ar in cc_abi_rows or []:
-                        cid_k = str(ar.get("comp_id") or "").strip()
-                        abi_l: List[Any] = []
-                        a_str = str(ar.get("abi_str") or "")
-                        ca_str = str(ar.get("comp_art_str") or "")
-                        abi_l = _parse_sourcify_abi_from_cols(a_str, ca_str)
-                        if abi_l:
-                            gsels = _abi_zero_arg_addr_getters(abi_l)
-                            if gsels:
-                                g_hex = ["0x" + g.hex() for g in gsels]
-                                for na_a in comp_to_addrs.get(cid_k, ()):
-                                    out["abi_zero_arg_getters"][na_a] = g_hex
-                            b32_sels = _abi_bytes32_addr_getters(abi_l)
-                            if b32_sels:
-                                b32_hex = ["0x" + g.hex() for g in b32_sels]
-                                for na_a in comp_to_addrs.get(cid_k, ()):
-                                    out["abi_bytes32_addr_getters"][na_a] = b32_hex
-                        elif cid_k:
-                            missing_meta_cids.append(cid_k)
-                    if missing_meta_cids and int(f_counts.get("compiled_contracts_metadata", 0)) > 0:
-                        ccm_cols = c_types.get("compiled_contracts_metadata") or {}
-                        ccm_col = _sf_col(ccm_cols, "compilation_id", "compiled_contract_id")
-                        ccm_in_pred = _sql_typed_id_in(f"ccm.{ccm_col}", ccm_cols.get(ccm_col, ""), missing_meta_cids)
-                        mrows = _run_duckdb_cli_json(
+                    abi_target_set = set(clean_addrs[:6])
+                    comp_to_addrs: Dict[str, List[str]] = {}
+
+                    def _merge_embedded(addr_k: str, embs_in: Sequence[str]) -> None:
+                        if embs_in:
+                            prev_e = list(out["embedded_addresses"].get(addr_k, []))
+                            out["embedded_addresses"][addr_k] = list(dict.fromkeys([*prev_e, *embs_in]))
+
+                    for vr in v_rows or []:
+                        na = dep_id_to_addr.get(str(vr.get("dep_id") or "").strip(), "")
+                        if not na:
+                            continue
+                        embs = _extract_hex_addrs_from_sourcify_values(
+                            f"{vr.get('rv_str') or ''} {vr.get('cv_str') or ''}"
+                        )
+                        _merge_embedded(na, embs)
+                        cid_v = str(vr.get("comp_id") or "").strip()
+                        if cid_v and na in abi_target_set:
+                            comp_to_addrs.setdefault(cid_v, []).append(na)
+
+                    if comp_to_addrs and int(f_counts.get("compiled_contracts", 0)) > 0 and cc_cols:
+                        cc_pk = _sf_col(cc_cols, "id", "compilation_id", "compiled_contract_id")
+                        abi_expr = "CAST(cc.abi AS VARCHAR)" if "abi" in cc_cols else "''"
+                        comp_art_expr = "CAST(cc.compilation_artifacts AS VARCHAR)" if "compilation_artifacts" in cc_cols else "''"
+                        cc_in_pred = _sql_typed_id_in(f"cc.{cc_pk}", cc_cols.get(cc_pk, ""), list(comp_to_addrs.keys()))
+                        cc_abi_rows = _run_duckdb_cli_json(
                             f"""
-                            SELECT CAST(ccm.{ccm_col} AS VARCHAR) AS comp_id, CAST(ccm.metadata AS VARCHAR) AS meta_str
-                            FROM compiled_contracts_metadata ccm
-                            WHERE {ccm_in_pred}
+                            SELECT CAST(cc.{cc_pk} AS VARCHAR) AS comp_id, {abi_expr} AS abi_str, {comp_art_expr} AS comp_art_str
+                            FROM compiled_contracts cc
+                            WHERE {cc_in_pred}
                             """,
                             parquet_root=p_root,
-                            timeout_sec=15.0,
+                            timeout_sec=12.0,
                         )
-                        for mr in mrows or []:
-                            cid_m = str(mr.get("comp_id") or "").strip()
-                            m_str = str(mr.get("meta_str") or "")
-                            if m_str.startswith("{"):
-                                try:
-                                    m_obj = json.loads(m_str)
-                                    out_abi = (m_obj.get("output") or {}).get("abi") if isinstance(m_obj, dict) else None
-                                    abi_m = out_abi if isinstance(out_abi, list) else (m_obj.get("abi") if isinstance(m_obj, dict) and isinstance(m_obj.get("abi"), list) else [])
-                                    if abi_m:
-                                        gsels = _abi_zero_arg_addr_getters(abi_m)
-                                        if gsels:
-                                            g_hex = ["0x" + g.hex() for g in gsels]
-                                            for na_a in comp_to_addrs.get(cid_m, ()):
-                                                out["abi_zero_arg_getters"].setdefault(na_a, g_hex)
-                                        b32_m = _abi_bytes32_addr_getters(abi_m)
-                                        if b32_m:
-                                            b32_m_hex = ["0x" + g.hex() for g in b32_m]
-                                            for na_a in comp_to_addrs.get(cid_m, ()):
-                                                out["abi_bytes32_addr_getters"].setdefault(na_a, b32_m_hex)
-                                except _PARSE_DATA_EXC:
-                                    pass
+                        missing_meta_cids: List[str] = []
+                        for ar in cc_abi_rows or []:
+                            cid_k = str(ar.get("comp_id") or "").strip()
+                            a_str = str(ar.get("abi_str") or "")
+                            ca_str = str(ar.get("comp_art_str") or "")
+                            abi_l = _parse_sourcify_abi_from_cols(a_str, ca_str)
+                            if abi_l:
+                                gsels = _abi_zero_arg_addr_getters(abi_l)
+                                if gsels:
+                                    g_hex = ["0x" + g.hex() for g in gsels]
+                                    for na_a in comp_to_addrs.get(cid_k, ()):
+                                        out["abi_zero_arg_getters"][na_a] = g_hex
+                                b32_sels = _abi_bytes32_addr_getters(abi_l)
+                                if b32_sels:
+                                    b32_hex = ["0x" + g.hex() for g in b32_sels]
+                                    for na_a in comp_to_addrs.get(cid_k, ()):
+                                        out["abi_bytes32_addr_getters"][na_a] = b32_hex
+                            elif cid_k:
+                                missing_meta_cids.append(cid_k)
+                        if missing_meta_cids and int(f_counts.get("compiled_contracts_metadata", 0)) > 0:
+                            ccm_cols = c_types.get("compiled_contracts_metadata") or {}
+                            ccm_col = _sf_col(ccm_cols, "compilation_id", "compiled_contract_id")
+                            ccm_in_pred = _sql_typed_id_in(f"ccm.{ccm_col}", ccm_cols.get(ccm_col, ""), missing_meta_cids)
+                            mrows = _run_duckdb_cli_json(
+                                f"""
+                                SELECT CAST(ccm.{ccm_col} AS VARCHAR) AS comp_id, CAST(ccm.metadata AS VARCHAR) AS meta_str
+                                FROM compiled_contracts_metadata ccm
+                                WHERE {ccm_in_pred}
+                                """,
+                                parquet_root=p_root,
+                                timeout_sec=15.0,
+                            )
+                            for mr in mrows or []:
+                                cid_m = str(mr.get("comp_id") or "").strip()
+                                m_str = str(mr.get("meta_str") or "")
+                                if m_str.startswith("{"):
+                                    try:
+                                        m_obj = json.loads(m_str)
+                                        out_abi = (m_obj.get("output") or {}).get("abi") if isinstance(m_obj, dict) else None
+                                        abi_m = out_abi if isinstance(out_abi, list) else (m_obj.get("abi") if isinstance(m_obj, dict) and isinstance(m_obj.get("abi"), list) else [])
+                                        if abi_m:
+                                            gsels = _abi_zero_arg_addr_getters(abi_m)
+                                            if gsels:
+                                                g_hex = ["0x" + g.hex() for g in gsels]
+                                                for na_a in comp_to_addrs.get(cid_m, ()):
+                                                    out["abi_zero_arg_getters"].setdefault(na_a, g_hex)
+                                            b32_m = _abi_bytes32_addr_getters(abi_m)
+                                            if b32_m:
+                                                b32_m_hex = ["0x" + g.hex() for g in b32_m]
+                                                for na_a in comp_to_addrs.get(cid_m, ()):
+                                                    out["abi_bytes32_addr_getters"].setdefault(na_a, b32_m_hex)
+                                    except _PARSE_DATA_EXC:
+                                        pass
 
-            # Step 4: Same-deployer sibling contracts on the same chain
-            if has_dep_col and dep_blk_bounds:
-                dep_in = (
-                    ", ".join(f"unhex({_sql_quote_str(dh)})" for dh in sorted(dep_blk_bounds.keys()))
-                    if dep_blob
-                    else ", ".join(_sql_quote_str(dh) for dh in sorted(dep_blk_bounds.keys()))
-                )
-                dep_pred = (
-                    f"d.deployer IN ({dep_in})"
-                    if dep_blob
-                    else f"lower(CASE WHEN typeof(d.deployer) = 'BLOB' THEN hex(d.deployer) ELSE replace(CAST(d.deployer AS VARCHAR), '0x', '') END) IN ({dep_in})"
-                )
-                sib_rows = _run_duckdb_cli_json(
-                    f"""
-                    SELECT {addr_proj} AS addr_hex, {dep_proj} AS dep_hex, {blk_proj}
-                    FROM contract_deployments d
-                    WHERE {cid_pred} AND {dep_pred}
-                    LIMIT 256
-                    """,
-                    parquet_root=p_root,
-                    timeout_sec=12.0,
-                )
-                by_dep: Dict[str, List[Tuple[str, int]]] = {}
-                for sr in sib_rows or []:
-                    sa = _norm_addr(str(sr.get("addr_hex") or ""))
-                    dh = str(sr.get("dep_hex") or "").replace("0x", "").strip().lower()
-                    sb = int(sr.get("blk_num") or 0)
-                    if sa and _is_non_precompile_addr(sa) and dh:
-                        by_dep.setdefault(dh, []).append((sa, sb))
-                sibs_out: List[str] = []
-                seen_sibs: Set[str] = set(clean_addrs)
-                for dh, entries in by_dep.items():
-                    if len(entries) > 40:
-                        continue
-                    seed_blks = [b for b in dep_blk_bounds.get(dh, []) if b > 0]
-                    for sa, sb in entries:
-                        if seed_blks and sb > 0 and all(abs(sb - b0) > 5000 for b0 in seed_blks):
+                # Step 4: Same-deployer sibling contracts on the same chain
+                if has_dep_col and dep_blk_bounds:
+                    dep_in = (
+                        ", ".join(f"unhex({_sql_quote_str(dh)})" for dh in sorted(dep_blk_bounds.keys()))
+                        if dep_blob
+                        else ", ".join(_sql_quote_str(dh) for dh in sorted(dep_blk_bounds.keys()))
+                    )
+                    dep_pred = (
+                        f"d.deployer IN ({dep_in})"
+                        if dep_blob
+                        else f"lower(CASE WHEN typeof(d.deployer) = 'BLOB' THEN hex(d.deployer) ELSE replace(CAST(d.deployer AS VARCHAR), '0x', '') END) IN ({dep_in})"
+                    )
+                    sib_rows = _run_duckdb_cli_json(
+                        f"""
+                        SELECT {addr_proj} AS addr_hex, {dep_proj} AS dep_hex, {blk_proj}
+                        FROM contract_deployments d
+                        WHERE {cid_pred} AND {dep_pred}
+                        LIMIT 256
+                        """,
+                        parquet_root=p_root,
+                        timeout_sec=12.0,
+                    )
+                    by_dep: Dict[str, List[Tuple[str, int]]] = {}
+                    for sr in sib_rows or []:
+                        sa = _norm_addr(str(sr.get("addr_hex") or ""))
+                        dh = str(sr.get("dep_hex") or "").replace("0x", "").strip().lower()
+                        sb = int(sr.get("blk_num") or 0)
+                        if sa and _is_non_precompile_addr(sa) and dh:
+                            by_dep.setdefault(dh, []).append((sa, sb))
+                    sibs_out: List[str] = []
+                    seen_sibs: Set[str] = set(clean_addrs)
+                    for dh, entries in by_dep.items():
+                        if len(entries) > 40:
                             continue
-                        _append_unique(sibs_out, seen_sibs, sa)
-                out["sibling_contracts"] = sibs_out[:24]
+                        seed_blks = [b for b in dep_blk_bounds.get(dh, []) if b > 0]
+                        for sa, sb in entries:
+                            if seed_blks and sb > 0 and all(abs(sb - b0) > 5000 for b0 in seed_blks):
+                                continue
+                            _append_unique(sibs_out, seen_sibs, sa)
+                    out["sibling_contracts"] = sibs_out[:24]
 
-    clean_set = set(clean_addrs)
-    for sc_cid, sc_item in _iter_sourcify_sidecar_items(p_root, chain_id):
-        if int(sc_cid) != int(chain_id):
-            continue
-        sa = _norm_addr(sc_item.get("address"))
-        if sa in clean_set:
-            chex = str(sc_item.get("runtime_code_hex") or sc_item.get("code_hex") or "").replace("0x", "").strip()
-            if chex and sa not in out["original_bytecodes"]:
-                try:
-                    out["original_bytecodes"][sa] = bytes.fromhex(chex)
-                except ValueError:
-                    pass
-            emb_raw = json.dumps(
-                {"rv": sc_item.get("runtime_values") or {}, "cv": sc_item.get("creation_values") or {}},
-                ensure_ascii=True,
-            )
-            embs = _extract_hex_addrs_from_sourcify_values(emb_raw)
-            if embs:
-                prev_emb = out["embedded_addresses"].setdefault(sa, [])
-                seen_emb = set(prev_emb)
-                for e_a in embs:
-                    _append_unique(prev_emb, seen_emb, e_a)
-            if isinstance(sc_item.get("abi"), list):
-                gsels = _abi_zero_arg_addr_getters(sc_item["abi"])
-                if gsels:
-                    out["abi_zero_arg_getters"][sa] = ["0x" + g.hex() for g in gsels]
-                b32_sc = _abi_bytes32_addr_getters(sc_item["abi"])
-                if b32_sc:
-                    out["abi_bytes32_addr_getters"][sa] = ["0x" + g.hex() for g in b32_sc]
-    return out
+        clean_set = set(clean_addrs)
+        for sc_cid, sc_item in _iter_sourcify_sidecar_items(p_root, chain_id):
+            if int(sc_cid) != int(chain_id):
+                continue
+            sa = _norm_addr(sc_item.get("address"))
+            if sa in clean_set:
+                if include_bytecodes:
+                    chex = str(sc_item.get("runtime_code_hex") or sc_item.get("code_hex") or "").replace("0x", "").strip()
+                    if chex and sa not in out["original_bytecodes"]:
+                        try:
+                            out["original_bytecodes"][sa] = bytes.fromhex(chex)
+                        except ValueError:
+                            pass
+                emb_raw = json.dumps(
+                    {"rv": sc_item.get("runtime_values") or {}, "cv": sc_item.get("creation_values") or {}},
+                    ensure_ascii=True,
+                )
+                embs = _extract_hex_addrs_from_sourcify_values(emb_raw)
+                if embs:
+                    prev_emb = out["embedded_addresses"].setdefault(sa, [])
+                    seen_emb = set(prev_emb)
+                    for e_a in embs:
+                        _append_unique(prev_emb, seen_emb, e_a)
+                if isinstance(sc_item.get("abi"), list):
+                    gsels = _abi_zero_arg_addr_getters(sc_item["abi"])
+                    if gsels:
+                        out["abi_zero_arg_getters"][sa] = ["0x" + g.hex() for g in gsels]
+                    b32_sc = _abi_bytes32_addr_getters(sc_item["abi"])
+                    if b32_sc:
+                        out["abi_bytes32_addr_getters"][sa] = ["0x" + g.hex() for g in b32_sc]
+        if use_sf_cache:
+            with _SOURCIFY_HINTS_CACHE_LOCK:
+                if len(_SOURCIFY_HINTS_CACHE) >= 512:
+                    _SOURCIFY_HINTS_CACHE.pop(next(iter(_SOURCIFY_HINTS_CACHE)), None)
+                _SOURCIFY_HINTS_CACHE[sf_ck] = _clone_sourcify_hints_dict(out)
+        return out
+    finally:
+        if sf_ev_own is not None:
+            with _SOURCIFY_HINTS_CACHE_LOCK:
+                _SOURCIFY_HINTS_INFLIGHT.pop(sf_ck, None)
+            sf_ev_own.set()
 
 
 _ORIG_QUERY_LOCAL_SOURCIFY_HINTS_FN = _query_local_sourcify_deployment_hints
@@ -11581,6 +11629,36 @@ def _harvest_logs_bisect(
     addr_list = [_checksum(a) for a in list(seeds)[:16] if _norm_addr(a)]
     if not addr_list:
         return set()
+    c_lb = _norm_chain(chain)
+    is_real_lb = _is_live_real_router(router)
+    span_cur = int(to_block) - int(from_block)
+    if is_real_lb and max_depth >= 1 and span_cur > 0:
+        sp_map = getattr(router, "_live_log_max_span_by_chain", None)
+        known_sp = int(sp_map.get(c_lb, 0) or 0) if isinstance(sp_map, dict) else 0
+        if known_sp > 0 and span_cur > known_sp:
+            # Partition directly into <=4 bounded parallel subranges matching the learned chain span (0 wasted failing probes)
+            n_parts = min(4, max(2, (span_cur + known_sp) // known_sp))
+            step_p = (span_cur + n_parts) // n_parts
+            sub_ranges: List[Tuple[int, int]] = []
+            cur_f = int(from_block)
+            while cur_f <= int(to_block):
+                cur_t = min(int(to_block), cur_f + step_p - 1)
+                sub_ranges.append((cur_f, cur_t))
+                cur_f = cur_t + 1
+            err_lk_p = _err_lock or threading.Lock()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(sub_ranges)) as ex_sp:
+                futs_sp = [
+                    ex_sp.submit(
+                        _harvest_logs_bisect,
+                        router, chain, seeds, sf_b, st_b, max(0, max_depth - 1),
+                        rpc_incomplete_out=rpc_incomplete_out, _err_lock=err_lk_p,
+                    )
+                    for sf_b, st_b in sub_ranges
+                ]
+                out_sp: Set[str] = set()
+                for f_sp in futs_sp:
+                    out_sp |= f_sp.result()
+                return out_sp
     try:
         logs = router.call(
             chain,
@@ -11617,13 +11695,21 @@ def _harvest_logs_bisect(
             if len(_cset) <= 12:
                 out.update(_cset)
         return out
-    except Exception:
+    except Exception as exc_lb:
+        if is_real_lb and span_cur >= 2000 and _classify_rpc_error(exc_lb) == "range_limit":
+            sp_map_e = getattr(router, "_live_log_max_span_by_chain", None)
+            if isinstance(sp_map_e, dict):
+                half_sp = max(1000, span_cur // 2)
+                with router._lock:
+                    prev_sp = int(sp_map_e.get(c_lb, 0) or 0)
+                    if prev_sp <= 0 or half_sp < prev_sp:
+                        sp_map_e[c_lb] = half_sp
         if from_block >= to_block or max_depth == 0:
             _mark_rpc_incomplete_flag(rpc_incomplete_out, _err_lock)
             return set()
         mid = (from_block + to_block) // 2
         err_lk = _err_lock or threading.Lock()
-        if max_depth >= 1 and _is_live_real_router(router):
+        if max_depth >= 1 and is_real_lb:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex_lb:
                 fut_l = ex_lb.submit(
                     _harvest_logs_bisect,
@@ -16269,21 +16355,17 @@ def _expand_address_graph_conceptually(
             if cand_a and cand_a not in known and cand_a not in excluded_infra and len(discovered) < max_nodes * 2:
                 discovered.add(cand_a)
 
-        if hop == 0 and SOURCIFY_PARQUET_DIR.is_dir():
-            if cid_exp > 0:
-                try:
-                    s_hints = _query_local_sourcify_deployment_hints(cid_exp, sorted_frontier)
-                    for ea_list in (s_hints.get("embedded_addresses") or {}).values():
-                        for ea in ea_list:
-                            _record_discovered(ea)
-                    for sa in s_hints.get("sibling_contracts") or ():
-                        _record_discovered(sa)
-                    sourcify_getters_by_addr = dict(s_hints.get("abi_zero_arg_getters") or {})
-                    sourcify_b32_getters_by_addr = dict(s_hints.get("abi_bytes32_addr_getters") or {})
-                except Exception:
-                    sourcify_getters_by_addr = {}
-                    sourcify_b32_getters_by_addr = {}
+        need_sf_hints = bool(hop == 0 and SOURCIFY_PARQUET_DIR.is_dir() and cid_exp > 0)
 
+        def _fetch_sf_hints() -> Dict[str, Any]:
+            try:
+                if _query_local_sourcify_deployment_hints is _ORIG_QUERY_LOCAL_SOURCIFY_HINTS_FN:
+                    return _query_local_sourcify_deployment_hints(cid_exp, sorted_frontier, include_bytecodes=False)
+                return _query_local_sourcify_deployment_hints(cid_exp, sorted_frontier)
+            except Exception:
+                return {}
+
+        seen_calls_by_addr: Dict[str, Set[bytes]] = {}
         _code_ana_cache: Dict[str, Tuple[bool, bool, List[str], List[str], List[bytes]]] = {}
         _dense_frontier_slots: Tuple[int, ...] = (
             tuple(range(0, 32))
@@ -16305,7 +16387,7 @@ def _expand_address_graph_conceptually(
                 if ng and ng not in known and ng not in excluded_infra:
                     gov_cands.add(ng)
             code_hex_list = _res_facet_codes_hex(res)
-            seen_calls_for_addr: Set[bytes] = set()
+            seen_calls_for_addr = seen_calls_by_addr.setdefault(addr, set())
 
             def _queue_addr_call(call_b: bytes) -> None:
                 if call_b and call_b not in seen_calls_for_addr:
@@ -16350,10 +16432,6 @@ def _expand_address_graph_conceptually(
             if not has_any_code and res.proxy_kind == "none":
                 continue
 
-            for g_hex in sourcify_getters_by_addr.get(addr, ()):
-                _queue_addr_call(_hex_to_bytes(g_hex))
-            for b32_g_hex in sourcify_b32_getters_by_addr.get(addr, ()):
-                _record_b32_getter(addr, _hex_to_bytes(b32_g_hex))
             if r_store_exp is not None and cid_exp > 0:
                 for sc_a in (addr, *(res.impl_addresses or ())[:2]):
                     na_sc = _norm_addr(sc_a)
@@ -16486,21 +16564,55 @@ def _expand_address_graph_conceptually(
 
         need_out_logs = block_pin > 100 and (hop == 0 or (hop == 1 and len(sorted_frontier) <= 8))
         need_inb_logs = hop == 0 and block_pin > 100 and frontier_has_ext_call
-        if is_live_rpc and (int(bool(slot_calls)) + int(bool(mc_calls)) + int(need_out_logs) + int(need_inb_logs)) >= 2:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex_fg:
+        if is_live_rpc and (int(bool(slot_calls)) + int(bool(mc_calls)) + int(need_out_logs) + int(need_inb_logs) + int(need_sf_hints)) >= 2:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex_fg:
                 fut_s = ex_fg.submit(_fetch_slot_vals) if slot_calls else None
                 fut_m = ex_fg.submit(_fetch_mc_vals) if mc_calls else None
                 fut_ol = ex_fg.submit(_fetch_out_logs) if need_out_logs else None
                 fut_il = ex_fg.submit(_fetch_inb_logs) if need_inb_logs else None
+                fut_sf = ex_fg.submit(_fetch_sf_hints) if need_sf_hints else None
                 s_all = fut_s.result() if fut_s is not None else []
                 mc_res = fut_m.result() if fut_m is not None else []
                 out_log_addrs = fut_ol.result() if fut_ol is not None else set()
                 inb_vault_addrs, inb_grantor_addrs = fut_il.result() if fut_il is not None else (set(), set())
+                s_hints = fut_sf.result() if fut_sf is not None else {}
         else:
             s_all = _fetch_slot_vals() if slot_calls else []
             mc_res = _fetch_mc_vals() if mc_calls else []
             out_log_addrs = _fetch_out_logs() if need_out_logs else set()
             inb_vault_addrs, inb_grantor_addrs = _fetch_inb_logs() if need_inb_logs else (set(), set())
+            s_hints = _fetch_sf_hints() if need_sf_hints else {}
+
+        if isinstance(s_hints, dict) and s_hints:
+            for ea_list in (s_hints.get("embedded_addresses") or {}).values():
+                for ea in ea_list:
+                    _record_discovered(ea)
+            for sa in s_hints.get("sibling_contracts") or ():
+                _record_discovered(sa)
+            sourcify_getters_by_addr = dict(s_hints.get("abi_zero_arg_getters") or {})
+            sourcify_b32_getters_by_addr = dict(s_hints.get("abi_bytes32_addr_getters") or {})
+            sf_delta_calls: List[Tuple[str, bytes]] = []
+            for addr_sf in sorted_frontier:
+                seen_sf = seen_calls_by_addr.setdefault(addr_sf, set())
+                for g_hex in sourcify_getters_by_addr.get(addr_sf, ()):
+                    gb = _hex_to_bytes(g_hex)
+                    if gb and gb not in seen_sf:
+                        seen_sf.add(gb)
+                        sf_delta_calls.append((addr_sf, gb))
+                for b32_g_hex in sourcify_b32_getters_by_addr.get(addr_sf, ()):
+                    b32_b = _hex_to_bytes(b32_g_hex)
+                    if b32_b:
+                        _record_b32_getter(addr_sf, b32_b)
+                        for k32 in collected_b32_keys:
+                            pair_k = (addr_sf, b32_b, k32)
+                            if pair_k not in probed_b32_pairs and len(sf_delta_calls) < 96:
+                                probed_b32_pairs.add(pair_k)
+                                sf_delta_calls.append((addr_sf, b32_b + k32))
+            if sf_delta_calls:
+                sf_mc_res = router.multicall3(c, sf_delta_calls, block_pin=block_pin)
+                if len(sf_mc_res) < len(sf_delta_calls):
+                    _mark_exp_rpc_incomplete()
+                mc_res.extend(sf_mc_res)
 
         for sval in s_all:
             _record_discovered(_extract_word32_address(sval) or "")
@@ -34519,8 +34631,10 @@ class _PinnedBlockForkProxy:
         self._fail_counts: Dict[str, int] = {}
         self._rtt_ms: Dict[str, float] = {u: 100.0 + (idx_u * 25.0) for idx_u, u in enumerate(self._upstreams)}
         self._dirty: bool = False
+        self._stop_ev = threading.Event()
         self._srv: Optional[_QuietThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._prewarm_thread: Optional[threading.Thread] = None
         self.url: str = ""
 
     def _norm_block_tag(self, bt: Any) -> Any:
@@ -34755,11 +34869,12 @@ class _PinnedBlockForkProxy:
         except _OS_CLEANUP_EXC:
             pass
 
-    def _prewarm(self) -> None:
-        if self._chain_id > 0:
-            self._cache[self._ckey("eth_chainId", [])] = hex(self._chain_id)
-        if self._gas_price_wei > 0:
-            self._cache[self._ckey("eth_gasPrice", [])] = hex(self._gas_price_wei)
+    def _prewarm_fast_sync(self) -> None:
+        with self._lock:
+            if self._chain_id > 0:
+                self._cache[self._ckey("eth_chainId", [])] = hex(self._chain_id)
+            if self._gas_price_wei > 0:
+                self._cache[self._ckey("eth_gasPrice", [])] = hex(self._gas_price_wei)
 
         # Build reverse mapping-slot table for all tracked holders (~4ms for 48 holders)
         for h_addr in self._holders:
@@ -34770,54 +34885,79 @@ class _PinnedBlockForkProxy:
                 if b_int < 16:
                     self._slot_reverse_map["0x" + _keccak256(b_pad + a_pad).hex()] = (b_int, True)
 
-        # Ensure block header & EIP-1898 blockHash alias are cached
+        # Ensure block header & EIP-1898 blockHash alias are cached (~0.3s single call)
         blk_ck = self._ckey("eth_getBlockByNumber", [self._block_hex, False])
-        if blk_ck not in self._cache or not self._block_hashes:
+        with self._lock:
+            need_blk = blk_ck not in self._cache or not self._block_hashes
+        if need_blk:
             blk_r = self._call_upstream_batch([{"jsonrpc": "2.0", "id": 1, "method": "eth_getBlockByNumber", "params": [self._block_hex, False]}])[0]
             if isinstance(blk_r, dict) and isinstance(blk_r.get("result"), dict):
                 bh_h = str(blk_r["result"].get("hash") or "").lower()
-                if bh_h:
-                    self._block_hashes.add(bh_h)
-                self._cache[blk_ck] = blk_r["result"]
-                self._dirty = True
+                with self._lock:
+                    if bh_h:
+                        self._block_hashes.add(bh_h)
+                    self._cache[blk_ck] = blk_r["result"]
+                    self._dirty = True
 
-        # Batch-prewarm uncached accounts + common token state/EIP-1967 slots in parallel!
         # Pre-seed immutable eth_getCode entries directly from _IMMUTABLE_CODE_CACHE (0ms RAM hit).
         if self._chain_id > 0 and self._block_pin > 0:
+            code_seeds: List[Tuple[str, str]] = []
             with _IMMUTABLE_CODE_CACHE_LOCK:
                 for addr in self._all_addrs:
-                    ck_c = self._ckey("eth_getCode", [addr, self._block_hex])
-                    if ck_c not in self._cache:
-                        hit_c = _IMMUTABLE_CODE_CACHE.get((self._chain_id, addr))
-                        if hit_c is not None and hit_c[0] <= self._block_pin:
-                            self._cache[ck_c] = "0x" + hit_c[1].hex()
+                    hit_c = _IMMUTABLE_CODE_CACHE.get((self._chain_id, addr))
+                    if hit_c is not None and hit_c[0] <= self._block_pin:
+                        code_seeds.append((self._ckey("eth_getCode", [addr, self._block_hex]), "0x" + hit_c[1].hex()))
+            if code_seeds:
+                with self._lock:
+                    for ck_c, hex_c in code_seeds:
+                        self._cache.setdefault(ck_c, hex_c)
+
+    def _prewarm_background(self) -> None:
+        if self._stop_ev.is_set():
+            return
         warm_items: List[Tuple[Dict[str, Any], str]] = []
         rid = 1
-        for addr in self._all_addrs:
-            for meth in ("eth_getBalance", "eth_getTransactionCount", "eth_getCode"):
-                p_a = [addr, self._block_hex]
-                ck = self._ckey(meth, p_a)
-                if ck not in self._cache:
-                    warm_items.append(({"jsonrpc": "2.0", "id": rid, "method": meth, "params": p_a}, ck))
-                    rid += 1
-        for tok in self._tokens[:16]:
-            for sl_h in _FORK_PROXY_PREWARM_SLOTS:
-                p_s = [tok, sl_h, self._block_hex]
-                ck = self._ckey("eth_getStorageAt", p_s)
-                if ck not in self._cache:
-                    warm_items.append(({"jsonrpc": "2.0", "id": rid, "method": "eth_getStorageAt", "params": p_s}, ck))
-                    rid += 1
-        if warm_items:
-            # Match _call_upstream_batch's 20-item threshold directly so prewarm avoids nested ThreadPoolExecutor bursts
-            chunks_w = [warm_items[i : i + 20] for i in range(0, len(warm_items), 20)]
+        with self._lock:
+            for addr in self._all_addrs:
+                for meth in ("eth_getBalance", "eth_getTransactionCount", "eth_getCode"):
+                    p_a = [addr, self._block_hex]
+                    ck = self._ckey(meth, p_a)
+                    if ck not in self._cache:
+                        warm_items.append(({"jsonrpc": "2.0", "id": rid, "method": meth, "params": p_a}, ck))
+                        rid += 1
+            for tok in self._tokens[:16]:
+                for sl_h in _FORK_PROXY_PREWARM_SLOTS:
+                    p_s = [tok, sl_h, self._block_hex]
+                    ck = self._ckey("eth_getStorageAt", p_s)
+                    if ck not in self._cache:
+                        warm_items.append(({"jsonrpc": "2.0", "id": rid, "method": "eth_getStorageAt", "params": p_s}, ck))
+                        rid += 1
+        if not warm_items or self._stop_ev.is_set():
+            return
+        chunks_w = [warm_items[i : i + 20] for i in range(0, len(warm_items), 20)]
 
-            def _exec_w(ch_w: List[Tuple[Dict[str, Any], str]]) -> None:
-                res_l = self._call_upstream_batch([it for it, _ in ch_w])
-                by_id = {r.get("id"): r for r in res_l if isinstance(r, dict)}
-                self._store_batch_results([(it.get("id"), ck) for it, ck in ch_w], by_id)
+        def _exec_w(ch_w: List[Tuple[Dict[str, Any], str]]) -> None:
+            if self._stop_ev.is_set():
+                return
+            res_l = self._call_upstream_batch([it for it, _ in ch_w])
+            if self._stop_ev.is_set():
+                return
+            by_id = {r.get("id"): r for r in res_l if isinstance(r, dict)}
+            self._store_batch_results([(it.get("id"), ck) for it, ck in ch_w], by_id)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(chunks_w))) as ex_w:
-                list(ex_w.map(_exec_w, chunks_w))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(chunks_w))) as ex_w:
+            futs_w = [ex_w.submit(_exec_w, ch_w) for ch_w in chunks_w]
+            for fw in futs_w:
+                if self._stop_ev.is_set():
+                    break
+                try:
+                    fw.result()
+                except _RECOVERABLE_IO_EXC:
+                    continue
+
+    def _prewarm(self) -> None:
+        self._prewarm_fast_sync()
+        self._prewarm_background()
 
     def _prefetch_mapping_slot(self, c_addr: str, b_int: int, is_vyp: bool, b_raw: Any, b_norm: Any) -> None:
         pf_key = (c_addr, b_int, is_vyp, str(b_norm))
@@ -35091,8 +35231,9 @@ class _PinnedBlockForkProxy:
     def __enter__(self) -> str:
         if self._block_pin <= 0 or not self._upstreams or not _is_live_real_router(self._router):
             return ""
+        self._stop_ev.clear()
         self._load_disk_cache()
-        self._prewarm()
+        self._prewarm_fast_sync()
         proxy_self = self
 
         class _ForkProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -35128,17 +35269,22 @@ class _PinnedBlockForkProxy:
             self._thread = threading.Thread(target=self._srv.serve_forever, daemon=True)
             self._thread.start()
             self.url = f"http://127.0.0.1:{port}"
+            self._prewarm_thread = threading.Thread(target=self._prewarm_background, daemon=True)
+            self._prewarm_thread.start()
         except Exception:
             self.url = ""
         return self.url
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self._stop_ev.set()
         try:
             if self._srv is not None:
                 self._srv.shutdown()
                 self._srv.server_close()
             if self._thread is not None:
                 self._thread.join(timeout=2.0)
+            if self._prewarm_thread is not None:
+                self._prewarm_thread.join(timeout=0.5)
         except _OS_CLEANUP_EXC:
             pass
         self._save_disk_cache()
@@ -35179,9 +35325,13 @@ def generate_and_run_forge_suites(
         return ForgeRunOutcome(executed=True, passed_tests=0, failed_tests=0)
 
     c = _norm_chain(chain)
-    urls = router.candidate_urls(c, need_archive=True, for_forge=True) if block_pin > 0 else ["http://127.0.0.1:8545"]
-    if block_pin > 0 and urls:
-        urls = _filter_live_verified_rpc_urls(router, c, urls[:16], limit=5, block_pin=block_pin, need_archive=True) or urls
+    if block_pin > 0 and fork_proxy_url:
+        raw_fb = router.candidate_urls(c, need_archive=True, for_forge=True)[:4]
+        urls = [fork_proxy_url, *[u for u in raw_fb if u != fork_proxy_url]]
+    else:
+        urls = router.candidate_urls(c, need_archive=True, for_forge=True) if block_pin > 0 else ["http://127.0.0.1:8545"]
+        if block_pin > 0 and urls:
+            urls = _filter_live_verified_rpc_urls(router, c, urls[:16], limit=5, block_pin=block_pin, need_archive=True) or urls
     if not urls:
         return ForgeRunOutcome(
             executed=False,
@@ -38018,7 +38168,7 @@ def _filter_live_verified_rpc_urls(
         cached_ent = _LIVE_VERIFIED_RPC_CACHE.get(cache_k)
         if cached_ent is not None and (now_c - cached_ent[0]) <= 60.0:
             usable_cached = [u for u in cached_ent[1] if u in clean_set]
-            if len(usable_cached) >= min(limit, len(clean)):
+            if usable_cached:
                 return usable_cached[:limit]
 
     check_archive_blk = bool(need_archive and int(block_pin or 0) > 0 and callable(getattr(router, "_pooled_post", None)))
@@ -46939,8 +47089,8 @@ def _load_mode_b_seed_bytes_for_slug(
                 pass
         if (not out or max((len(b) for b in out), default=0) < 500) and SOURCIFY_PARQUET_DIR.is_dir():
             try:
-                hints = _query_local_sourcify_deployment_hints(src_cid, eff_src_addrs)
-                for ob in (hints.get("original_bytecodes") or {}).values():
+                orig_bcs = _query_local_sourcify_original_bytecodes(src_cid, eff_src_addrs)
+                for ob in orig_bcs.values():
                     if isinstance(ob, (bytes, bytearray)) and len(ob) >= 64:
                         _append_unique(out, seen_out, bytes(ob))
             except _RECOVERABLE_IO_EXC:
@@ -50944,16 +51094,39 @@ def audit_single_protocol(
         )
         s4_target_addrs = list(dict.fromkeys([primary_target, *protocol_vault_addrs, *ext_spenders_s4, *closure.all_addresses]))
         gas_price_w = fetch_gas_price_wei(router, chain, block_pin) if block_pin > 0 else 1_000_000_000
-        flash_plan_s4 = discover_optimal_flash_sources_for_tokens(
-            router,
-            chain,
-            block_pin,
-            token_addrs,
-            candidate_vaults=harness_vault_addrs,
-            exit_routes=closure.verified_exit_pools,
-            decimals_map=closure.token_decimals,
-            prices_map=_closure_prices_lookup(closure),
-        )
+
+        def _compute_flash_plan_s4() -> Dict[str, Any]:
+            return discover_optimal_flash_sources_for_tokens(
+                router,
+                chain,
+                block_pin,
+                token_addrs,
+                candidate_vaults=harness_vault_addrs,
+                exit_routes=closure.verified_exit_pools,
+                decimals_map=closure.token_decimals,
+                prices_map=_closure_prices_lookup(closure),
+            )
+
+        _flash_plan_box: List[Optional[Dict[str, Any]]] = [None]
+        _flash_ev_s4 = threading.Event()
+        if block_pin > 0 and _is_live_real_router(router):
+            def _bg_discover_flash() -> None:
+                try:
+                    _flash_plan_box[0] = _compute_flash_plan_s4()
+                except _RECOVERABLE_IO_EXC:
+                    _flash_plan_box[0] = {}
+                finally:
+                    _flash_ev_s4.set()
+
+            threading.Thread(target=_bg_discover_flash, daemon=True).start()
+        else:
+            _flash_plan_box[0] = _compute_flash_plan_s4()
+            _flash_ev_s4.set()
+
+        def _get_flash_plan_s4() -> Dict[str, Any]:
+            _flash_ev_s4.wait(timeout=15.0)
+            return _flash_plan_box[0] if isinstance(_flash_plan_box[0], dict) else {}
+
         _emit_progress(
             "S3_SLICES_READY",
             slug=slug,
@@ -51051,7 +51224,7 @@ def audit_single_protocol(
             if forge_out.executed and not forge_out.conservation_gains:
                 flash_slices_s4 = _build_stage4_flash_wrapped_slices(
                     prescreened,
-                    flash_plan_s4,
+                    _get_flash_plan_s4(),
                     token_addrs,
                     closure.token_decimals,
                     exit_routes=closure.verified_exit_pools,
@@ -51216,7 +51389,7 @@ def audit_single_protocol(
                 incident_sources=_cached_inc_sources[1],
                 compact_single_bundle=True,
                 pre_diagnostics=mech_diag,
-                flash_plan=flash_plan_s4,
+                flash_plan=_get_flash_plan_s4(),
             )
 
         # 보존 법칙 이익 이벤트가 포착된 경우 테스트별로 모든 자산 이득을 합산하여 정밀 회계 정산 수행
@@ -51304,13 +51477,14 @@ def audit_single_protocol(
                                     repeat_counts=zoom_reps,
                                 )
                             )
-                    if flash_plan_s4 and flash_plan_s4.get("by_token"):
+                    _fp_ref = _get_flash_plan_s4()
+                    if _fp_ref and _fp_ref.get("by_token"):
                         non_fl_refs = [s_nf for s_nf in ref_cands[:2] if not s_nf.flash_loan_hint]
                         if non_fl_refs:
                             refine_slices.extend(
                                 _build_stage4_flash_wrapped_slices(
                                     non_fl_refs,
-                                    flash_plan_s4,
+                                    _fp_ref,
                                     token_addrs,
                                     closure.token_decimals,
                                     exit_routes=closure.verified_exit_pools,
@@ -52143,7 +52317,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                 _ensure_mode_a_seeded(store)
             c_phase = _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR)
             pending_start_cnt = int(store.queue_counts().get("pending", 0))
-            need_sf_start = c_phase != "exhausted"
+            need_sf_start = c_phase != "exhausted" and not (pending_start_cnt >= 64 and run_sweep_budget_sec <= 120.0)
             need_lw_start = pending_start_cnt > 0
             bg_startup_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
             bg_startup_futs: List[Tuple[str, concurrent.futures.Future]] = []
@@ -52370,7 +52544,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                         and (rem_for_claim >= 45.0 or (not in_flight and not processed and rem_for_claim >= 20.0))
                     )
                     if can_claim_more:
-                        want_n = max(1, min(free_slots, _MAX_SESSION_DELEGATION_BACKLOG - cur_del_n))
+                        want_n = max(1, free_slots)
                         with _exclusive_file_lock(LOCK_FILE_PATH):
                             new_items = store.claim_batch_for_session(
                                 sid,

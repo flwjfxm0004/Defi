@@ -1,428 +1,464 @@
-//! TropiCore-Omega v10.0 ASI-Core — Zero-Crutch Non-LLM General Superintelligence Architecture
-//! Target Hardware (`장비.md` Track A):
-//!   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 7.168 TB/s, 14.044 PFLOPS FP4 2:4)
-//!   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5, 384 MB L3) + 1,000 GB DDR5-6400 ECC + 16 TB Gen5 NVMe
-//!   - STRICT ZERO-CRUTCH POLICY:
-//!       0 LLMs | 0 External APIs | 0 Pretraining | 0 External Rust Crates | 0 Mandatory Lean Bottleneck
-//!       Tier-1 Zero-Peek Multi-Register SSA Imperative Rust Synthesis (8 algorithms, Cold vs Trained on 4 UNSEEN)
-//!       Tier-2 Nonlinear 2-MLP Neural-Ensemble World Model + Active Epistemic Curiosity + +55-deg Fault Recovery
-//!       Tier-3 Fast Pure-Rust CEGIS -> E-Graph (<10ms)
-//!       Self-Hosting Repository RSI targeting live `src/evolved_policy.rs` (`--apply-rsi` atomic commit + rollback)
+//! TropiCore-Omega ASI-Zero (`v11.0.0`) — Pure Zero-Toy Non-LLM General Superintelligence Engine.
+//!
+//! ZERO toy games, ZERO toy mazes, ZERO toy LeetCode menus, ZERO LLMs, ZERO external Rust crates!
+//!
+//! Built on 3 Pure Real-World General Intelligence Substrates + Real SM120 GPU Training (`ABI = 1100`):
+//!   1. `DeepContractiveBrain` (`src/brain.rs` + `src/gpu_backend.rs` + `cuda/tropicore_omega_sm120.cu`):
+//!      Scalable L-layer Contractive NVFP4 Equilibrium + Causal Tropical-Exponential SSM (`laptop` -> `blackwell-8b`)
+//!      with REAL Forward + Backward + Fused AdamW + Contractive Projection + NVFP4 STE!
+//!   2. `Universal Byte-Stream Solomonoff Learner` (`src/compressor.rs` + `src/episodic.rs`):
+//!      Trains directly on ANY real files/directories on disk and measures exact out-of-sample `bits/byte`!
+//!   3. `UniversalAgent` External Open-World Protocol (`src/agent_protocol.rs`) +
+//!      `Real-Corpus-Gated Self-Optimizer` (`src/self_optimizer.rs` targeting live `src/asi_runtime_cfg.rs`)!
 
-mod asi_core;
-mod benchmark;
-mod bytecode;
-mod core;
-mod egraph;
-mod evolved_policy;
-mod gpu_bridge;
-mod ir;
-mod memory;
+mod agent_protocol;
+mod asi_runtime_cfg;
+mod brain;
+mod compressor;
+mod episodic;
+mod gpu_backend;
 mod nvfp4;
-mod prover;
-mod reg_synth;
+mod self_optimizer;
 mod sha256;
-mod synthesizer;
-mod world_asi;
 
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::asi_core::{run_asi_forever_daemon, run_asi_general_cycle, OpenEndedFrontierState};
-use crate::benchmark::{run_continuous_learning_daemon, run_omega_v6_master_suite};
-use crate::core::{
-    UniversalEnergyCore, NUM_TACTIC_CLASSES, WORLD_BELIEF_DIM, WORLD_OBS_DIM, WORLD_STATE_DIM,
-};
-use crate::gpu_bridge::{detect_hardware_profile, omega_verify_sm120_abi_v8};
-use crate::memory::OMEGA_DIM;
-use crate::reg_synth::ImperativeSkillLibrary;
+use crate::agent_protocol::serve_universal_agent_stdio;
+use crate::brain::{BrainConfig, DeepContractiveBrain};
+use crate::compressor::{load_real_corpus_split, run_real_byte_training};
+use crate::gpu_backend::{backend_telemetry, verify_sm120_training_abi};
+use crate::self_optimizer::run_real_self_optimization;
 use crate::sha256::{append_vault_jsonl, sha256_hex};
 
-fn find_core_proof() -> PathBuf {
-    let local = PathBuf::from("proofs/omega_proof.lean");
-    if local.exists() {
+fn default_threads() -> usize {
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+    // Laptop-kind zero-lag default (2 threads on <=16T laptops; unleash all 192T on Threadripper PRO!)
+    if cpus <= 16 { 2 } else { cpus }
+}
+
+fn default_corpus_path() -> PathBuf {
+    let local = PathBuf::from("src");
+    if local.is_dir() {
         return local;
     }
-    PathBuf::from(r"C:\Defi\초지능\tropicore_omega\proofs\omega_proof.lean")
+    PathBuf::from(r"C:\Defi\초지능\tropicore_omega\src")
 }
 
-fn append_sealed_vault(out_dir: &Path, filename: &str, payload_json: &str) -> Result<String, String> {
-    let vault = out_dir.join(filename);
-    let digest = sha256_hex(payload_json.as_bytes());
-    let line = format!("{{\"sha256\":\"{}\",\"report\":{}}}", digest, payload_json);
-    append_vault_jsonl(&vault, &line)?;
-    Ok(digest)
-}
-
-fn parse_daemon_flags(args: &[String], default_cycles: usize, default_ckpt: &str) -> (usize, PathBuf, bool, usize) {
-    let mut cycles = default_cycles;
-    let mut ckpt = PathBuf::from(default_ckpt);
-    let mut apply_rsi = false;
-    let hw_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
-    // Laptop-kind default: cap at 2 threads on <=16T laptops, unleash all threads on 64T-192T workstations!
-    let mut threads = if hw_threads <= 16 { 2 } else { hw_threads };
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--cycles" && i + 1 < args.len() {
-            cycles = args[i + 1].parse().unwrap_or(default_cycles);
-            i += 2;
-        } else if args[i] == "--ckpt" && i + 1 < args.len() {
-            ckpt = PathBuf::from(&args[i + 1]);
-            i += 2;
-        } else if args[i] == "--threads" && i + 1 < args.len() {
-            threads = args[i + 1].parse().unwrap_or(threads).max(1);
-            i += 2;
-        } else if args[i] == "--apply-rsi" {
-            apply_rsi = true;
-            i += 1;
-        } else {
-            i += 1;
+fn flag_val(args: &[String], key: &str) -> Option<String> {
+    let mut i = 0;
+    while i + 1 < args.len() {
+        if args[i] == key {
+            return Some(args[i + 1].clone());
         }
+        i += 1;
     }
-    (cycles, ckpt, apply_rsi, threads)
+    None
+}
+
+fn has_flag(args: &[String], key: &str) -> bool {
+    args.iter().any(|a| a == key)
 }
 
 fn print_help() {
-    println!("TropiCore-Omega v10.0 ASI-Core (d={}) — Zero-Crutch Non-LLM General ASI", OMEGA_DIM);
-    println!("Modes:");
-    println!("  (default) | --asi-smoke                         Fast (<10s) v10.0 4-Pillar General ASI verification");
-    println!("  --asi-forever [--cycles N] [--ckpt P]           Autonomous Open-Ended General ASI daemon");
-    println!("                [--apply-rsi] [--threads N]       (--apply-rsi enables atomic live `src/evolved_policy.rs` self-upgrade)");
-    println!("  --learn-forever [--cycles N] [--ckpt P]         Wake-Sleep + E-Graph + Meta-AST lossless daemon");
-    println!("  --legacy-8axis                                  Full v8.0 8-axis symbolic/world-model verification suite");
-    println!("Compile Features:");
-    println!("  --features scale_256 | scale_2048 | scale_4096 | cuda_sm120 | lean_oracle (optional)");
+    println!("TropiCore-Omega ASI-Zero v11.0.0 — Zero-Toy Non-LLM General Superintelligence Engine");
+    println!("Commands:");
+    println!("  status                                            Show hardware, SM120 ABI=1100 & scaling presets");
+    println!("  train-bytes [--path DIR] [--preset P] [--epochs N] [--max-bytes B] [--ckpt F] [--threads T]");
+    println!("                                                    Train directly on real files/code & measure held-out bits/byte");
+    println!("  eval-bytes  [--path DIR] --ckpt F [--threads T]   Evaluate causal held-out bits/byte from checkpoint");
+    println!("  serve-agent [--act-dim A] [--ckpt F] [--threads T] Run external UniversalAgent JSON-Line stdio server");
+    println!("  self-optimize [--path DIR] [--ckpt F] [--apply] [--threads T]");
+    println!("                                                    Real-corpus-gated self-optimization of live `src/asi_runtime_cfg.rs`");
+    println!("  daemon      [--path DIR] [--cycles N] [--preset P] [--ckpt F] [--apply] [--threads T]");
+    println!("                                                    Autonomous lossless General ASI loop (Day-1 4x Blackwell)");
+    println!("Presets: laptop (0.28M) | mid (14.9M) | blackwell-1b (0.71B) | blackwell-8b (4.70B)");
 }
 
-fn run_asi_smoke_mode(apply_rsi: bool, worker_threads: usize) {
-    let hw = detect_hardware_profile();
-    let abi_ver = omega_verify_sm120_abi_v8(
-        OMEGA_DIM,
-        NUM_TACTIC_CLASSES,
-        WORLD_OBS_DIM,
-        WORLD_BELIEF_DIM,
-        WORLD_STATE_DIM,
-    )
-    .expect("SM120 ABI parity verification failed");
-
-    let out_dir = PathBuf::from("out");
-    let asi_dir = out_dir.join("asi_v10");
-    let ckpt_path = out_dir.join("asi_v10_smoke.ckpt");
-    let mut core = UniversalEnergyCore::new(20261125);
-    let mut skills = ImperativeSkillLibrary::default();
-    let mut frontier = OpenEndedFrontierState::default();
-
+fn cmd_status() {
+    let abi = verify_sm120_training_abi().expect("SM120 training ABI verification failed");
+    let tel = backend_telemetry();
     println!("=================================================================================");
-    println!(
-        " TropiCore-Omega v10.0 ASI-Core — Zero-Crutch General ASI Smoke (d={}, ABI={}, threads={})",
-        OMEGA_DIM, abi_ver, worker_threads
-    );
-    println!(" (0 LLMs | 0 Crates | 8-Algo SSA Synth | 2-MLP Nonlinear Vortex World | +55deg Fault Adapt | Self-Hosting Repo RSI)");
+    println!(" TropiCore-Omega ASI-Zero v11.0.0 (Zero-Toy | Zero-LLM | Zero-Crates | ABI={}/{})", abi, tel.abi_version);
     println!("=================================================================================");
-    println!(" Host Backend  : {} (GPUs={}, CPU={}T)", hw.backend, hw.physical_gpus, hw.cpu_threads);
-    println!(
-        " Target Node   : 4x RTX PRO 6000 Blackwell ({} GB GDDR7, {:.3} TB/s, {:.3} PFLOPS FP4) + {} GB ECC",
-        hw.target_vram_gb, hw.target_gddr7_tb_s, hw.target_fp4_sparse_pflops, hw.target_dram_gb
-    );
-    println!(
-        " Power / Cache : L2 CEGIS <= {} MiB/GPU | Compute Peak {}W (Full) / {}W (Quiet)",
-        hw.l2_cegis_cap_mib_per_gpu, hw.full_load_compute_watts, hw.quiet_mode_compute_watts
-    );
-    println!(
-        " Lean 4 Oracle : {}",
-        if cfg!(feature = "lean_oracle") {
-            "ENABLED (--features lean_oracle)"
-        } else {
-            "DECOUPLED / OPTIONAL (zero laptop lag; enable via `--features lean_oracle`)"
+    println!(" Compute Backend : {} (GPUs={}, HostCPU={}T)", tel.backend_name, tel.physical_gpus, tel.host_cpu_threads);
+    println!(" Target Hardware : 4x RTX PRO 6000 Blackwell (384 GB GDDR7, 14.044 PFLOPS FP4) + 9995WX 192T + 1,000 GB ECC");
+    println!("---------------------------------------------------------------------------------");
+    println!(" Scaling Presets (Exact Dynamic Architecture — Same Code Laptop -> 4x Blackwell):");
+    for name in ["laptop", "mid", "blackwell-1b", "blackwell-8b"] {
+        let cfg = BrainConfig::from_preset(name).unwrap();
+        println!(
+            "   - {:<13}: L={:>2}, d={:>4}, ff={:>4}, ticks={} | {:>10.2}M params | NVFP4={:.3} GB | FP32+AdamW={:.2} GB",
+            name,
+            cfg.n_layers,
+            cfg.d_model,
+            cfg.d_ff,
+            cfg.n_ticks,
+            cfg.parameter_count() as f64 / 1e6,
+            cfg.nvfp4_weight_gb(),
+            cfg.fp32_train_state_gb()
+        );
+    }
+    println!("=================================================================================");
+}
+
+fn load_or_init_brain(ckpt: &Path, preset: &str) -> (DeepContractiveBrain, String) {
+    if ckpt.exists() {
+        match DeepContractiveBrain::load_checkpoint(ckpt) {
+            Ok((b, sha)) => {
+                return (
+                    b,
+                    format!("RESUMED LOSSLESS TOMG11 (sha256={})", &sha[..16]),
+                );
+            }
+            Err(e) => {
+                eprintln!(" [warn] checkpoint load failed ({}), initializing fresh...", e);
+            }
         }
-    );
-    println!("---------------------------------------------------------------------------------");
+    }
+    let cfg = BrainConfig::from_preset(preset).unwrap_or_else(|e| {
+        eprintln!(" [error] {}", e);
+        std::process::exit(1);
+    });
+    (
+        DeepContractiveBrain::new(cfg, 2026_1125),
+        format!("FRESH INIT (preset={}, params={:.2}M)", preset, cfg.parameter_count() as f64 / 1e6),
+    )
+}
 
-    let rep = run_asi_general_cycle(&mut core, &mut skills, &asi_dir, &ckpt_path, &mut frontier, 100_909, apply_rsi);
+fn cmd_train_or_daemon(args: &[String], cycles: usize, run_self_opt: bool) {
+    let preset = flag_val(args, "--preset").unwrap_or_else(|| "laptop".to_string());
+    let path = flag_val(args, "--path")
+        .or_else(|| flag_val(args, "--corpus"))
+        .map(PathBuf::from)
+        .unwrap_or_else(default_corpus_path);
+    let ckpt = flag_val(args, "--ckpt")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("out/asi_zero.tomg"));
+    let epochs: usize = flag_val(args, "--epochs").and_then(|s| s.parse().ok()).unwrap_or(2);
+    let max_bytes: usize = flag_val(args, "--max-bytes")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(if preset == "laptop" { 24_576 } else { 0 });
+    let max_heldout: usize = if max_bytes > 0 { (max_bytes / 3).max(4096) } else { 0 };
+    let threads: usize = flag_val(args, "--threads")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(default_threads);
+    let apply_live = has_flag(args, "--apply") || has_flag(args, "--apply-rsi");
 
+    let abi = verify_sm120_training_abi().expect("SM120 ABI mismatch");
+    let corpus = load_real_corpus_split(&path, max_bytes, max_heldout).unwrap_or_else(|e| {
+        eprintln!("[error] {}", e);
+        std::process::exit(1);
+    });
+    let (mut brain, boot_msg) = load_or_init_brain(&ckpt, &preset);
+    let out_dir = PathBuf::from("out");
+
+    println!("=================================================================================");
     println!(
-        "[Tier-1] General Multi-Register SSA Imperative Synthesis (Space={}, ZERO hardcoded solutions, live `rustc -O -D warnings`)",
-        rep.tier1.space_size
+        " TropiCore-Omega ASI-Zero v11.0.0 — Real-World General ASI (ABI={}, threads={})",
+        abi, threads
     );
+    println!(" Boot   : {}", boot_msg);
     println!(
-        "  Train Frontier = {}/{} | UNSEEN Held-Out = Cold {}/{} (avg {:.1} exp) -> Trained {}/{} (avg {:.1} exp, {:.2}x speedup!)",
-        rep.tier1.train_solved,
-        rep.tier1.train_total,
-        rep.tier1.heldout_cold_solved,
-        rep.tier1.heldout_total,
-        rep.tier1.heldout_cold_avg_exp,
-        rep.tier1.heldout_trained_solved,
-        rep.tier1.heldout_total,
-        rep.tier1.heldout_trained_avg_exp,
-        rep.tier1.heldout_cold_avg_exp / rep.tier1.heldout_trained_avg_exp.max(1.0)
+        " Corpus : {} (train={} files / {} bytes | UNSEEN heldout={} / {} bytes)",
+        path.display(),
+        corpus.train_files,
+        corpus.train_bytes.len(),
+        corpus.heldout_label,
+        corpus.heldout_bytes.len()
     );
-    println!(
-        "  Real `rustc -O -D warnings` OOD Certified = {}/8 | SkillLibrary Verified Idioms = {} | Time = {:.1} ms",
-        rep.tier1.rustc_verified_total, rep.tier1.skills_learned, rep.tier1.wall_ms
-    );
-    for d in &rep.tier1.details {
+    println!("=================================================================================");
+
+    for cyc in 1..=cycles.max(1) {
+        let rep = run_real_byte_training(&mut brain, &corpus, epochs, 64, threads);
+        let save_sha = brain.save_checkpoint(&ckpt).unwrap_or_else(|e| format!("ERR:{}", e));
+        let roundtrip_ok = DeepContractiveBrain::load_checkpoint(&ckpt)
+            .map(|(_, h)| h == save_sha)
+            .unwrap_or(false);
+        let tel = backend_telemetry();
+
         println!(
-            "    - {:<21} ({:<7}) | solved={:<5} rustc={:<5} | exp={:>4} | run={:>6}us | mdl={}b",
-            d.name,
-            if d.is_heldout { "UNSEEN" } else { "train" },
-            d.solved,
-            d.rustc_verified,
-            d.expansions,
-            d.runtime_us,
-            d.mdl_bits
+            " [Cycle {:>2}] (tr={}f/{}B, ho={}/{}B, ep={}) HeldOut bits/byte: {:.3} -> Param {:.3} | +Episodic {:.3} | Online {:.3} ({:.2}x comp) | {:.1} KB/s | ||W_eq||={:.3} | Mem={}bkt/{}lat | ckpt={}({}) | {:.0}ms",
+            cyc,
+            rep.train_files,
+            rep.train_bytes,
+            rep.heldout_label,
+            rep.heldout_bytes,
+            rep.epochs,
+            rep.untrained_heldout_bpb,
+            rep.trained_param_heldout_bpb,
+            rep.trained_blended_heldout_bpb,
+            rep.online_adapted_heldout_bpb,
+            rep.compression_ratio,
+            rep.throughput_kb_s,
+            rep.contractive_linf,
+            rep.episodic_buckets,
+            brain.episodic.latent_count(),
+            &save_sha[..16.min(save_sha.len())],
+            roundtrip_ok,
+            rep.wall_ms
+        );
+
+        let opt_rep = if run_self_opt {
+            let so = run_real_self_optimization(
+                &brain,
+                &corpus.heldout_bytes,
+                &out_dir,
+                110_000 + cyc as u64,
+                apply_live,
+                threads,
+            );
+            println!(
+                "   [Self-Opt] Live `{}` ({}) | cands={} | Real HeldOut bpb {:.4} -> {:.4} | acc={} rustc0W={} live={} | {} | staged={} | {:.0}ms",
+                so.target_live_file,
+                so.live_sha256,
+                so.candidates_evaluated,
+                so.baseline_real_bpb,
+                so.optimized_real_bpb,
+                so.accepted,
+                so.rustc_zero_warnings,
+                so.applied_live,
+                so.upgrade_desc,
+                so.staged_path,
+                so.wall_ms
+            );
+            Some(so)
+        } else {
+            None
+        };
+
+        let json = format!(
+            "{{\"engine\":\"TropiCore-ASI-Zero-v11\",\"cyc\":{},\"L\":{},\"d\":{},\"params\":{},\"bpb_pre\":{:.4},\"bpb_param\":{:.4},\"bpb_blend\":{:.4},\"bpb_online\":{:.4},\"comp\":{:.3},\"kb_s\":{:.2},\"norm\":{:.4},\"fwd_gemms\":{},\"bwd_gemms\":{},\"adamw\":{},\"gflops\":{:.3},\"ckpt_ok\":{},\"self_opt_acc\":{}}}",
+            cyc,
+            brain.cfg.n_layers,
+            brain.cfg.d_model,
+            brain.cfg.parameter_count(),
+            rep.untrained_heldout_bpb,
+            rep.trained_param_heldout_bpb,
+            rep.trained_blended_heldout_bpb,
+            rep.online_adapted_heldout_bpb,
+            rep.compression_ratio,
+            rep.throughput_kb_s,
+            rep.contractive_linf,
+            tel.fwd_gemms,
+            tel.bwd_gemms,
+            tel.adamw_steps,
+            tel.est_gflops,
+            roundtrip_ok,
+            opt_rep.map(|o| o.accepted).unwrap_or(false)
+        );
+        let h = sha256_hex(json.as_bytes());
+        let _ = append_vault_jsonl(
+            &out_dir.join("asi_zero_vault.jsonl"),
+            &format!("{{\"sha256\":\"{}\",\"entry\":{}}}", h, json),
         );
     }
 
-    println!(
-        "\n[Tier-2] {:?}: Nonlinear 2-MLP Neural-Ensemble World Model (Secret {:.1}-deg Rot + Vortex + QuadDrag + Hidden Obstacle)",
-        rep.tier2.tier, rep.tier2.secret_angle_deg
-    );
-    println!(
-        "  Active Epistemic Curiosity : {} disagreement probes | Solomonoff Compression = {:.1}x | StreamNorm = {:.4} | {:.1} ms",
-        rep.tier2.epistemic_probes_taken, rep.tier2.compression_ratio, rep.tier2.brain_stream_norm, rep.tier2.wall_ms
-    );
-    println!(
-        "  Unseen Nonlinear OOD Eval  : Random {}/{} -> 2-MLP Ensemble CEM {}/{} | Frontier -> (sig={:.3}, r={:.2})",
-        rep.tier2.random_success,
-        rep.tier2.eval_episodes,
-        rep.tier2.ensemble_cem_success,
-        rep.tier2.eval_episodes,
-        frontier.physics_noise_std,
-        frontier.physics_obs_radius
-    );
-    println!(
-        "  Non-Stationary +{:.0}-deg Fault : Frozen Ensemble {}/{} -> Online Surprise-Adapting {}/{} (triggers={})",
-        rep.tier2.fault_shift_deg,
-        rep.tier2.fault_frozen_success,
-        rep.tier2.fault_eval_episodes,
-        rep.tier2.fault_online_adapted_success,
-        rep.tier2.fault_eval_episodes,
-        rep.tier2.surprise_adapt_triggers
-    );
-
-    println!("\n[Tier-3] {:?}: Fast Pure-Rust CEGIS Algebraic Discovery -> E-Graph (ZERO Lean Lag!)", rep.tier3.tier);
-    println!(
-        "  Proposed = {} | Refuted = {} | Rules Promoted = +{} (E-Graph total={}) | Time = {:.2} ms | {}",
-        rep.tier3.proposed_pairs,
-        rep.tier3.cegis_refuted,
-        rep.tier3.rules_promoted,
-        rep.tier3.egraph_rules_total,
-        rep.tier3.wall_ms,
-        rep.tier3.status
-    );
-
-    println!("\n[Self-Hosting Repo RSI & Unified Brain] Targets LIVE `{}` (`sha256={}`)", rep.rsi.target_live_file, rep.rsi.live_source_sha256);
-    println!(
-        "  Sealed OOD Pareto : {:.4} -> {:.4} (accepted={}, applied_live={}, cands={}, upgrade={}, ledger={})",
-        rep.rsi.baseline_pareto_score,
-        rep.rsi.evolved_pareto_score,
-        rep.rsi.accepted,
-        rep.rsi.applied_to_live_repo,
-        rep.rsi.candidates_evaluated,
-        rep.rsi.structural_upgrade,
-        rep.rsi.ledger_sha256
-    );
-    println!("  Staged Candidate  : {}", rep.rsi.staged_path);
-    println!(
-        "  Unified Brain     : ||W_core||_inf = {:.4} (<1.0) | W_core L1 Drift = {:.4} | Online Steps = {} | Full-Brain SHA-256 = {} ({})",
-        rep.contractive_linf_norm,
-        rep.w_core_l1_drift,
-        rep.train_steps_total,
-        rep.ckpt_sha256,
-        rep.ckpt_roundtrip_ok
-    );
+    let tel = backend_telemetry();
     println!("---------------------------------------------------------------------------------");
-    println!(" Total Wall Time : {:.2} ms", rep.wall_ms);
-
-    let json = format!(
-        "{{\"engine\":\"TropiCore-Omega-v10.0-ASI\",\"dim\":{},\"abi\":{},\"ms\":{:.2},\"t1_rustc\":{},\"t1_cold_exp\":{:.1},\"t1_tr_exp\":{:.1},\"t2_comp\":{:.2},\"t2_cem\":[{},{}],\"t2_fault\":[{},{}],\"t3_rules\":{},\"t3_ms\":{:.2},\"rsi\":[{:.4},{:.4},{},{}],\"norm\":{:.4},\"dw\":{:.4},\"ckpt_ok\":{}}}",
-        OMEGA_DIM,
-        abi_ver,
-        rep.wall_ms,
-        rep.tier1.rustc_verified_total,
-        rep.tier1.heldout_cold_avg_exp,
-        rep.tier1.heldout_trained_avg_exp,
-        rep.tier2.compression_ratio,
-        rep.tier2.random_success,
-        rep.tier2.ensemble_cem_success,
-        rep.tier2.fault_frozen_success,
-        rep.tier2.fault_online_adapted_success,
-        rep.tier3.rules_promoted,
-        rep.tier3.wall_ms,
-        rep.rsi.baseline_pareto_score,
-        rep.rsi.evolved_pareto_score,
-        rep.rsi.accepted,
-        rep.rsi.applied_to_live_repo,
-        rep.contractive_linf_norm,
-        rep.w_core_l1_drift,
-        rep.ckpt_roundtrip_ok
+    println!(
+        " Telemetry : Backend={} | FwdGEMMs={} | BwdGEMMs={} | AdamW={} | Est={:.3} GFLOPs | TotalBytesTrained={}",
+        tel.backend_name, tel.fwd_gemms, tel.bwd_gemms, tel.adamw_steps, tel.est_gflops, brain.total_bytes_trained
     );
-    match append_sealed_vault(&out_dir, "asi_v10_vault.jsonl", &json) {
-        Ok(h) => println!(" Sealed ASI Vault: out/asi_v10_vault.jsonl (sha256={})", &h[..24]),
-        Err(e) => println!(" Sealed ASI Vault Warning: {}", e),
-    }
     println!("=================================================================================");
 }
 
-fn run_legacy_8axis_mode() {
-    let hw = detect_hardware_profile();
-    let abi_ver = omega_verify_sm120_abi_v8(
-        OMEGA_DIM,
-        NUM_TACTIC_CLASSES,
-        WORLD_OBS_DIM,
-        WORLD_BELIEF_DIM,
-        WORLD_STATE_DIM,
-    )
-    .expect("SM120 ABI parity verification failed");
-    let out_dir = PathBuf::from("out");
-    let proof_path = find_core_proof();
+fn cmd_eval_bytes(args: &[String]) {
+    let path = flag_val(args, "--path")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_corpus_path);
+    let ckpt = flag_val(args, "--ckpt")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("out/asi_zero.tomg"));
+    let threads: usize = flag_val(args, "--threads")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(default_threads);
 
-    println!("=================================================================================");
-    println!(" TropiCore-Omega v10.0 (--legacy-8axis) — Unified-Brain 8-Axis Suite (d={}, ABI={})", OMEGA_DIM, abi_ver);
-    println!(" Host Backend  : {} (GPUs={}, CPU={}T)", hw.backend, hw.physical_gpus, hw.cpu_threads);
-    println!("=================================================================================");
+    let (mut brain, sha) = DeepContractiveBrain::load_checkpoint(&ckpt).unwrap_or_else(|e| {
+        eprintln!("[error] failed to load checkpoint '{}': {}", ckpt.display(), e);
+        std::process::exit(1);
+    });
+    let corpus = load_real_corpus_split(&path, 0, 32_768).unwrap_or_else(|e| {
+        eprintln!("[error] {}", e);
+        std::process::exit(1);
+    });
+    let (param_bpb, blend_bpb) = brain.eval_byte_stream(&corpus.heldout_bytes, 64, false, threads);
+    let (_, online_bpb) = brain.eval_byte_stream(&corpus.heldout_bytes, 64, true, threads);
+    println!(
+        "Eval `{}` (ckpt={}...): Param={:.4} bpb | +Episodic={:.4} bpb | Online={:.4} bpb ({:.2}x comp)",
+        corpus.heldout_label,
+        &sha[..16],
+        param_bpb,
+        blend_bpb,
+        online_bpb,
+        8.0 / online_bpb.max(0.05)
+    );
+}
 
-    let r = run_omega_v6_master_suite(&out_dir, &proof_path);
+fn cmd_self_optimize(args: &[String]) {
+    let path = flag_val(args, "--path")
+        .or_else(|| flag_val(args, "--corpus"))
+        .map(PathBuf::from)
+        .unwrap_or_else(default_corpus_path);
+    let ckpt = flag_val(args, "--ckpt")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("out/asi_zero.tomg"));
+    let preset = flag_val(args, "--preset").unwrap_or_else(|| "laptop".to_string());
+    let threads: usize = flag_val(args, "--threads")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(default_threads);
+    let apply_live = has_flag(args, "--apply");
 
-    println!("[Axis 1] Unified-Brain Raw Deep-Set + Contractive Core + Full-Brain Persistence");
-    println!(
-        "  ||W_core||_inf = {:.4} (<1.0) | W_enc Drift = {:.4} | W_core Drift = {:.4}",
-        r.contractive_linf_norm, r.w_enc_l1_drift, r.w_core_l1_drift
-    );
-    println!(
-        "  PCFG Frontier = {} (Wake solved = {}/24) -> {} Step-HER samples | STE Loss {:.4} -> {:.4}",
-        r.wake_sleep_frontier_tasks, r.wake_tasks_solved, r.her_residual_samples, r.ste_loss_init, r.ste_loss_final
-    );
-    println!(
-        "  GEMMs = {} | Ticks = {:?} | LIVE VM = {} | TacticFFI = {} | pert_L1 = {:.4}",
-        r.gemm_dispatches, r.relax_ticks_4lanes, r.bytecode_vm_evals, r.tactic_policy_dispatches, r.nvfp4_perturbation_l1
-    );
-    println!(
-        "  Autonomous Multi-Op Concepts = +{} (total={}) | Full-Brain SHA-256 Roundtrip = {}",
-        r.autonomous_concepts_mined, r.memory_total_concepts, r.full_brain_ckpt_bit_exact
-    );
-
-    println!("\n[Axis 2] Cold vs Unified-Brain Trained + Live Meta-AST (6 Sealed Held-Out Tasks)");
-    println!(
-        "  Cold {}/{} ({:.1}) vs Trained {}/{} ({:.1}, Real rustc -O = {}/{})",
-        r.heldout_cold_solved, r.heldout_total, r.heldout_cold_avg_exp,
-        r.heldout_trained_solved, r.heldout_total, r.heldout_trained_avg_exp,
-        r.heldout_rustc_verified, r.heldout_total
-    );
-    for d in &r.heldout_details {
-        println!(
-            "    - {:<21} ({:<10}) | Cold={}({:>4}) vs Tr={}({:>4}) | OE={:>4}/{:<5} | ops={} err={:.1e} eg={} | rustc={} | {}",
-            d.name, d.domain, d.cold_solved, d.cold_expansions, d.trained_solved, d.trained_expansions,
-            d.trained_oe_kept, d.trained_raw_seen, d.trained_leaf_ops, d.trained_residual_err, d.trained_egraph_unions,
-            d.rustc_ood_verified, d.synthesized_pretty
-        );
+    let corpus = load_real_corpus_split(&path, 16_384, 8_192).unwrap_or_else(|e| {
+        eprintln!("[error] {}", e);
+        std::process::exit(1);
+    });
+    let (mut brain, _) = load_or_init_brain(&ckpt, &preset);
+    if brain.total_bytes_trained == 0 {
+        let _ = run_real_byte_training(&mut brain, &corpus, 1, 64, threads);
     }
-
-    println!("\n[Axis 3] Neural-Guided Stagewise OMP + Dual-Number AD (Permuted + 10% Outliers)");
+    let so = run_real_self_optimization(&brain, &corpus.heldout_bytes, Path::new("out"), 2026_1125, apply_live, threads);
     println!(
-        "  Clean {}/{} | 10% Outliers NonRob {}/{} -> Huber-OMP {}/{} | rustc={}/{}",
-        r.continuous_clean_solved, r.continuous_clean_total,
-        r.continuous_noisy_nonrobust_solved, r.continuous_noisy_total,
-        r.continuous_noisy_robust_solved, r.continuous_noisy_total,
-        r.continuous_rustc_verified, r.continuous_clean_total + r.continuous_noisy_total
+        "[Self-Opt] Target=`{}` ({}) | Real HeldOut bpb {:.4} -> {:.4} | accepted={} rustc0W={} applied_live={} | {} | ledger={} | {:.0}ms",
+        so.target_live_file,
+        so.live_sha256,
+        so.baseline_real_bpb,
+        so.optimized_real_bpb,
+        so.accepted,
+        so.rustc_zero_warnings,
+        so.applied_live,
+        so.upgrade_desc,
+        so.ledger_sha256,
+        so.wall_ms
     );
-    for c in &r.continuous_details {
-        println!(
-            "    - {:<26} (noisy={:<5} ad={:<5}) | nonRob={:.3e} | OMP-AD={:.3e} | rustc={} | {}",
-            c.name, c.noisy, c.used_continuous_ad, c.non_robust_ood_err, c.omega_ad_ood_err, c.rustc_ood_verified, c.synthesized_pretty
-        );
-    }
-
-    println!("\n[Axis 4] Raw-Grammar Functional/Rec + `FoldSeq` 1,000-Elem DP");
-    println!(
-        "  VM diff={:.2e} | Func/Rec {}/{} (rustc={}/{}) | FoldSeq 1000-DP {}/{} (rustc={}/{})",
-        r.bytecode_vm_max_diff, r.func_rec_solved, r.func_rec_total, r.func_rec_rustc_verified, r.func_rec_total,
-        r.seq_dp_solved, r.seq_dp_total, r.seq_dp_rustc_1000_verified, r.seq_dp_total
-    );
-
-    println!("\n[Axis 5] Uniform Depth-3 Conservation `CellExpr`/`CoordExpr`");
-    println!(
-        "  DAG {:.1}% -> Fix {:.1}% | FlipV={} RayLeft={} | CEGIS {}->{} | Mem {:.1}%->{:.1}%",
-        r.dag_4x_acc * 100.0, r.omega_4x_acc * 100.0, r.unseen_flipv_rustc_ok, r.unseen_rayleft_rustc_ok,
-        r.cegis_off_evals, r.cegis_on_evals, r.grid_mem_off_acc * 100.0, r.grid_mem_on_acc * 100.0
-    );
-
-    println!("\n[Axis 6] Algebra / Optional Lean 4 Oracle -> E-Graph");
-    println!(
-        "  Goals={} States={} Tactics={} Reused={} W_tac_q={} ({:.3}->{:.3}) | Alg={} Concept={} Nonlin={} ({} pairs={} ref={}) | File={}",
-        r.prover_goals_attempted, r.prover_states_inspected, r.prover_tactics_tried, r.prover_lemmas_reused,
-        r.prover_neural_queries, r.prover_tactic_loss_init, r.prover_tactic_loss_final,
-        r.prover_alg_theorems, r.prover_concept_props, r.prover_nonlinear_induction, r.prover_lean4_status,
-        r.prover_proposed, r.prover_refuted, r.prover_lean4_file
-    );
-    println!(
-        "  E-Graph Rules {}->{} (+{}) | MDL {}->{} (unions={})",
-        r.egraph_rules_before, r.egraph_rules_after, r.egraph_rules_promoted,
-        r.egraph_mdl_before, r.egraph_mdl_after, r.egraph_unions_after
-    );
-
-    println!("\n[Axis 7] Local AST Repair + Double-Permuted Egocentric World");
-    println!(
-        "  Repair {}/{} ({} patches) | 6x6 Rand {}/{} Early {}/{} -> Learned {}/{} (tr={}, dynMSE={:.4}, rewMAE={:.4}, lieInv={:.4}) | 10x10 OOD Rand {}/{} -> Learned {}/{}",
-        r.repair_solved, r.repair_total, r.repair_local_patches,
-        r.world_report.random_wins_6x6, r.world_report.eval_episodes,
-        r.world_report.early_wins_6x6, r.world_report.eval_episodes,
-        r.world_report.learned_wins_6x6, r.world_report.eval_episodes,
-        r.world_report.total_transitions_learned, r.world_report.dyn_mse_final, r.world_report.rew_mae_final, r.world_report.act_inverse_err,
-        r.world_report.random_wins_10x10_ood, r.world_report.eval_episodes,
-        r.world_report.learned_wins_10x10_ood, r.world_report.eval_episodes
-    );
-
-    println!("\n[Axis 8] Koza GP Crossover Meta-AST + Scaling + Exact 3D HV");
-    println!(
-        "  Meta-AST ValSolved {}->{} | ValExp {}->{} (cands={}, xover={}, acc={}, temp={:.2}, rustc={}) | [mdl={}] {} | path={}",
-        r.meta_report.baseline_val_solved, r.meta_report.improved_val_solved,
-        r.meta_report.baseline_val_expansions, r.meta_report.improved_val_expansions,
-        r.meta_report.candidates_evaluated, r.meta_report.crossover_children_evaluated,
-        r.meta_report.accepted_improvement, r.meta_report.winning_strategy.neural_temp,
-        r.meta_report.emitted_rust_verified, r.meta_report.winning_meta_ast_mdl,
-        r.meta_report.winning_meta_ast_pretty, r.meta_report.emitted_rust_path
-    );
-    println!(
-        "  Ops {}<{}<{} | Exact HV {:.6}<={:.6}<={:.6} (mono={}) | CoreProof={}",
-        r.ops_b1, r.ops_b2, r.ops_b4, r.hv_b1, r.hv_b2, r.hv_b4, r.hv_strict_mono, r.core_proof_lean4_status
-    );
-    println!(" Total Wall Time : {:.2} ms", r.wall_ms);
-
-    let json = format!(
-        "{{\"engine\":\"TropiCore-Omega-v10.0-8axis\",\"dim\":{},\"ms\":{:.2},\"norm\":{:.4},\"cold\":[{},{:.1}],\"trained\":[{},{:.1}],\"egraph_mdl\":[{},{}],\"world_10x10\":{},\"meta_acc\":{}}}",
-        OMEGA_DIM, r.wall_ms, r.contractive_linf_norm,
-        r.heldout_cold_solved, r.heldout_cold_avg_exp,
-        r.heldout_trained_solved, r.heldout_trained_avg_exp,
-        r.egraph_mdl_before, r.egraph_mdl_after,
-        r.world_report.learned_wins_10x10_ood, r.meta_report.accepted_improvement
-    );
-    match append_sealed_vault(&out_dir, "omega_v8_vault.jsonl", &json) {
-        Ok(h) => println!(" Sealed Vault    : out/omega_v8_vault.jsonl (sha256={})", &h[..24]),
-        Err(e) => println!(" Sealed Vault Warning: {}", e),
-    }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
 
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_help();
-        return;
+    match sub {
+        "-h" | "--help" | "help" => print_help(),
+        "status" => cmd_status(),
+        "train-bytes" => cmd_train_or_daemon(&args, 1, true),
+        "eval-bytes" => cmd_eval_bytes(&args),
+        "self-optimize" => cmd_self_optimize(&args),
+        "daemon" => {
+            let cycles = flag_val(&args, "--cycles").and_then(|s| s.parse().ok()).unwrap_or(3);
+            cmd_train_or_daemon(&args, cycles, true);
+        }
+        "serve-agent" => {
+            let act_dim = flag_val(&args, "--act-dim").and_then(|s| s.parse().ok()).unwrap_or(2);
+            let preset = flag_val(&args, "--preset").unwrap_or_else(|| "laptop".to_string());
+            let ckpt = flag_val(&args, "--ckpt")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("out/asi_zero.tomg"));
+            let threads = flag_val(&args, "--threads")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(default_threads);
+            let (brain, _) = load_or_init_brain(&ckpt, &preset);
+            serve_universal_agent_stdio(&brain, act_dim, threads);
+        }
+        other => {
+            eprintln!("Unknown command '{}'. Run with --help for usage.", other);
+            std::process::exit(1);
+        }
     }
-    let (cycles, ckpt, apply_rsi, worker_threads) = parse_daemon_flags(&args, 5, "out/asi_v10_daemon.ckpt");
-    if args.iter().any(|a| a == "--asi-forever") {
-        run_asi_forever_daemon(&ckpt, cycles, apply_rsi, worker_threads);
-        return;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_protocol::{format_agent_jsonl, parse_env_jsonl, UniversalOpenWorldAgent};
+
+    #[test]
+    fn test_sm120_training_abi_and_scaling_presets_match_blackwell_budget() {
+        let abi = verify_sm120_training_abi().expect("ABI must verify");
+        assert_eq!(abi, 1100);
+        let b8 = BrainConfig::from_preset("blackwell-8b").unwrap();
+        assert!(b8.parameter_count() > 4_000_000_000, "blackwell-8b preset must exceed 4B params!");
+        assert!(b8.nvfp4_weight_gb() < 10.0, "NVFP4 weights must easily fit inside 384 GB GDDR7!");
+        assert!(b8.fp32_train_state_gb() < 300.0, "FP32+AdamW master state must fit in 384 GB GDDR7 / 1,000 GB ECC!");
     }
-    if args.iter().any(|a| a == "--learn-forever") {
-        let (_, lckpt, _, _) = parse_daemon_flags(&args, 5, "out/omega_v10_daemon.ckpt");
-        run_continuous_learning_daemon(&lckpt, cycles);
-        return;
+
+    #[test]
+    fn test_real_source_code_compression_checkpoint_roundtrip_and_self_optimizer() {
+        let corpus_dir = default_corpus_path();
+        let corpus = load_real_corpus_split(&corpus_dir, 14_000, 4_096)
+            .expect("must load real Rust source files from src/");
+        let cfg = BrainConfig::from_preset("laptop").unwrap();
+        let mut brain = DeepContractiveBrain::new(cfg, 42);
+
+        let rep = run_real_byte_training(&mut brain, &corpus, 2, 64, 2);
+        assert!(
+            rep.untrained_heldout_bpb > 7.5,
+            "Untrained random brain must start near ~8.0 bits/byte! got {:.3}",
+            rep.untrained_heldout_bpb
+        );
+        assert!(
+            rep.trained_param_heldout_bpb < rep.untrained_heldout_bpb - 1.5,
+            "Pure parametric Deep Contractive Brain must genuinely compress UNSEEN real Rust code! pre={:.3} post={:.3}",
+            rep.untrained_heldout_bpb,
+            rep.trained_param_heldout_bpb
+        );
+        assert!(
+            rep.online_adapted_heldout_bpb < 5.0,
+            "Brain + Tropical Episodic Memory must compress unseen real Rust code below 5.0 bpb! got {:.3}",
+            rep.online_adapted_heldout_bpb
+        );
+        assert!(
+            rep.contractive_linf < 1.0,
+            "Banach contractive core must strictly hold ||W_eq||_inf < 1.0! got {:.4}",
+            rep.contractive_linf
+        );
+
+        // Lossless Bit-Exact `TOMG11` SHA-256 Checkpoint Roundtrip (weights + AdamW + Episodic!)
+        let tmp_dir = std::env::temp_dir().join("tropicore_asi_zero_unit");
+        let ckpt = tmp_dir.join("unit.tomg");
+        let sha1 = brain.save_checkpoint(&ckpt).expect("save ckpt");
+        let (mut loaded, sha2) = DeepContractiveBrain::load_checkpoint(&ckpt).expect("load ckpt");
+        assert_eq!(sha1, sha2, "TOMG11 SHA-256 roundtrip must match bit-exact!");
+        assert_eq!(loaded.adam_step, brain.adam_step);
+        assert_eq!(loaded.total_bytes_trained, brain.total_bytes_trained);
+        assert_eq!(loaded.episodic.bucket_count(), brain.episodic.bucket_count());
+        let (p1, b1) = brain.eval_byte_stream(&corpus.heldout_bytes[..1024.min(corpus.heldout_bytes.len())], 64, false, 2);
+        let (p2, b2) = loaded.eval_byte_stream(&corpus.heldout_bytes[..1024.min(corpus.heldout_bytes.len())], 64, false, 2);
+        assert!((p1 - p2).abs() < 1e-5 && (b1 - b2).abs() < 1e-5, "Loaded checkpoint must reproduce exact held-out bits/byte!");
+
+        // Real-Corpus-Gated Self-Optimizer (no proxy 6-tuples!)
+        let so = run_real_self_optimization(&brain, &corpus.heldout_bytes, &tmp_dir, 99, false, 2);
+        assert_eq!(so.candidates_evaluated, 12);
+        assert!(!so.applied_live, "Unit test must never mutate live repo!");
+        if so.accepted {
+            assert!(so.rustc_zero_warnings && so.optimized_real_bpb < so.baseline_real_bpb);
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
-    if args.iter().any(|a| a == "--legacy-8axis") {
-        run_legacy_8axis_mode();
-        return;
+
+    #[test]
+    fn test_universal_external_agent_jsonl_protocol_and_online_prediction() {
+        let cfg = BrainConfig::from_preset("laptop").unwrap();
+        let brain = DeepContractiveBrain::new(cfg, 7);
+        let mut agent = UniversalOpenWorldAgent::new(2, 77);
+
+        // Verify JSONL parser + formatter cleanly handle arbitrary external sensor streams
+        let (obs, rew, done) = parse_env_jsonl(r#"{"obs":[0.25, -0.5, 1.0, -0.1],"reward":0.5,"done":false}"#).unwrap();
+        assert_eq!(obs.len(), 4);
+        assert!((rew - 0.5).abs() < 1e-6);
+        assert!(!done);
+
+        // Stream 12 external transitions and verify finite bounded actions + online latent updates
+        let mut last_out = agent.step(&brain, &obs, 0.0, false, 2);
+        for t in 1..=12 {
+            let phase = (t as f32) * 0.35;
+            let raw = [phase.sin(), phase.cos(), last_out.action[0], last_out.action[1]];
+            let r = 1.0 - (raw[0] - raw[2]).abs();
+            last_out = agent.step(&brain, &raw, r, false, 2);
+            assert_eq!(last_out.action.len(), 2);
+            assert!(last_out.action.iter().all(|a| a.is_finite() && *a >= -1.0 && *a <= 1.0));
+        }
+        assert_eq!(last_out.online_updates, 12);
+        let json_line = format_agent_jsonl(&last_out);
+        assert!(json_line.contains("\"action\":") && json_line.contains("\"updates\":12"));
     }
-    run_asi_smoke_mode(apply_rsi, worker_threads);
 }

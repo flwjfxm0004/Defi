@@ -1,17 +1,18 @@
 [package]
 name = "tropicore_omega"
-version = "10.0.0"
+version = "11.0.0"
 edition = "2021"
-description = "TropiCore-Omega v9.0 ASI-Core: Zero-Crutch Unified-Brain General ASI Engine (Modality-Agnostic Universal Event Stream x 3-Tier General Verification Spectrum [Tier-1 Code/Perf Sandbox, Tier-2 Continuous Causal Physics & Active Jacobian System-ID, Tier-3 Fast CEGIS + Optional Lean] x Open-Ended Frontier Self-Play x Sandbox-Gated Source-Level RSI x Scalable SM120 NVFP4 d=64/256/2048/4096 x 100% Lossless SHA-256 Persistence)"
-build = "build.rs"
+description = "TropiCore-Omega ASI-Zero: Zero-Toy, Zero-LLM, First-Principles Deep Contractive NVFP4 General Superintelligence Engine (4x RTX PRO 6000 Blackwell SM120 Ready)"
 
 [features]
 default = []
 cuda_sm120 = []
-scale_256 = []
-scale_2048 = []
-scale_4096 = []
-lean_oracle = []
 
 [dependencies]
-# STRICT ZERO-DEPENDENCY POLICY: Pure Rust std + local SM120 CUDA 13 FFI + local rustc -O (optional Lean 4 via `--features lean_oracle`).
+# STRICT ZERO-DEPENDENCY POLICY: Pure Rust std + local CUDA 13 / rustc only!
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

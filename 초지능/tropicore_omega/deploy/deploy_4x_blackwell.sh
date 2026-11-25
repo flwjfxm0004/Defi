@@ -1,69 +1,51 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# TropiCore-Omega v10.0 ASI-Core — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
+# TropiCore-Omega ASI-Zero v11.0.0 — Day-1 Turnkey 4x RTX PRO 6000 Blackwell Launcher
 # Target Hardware (`장비.md` Track A):
 #   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 14.044 PFLOPS FP4 2:4)
 #   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5, 384 MB L3)
 #   - 1,000 GB DDR5-6400 ECC + 4x Samsung 9100 PRO 4TB (RAID1 OS + 15.2 TB RAID0)
-#   - STRICT ZERO-CRUTCH GENERAL ASI POLICY (v10.0):
-#       0 LLMs | 0 External APIs | 0 Pretraining | 0 External Rust Crates
-#       Lean 4 Math Bottleneck REMOVED (Optional Plug-in via `--with-lean`)
-#       Tier-1 Zero-Peek Multi-Register SSA Imperative Rust Synthesis (Bayes-Factor Self-Play Wake-Sleep)
-#       Tier-2 Nonlinear 2-MLP Residual Neural-Ensemble World Model + Epistemic Curiosity + Fault Recovery
-#       Tier-3 Fast Pure-Rust CEGIS -> E-Graph (<10ms)
-#       Self-Hosting Repository RSI targeting live `src/evolved_policy.rs` (`--apply-rsi`)
-#       1-Flag Scalable Core Dim: `--dim 64 | 256 | 2048 | 4096`
+#   - PURE ZERO-TOY, ZERO-LLM, REAL GPU TRAINING ARCHITECTURE (`ABI = 1100`):
+#       * REAL SM120 CUDA 13 Forward + Backward (`dX`/`dW`/`db`) + 256-Byte CE + Fused AdamW/NVFP4 STE
+#       * Dynamic Scaling Presets: `laptop` (0.28M) | `mid` (14.9M) | `blackwell-1b` (1.06B) | `blackwell-8b` (7.52B)
+#       * Real-World Byte-Stream Solomonoff Compressor (ANY real directory/corpus on disk!)
+#       * External UniversalAgent stdio JSONL Server (`serve-agent`) for ANY real simulator/market/OS
+#       * Real-Corpus-Gated Self-Optimizer targeting live `src/asi_runtime_cfg.rs` (`--apply`)
 #
 # Day-1 Turnkey Usage:
 #   chmod +x deploy/deploy_4x_blackwell.sh
-#   sudo ./deploy/deploy_4x_blackwell.sh --dim 4096 --power 300 --asi-forever 100              # Flagship 1,550W
-#   sudo ./deploy/deploy_4x_blackwell.sh --dim 4096 --power 300 --asi-forever 100 --apply-rsi  # Live Self-Hosting RSI
-#   sudo ./deploy/deploy_4x_blackwell.sh --dim 2048 --power 210 --asi-forever 100              # Quiet Dual-Use 1,190W
+#   sudo ./deploy/deploy_4x_blackwell.sh --preset blackwell-1b --path /data/corpus --power 300 --cycles 100
+#   sudo ./deploy/deploy_4x_blackwell.sh --preset blackwell-8b --path /data/corpus --power 300 --cycles 100 --apply
+#   sudo ./deploy/deploy_4x_blackwell.sh --preset mid          --path ./src        --power 210 --cycles 20
 # ==============================================================================
 set -euo pipefail
 
 POWER_LIMIT="300"
-OMEGA_DIM="4096"
-ASI_CYCLES="100"
-WITH_LEAN="0"
-RUN_LEGACY_8AXIS="0"
-APPLY_RSI="0"
+PRESET="blackwell-1b"
+CORPUS_PATH="./src"
+CYCLES="50"
+EPOCHS="2"
+APPLY_SELF_OPT="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --power) POWER_LIMIT="${2:-300}"; shift 2 ;;
-    --dim) OMEGA_DIM="${2:-4096}"; shift 2 ;;
-    --asi-forever|--daemon) ASI_CYCLES="${2:-100}"; shift 2 ;;
-    --with-lean) WITH_LEAN="1"; shift 1 ;;
-    --legacy-8axis) RUN_LEGACY_8AXIS="1"; shift 1 ;;
-    --apply-rsi) APPLY_RSI="1"; shift 1 ;;
+    --preset) PRESET="${2:-blackwell-1b}"; shift 2 ;;
+    --path|--corpus) CORPUS_PATH="${2:-./src}"; shift 2 ;;
+    --cycles|--daemon) CYCLES="${2:-50}"; shift 2 ;;
+    --epochs) EPOCHS="${2:-2}"; shift 2 ;;
+    --apply|--apply-rsi) APPLY_SELF_OPT="1"; shift 1 ;;
     *) shift ;;
   esac
 done
 
-FEATURES="cuda_sm120"
-case "$OMEGA_DIM" in
-  64)   ;;
-  256)  FEATURES="${FEATURES},scale_256" ;;
-  2048) FEATURES="${FEATURES},scale_2048" ;;
-  4096) FEATURES="${FEATURES},scale_4096" ;;
-  *)
-    echo "Unsupported --dim=${OMEGA_DIM} (allowed: 64, 256, 2048, 4096)" >&2
-    exit 1
-    ;;
-esac
-
-if [[ "$WITH_LEAN" == "1" ]]; then
-  FEATURES="${FEATURES},lean_oracle"
-fi
-
 CPU_THREADS="$(nproc)"
 echo "========================================================================="
-echo " TropiCore-Omega v10.0 ASI-Core — 4x RTX PRO 6000 Blackwell SM120"
-echo " Core Dim: d=${OMEGA_DIM} | Power Cap: ${POWER_LIMIT}W/GPU | Threads: ${CPU_THREADS} | Features: ${FEATURES}"
+echo " TropiCore-Omega ASI-Zero v11.0.0 — 4x RTX PRO 6000 Blackwell SM120"
+echo " Preset: ${PRESET} | Corpus: ${CORPUS_PATH} | Power: ${POWER_LIMIT}W/GPU | Threads: ${CPU_THREADS}"
 echo "========================================================================="
 
-echo "[1/6] Checking 4x SM120 GPUs and applying persistence + power cap (-pl ${POWER_LIMIT}W)..."
+echo "[1/5] Checking 4x SM120 GPUs and applying persistence + power cap (-pl ${POWER_LIMIT}W)..."
 nvidia-smi --query-gpu=index,name,memory.total,compute_cap,power.limit --format=csv
 if [[ "$EUID" -eq 0 ]]; then
   nvidia-smi -pm 1
@@ -74,51 +56,38 @@ else
   echo "  (Note: run with sudo to apply nvidia-smi -pm 1 and -pl ${POWER_LIMIT}W)"
 fi
 
-echo "[2/6] Checking CPU (9995WX 192T) & Local Toolchain (nvcc CUDA 13, rustc; Lean optional)..."
-echo "  Logical Threads: ${CPU_THREADS}"
+echo "[2/5] Checking Toolchain (nvcc CUDA 13, cublas/cublasLt, rustc)..."
 nvcc --version
 rustc --version
-if [[ "$WITH_LEAN" == "1" ]]; then
-  if ! command -v lean >/dev/null 2>&1; then
-    curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain leanprover/lean4:stable
-    export PATH="$HOME/.elan/bin:$PATH"
-  fi
-  lean --version
-else
-  echo "  Lean 4 Oracle: DECOUPLED (skipped for pure General ASI speed; pass --with-lean to enable)"
-fi
 
-echo "[3/6] Compiling SM120 Blackwell CUDA 13 NVFP4 + Deep-Set + Warp VM Kernel (d=${OMEGA_DIM}, sm_120a)..."
-nvcc -O3 -std=c++17 -arch=sm_120a -DOMEGA_LATENT_DIM_CFG="${OMEGA_DIM}" -Xcompiler -fPIC \
+echo "[3/5] Compiling SM120 CUDA 13 Training+Inference Kernels (Forward + Backward + AdamW + NVFP4 STE, ABI=1100)..."
+nvcc -O3 -std=c++17 -arch=sm_120a -Xcompiler -fPIC \
   -c cuda/tropicore_omega_sm120.cu -o cuda/tropicore_omega_sm120.o
 ar rcs cuda/libtropicore_omega_sm120.a cuda/tropicore_omega_sm120.o
 ls -lh cuda/libtropicore_omega_sm120.a
 
-echo "[4/6] Building tropicore_omega v10.0 --release --features ${FEATURES} (Zen 5 AVX-512 + 4x SM120)..."
-RUSTFLAGS="-C target-cpu=native -D warnings" cargo build --release --features "${FEATURES}"
+echo "[4/5] Building & Testing tropicore_omega v11.0 --release --features cuda_sm120 (-D warnings)..."
+RUSTFLAGS="-C target-cpu=native -D warnings" cargo build --release --features cuda_sm120
+RUSTFLAGS="-C target-cpu=native -D warnings" cargo test --release --features cuda_sm120 -- --nocapture
 
-echo "[5/6] Running Release Verification Tests (v10.0 ASI-Core + SM120 ABI + Anti-Cheat Suite)..."
-RUSTFLAGS="-C target-cpu=native -D warnings" cargo test --release --features "${FEATURES}" -- --nocapture
-if [[ "$WITH_LEAN" == "1" ]]; then
-  lean proofs/omega_proof.lean && echo "OMEGA_PROOF_LEAN4_EXIT=0"
+echo "[5/5] Launching TropiCore-Omega ASI-Zero Status & Autonomous Real-World Daemon..."
+./target/release/tropicore_omega status
+
+APPLY_FLAG=""
+if [[ "$APPLY_SELF_OPT" == "1" ]]; then
+  APPLY_FLAG="--apply"
 fi
-
-echo "[6/6] Running TropiCore-Omega v10.0 ASI-Core Smoke + Launching Autonomous ASI Daemon..."
-./target/release/tropicore_omega --asi-smoke --threads "${CPU_THREADS}"
-
-if [[ "$RUN_LEGACY_8AXIS" == "1" ]]; then
-  ./target/release/tropicore_omega --legacy-8axis
-fi
-
-if [[ "$ASI_CYCLES" -gt 0 ]]; then
-  RSI_FLAG=""
-  if [[ "$APPLY_RSI" == "1" ]]; then
-    RSI_FLAG="--apply-rsi"
-  fi
-  echo "[ASI-FOREVER] Launching Lossless Open-Ended General ASI Daemon (d=${OMEGA_DIM}, cycles=${ASI_CYCLES}, threads=${CPU_THREADS})..."
-  ./target/release/tropicore_omega --asi-forever --cycles "$ASI_CYCLES" --threads "${CPU_THREADS}" --ckpt "out/asi_v10_d${OMEGA_DIM}.ckpt" ${RSI_FLAG}
+if [[ "$CYCLES" -gt 0 ]]; then
+  ./target/release/tropicore_omega daemon \
+    --preset "$PRESET" \
+    --path "$CORPUS_PATH" \
+    --cycles "$CYCLES" \
+    --epochs "$EPOCHS" \
+    --threads "$CPU_THREADS" \
+    --ckpt "out/asi_zero_${PRESET}.tomg" \
+    ${APPLY_FLAG}
 fi
 
 echo "========================================================================="
-echo " TropiCore-Omega v10.0 ASI-Core 4x SM120 Deployment Complete! (d=${OMEGA_DIM})"
+echo " TropiCore-Omega ASI-Zero v11.0.0 4x SM120 Run Complete! (Preset=${PRESET})"
 echo "========================================================================="
