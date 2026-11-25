@@ -1,6 +1,6 @@
 [package]
 name = "tropicore_omega"
-version = "9.0.0"
+version = "10.0.0"
 edition = "2021"
 description = "TropiCore-Omega v9.0 ASI-Core: Zero-Crutch Unified-Brain General ASI Engine (Modality-Agnostic Universal Event Stream x 3-Tier General Verification Spectrum [Tier-1 Code/Perf Sandbox, Tier-2 Continuous Causal Physics & Active Jacobian System-ID, Tier-3 Fast CEGIS + Optional Lean] x Open-Ended Frontier Self-Play x Sandbox-Gated Source-Level RSI x Scalable SM120 NVFP4 d=64/256/2048/4096 x 100% Lossless SHA-256 Persistence)"
 build = "build.rs"

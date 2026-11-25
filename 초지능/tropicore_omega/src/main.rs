@@ -1,24 +1,29 @@
-//! TropiCore-Omega v9.0 ASI-Core — Zero-Crutch Non-LLM General Superintelligence Architecture
+//! TropiCore-Omega v10.0 ASI-Core — Zero-Crutch Non-LLM General Superintelligence Architecture
 //! Target Hardware (`장비.md` Track A):
 //!   - 4x NVIDIA RTX PRO 6000 Blackwell Max-Q 96GB (SM120, 384 GB GDDR7, 7.168 TB/s, 14.044 PFLOPS FP4 2:4)
 //!   - AMD Ryzen Threadripper PRO 9995WX (96C/192T Zen 5, 384 MB L3) + 1,000 GB DDR5-6400 ECC + 16 TB Gen5 NVMe
 //!   - STRICT ZERO-CRUTCH POLICY:
 //!       0 LLMs | 0 External APIs | 0 Pretraining | 0 External Rust Crates | 0 Mandatory Lean Bottleneck
-//!       Modality-Agnostic UniversalEventStream | 3-Tier General Oracle (Code / Continuous Physics / Fast CEGIS)
-//!       Structural Source-Level RSI | Open-Ended Frontier Daemon (`--asi-forever`) | d=64|256|2048|4096
+//!       Tier-1 Zero-Peek Multi-Register SSA Imperative Rust Synthesis (8 algorithms, Cold vs Trained on 4 UNSEEN)
+//!       Tier-2 Nonlinear 2-MLP Neural-Ensemble World Model + Active Epistemic Curiosity + +55-deg Fault Recovery
+//!       Tier-3 Fast Pure-Rust CEGIS -> E-Graph (<10ms)
+//!       Self-Hosting Repository RSI targeting live `src/evolved_policy.rs` (`--apply-rsi` atomic commit + rollback)
 
 mod asi_core;
 mod benchmark;
 mod bytecode;
 mod core;
 mod egraph;
+mod evolved_policy;
 mod gpu_bridge;
 mod ir;
 mod memory;
 mod nvfp4;
 mod prover;
+mod reg_synth;
 mod sha256;
 mod synthesizer;
+mod world_asi;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -30,6 +35,7 @@ use crate::core::{
 };
 use crate::gpu_bridge::{detect_hardware_profile, omega_verify_sm120_abi_v8};
 use crate::memory::OMEGA_DIM;
+use crate::reg_synth::ImperativeSkillLibrary;
 use crate::sha256::{append_vault_jsonl, sha256_hex};
 
 fn find_core_proof() -> PathBuf {
@@ -48,9 +54,13 @@ fn append_sealed_vault(out_dir: &Path, filename: &str, payload_json: &str) -> Re
     Ok(digest)
 }
 
-fn parse_cycles_and_ckpt(args: &[String], default_cycles: usize, default_ckpt: &str) -> (usize, PathBuf) {
+fn parse_daemon_flags(args: &[String], default_cycles: usize, default_ckpt: &str) -> (usize, PathBuf, bool, usize) {
     let mut cycles = default_cycles;
     let mut ckpt = PathBuf::from(default_ckpt);
+    let mut apply_rsi = false;
+    let hw_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+    // Laptop-kind default: cap at 2 threads on <=16T laptops, unleash all threads on 64T-192T workstations!
+    let mut threads = if hw_threads <= 16 { 2 } else { hw_threads };
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--cycles" && i + 1 < args.len() {
@@ -59,25 +69,32 @@ fn parse_cycles_and_ckpt(args: &[String], default_cycles: usize, default_ckpt: &
         } else if args[i] == "--ckpt" && i + 1 < args.len() {
             ckpt = PathBuf::from(&args[i + 1]);
             i += 2;
+        } else if args[i] == "--threads" && i + 1 < args.len() {
+            threads = args[i + 1].parse().unwrap_or(threads).max(1);
+            i += 2;
+        } else if args[i] == "--apply-rsi" {
+            apply_rsi = true;
+            i += 1;
         } else {
             i += 1;
         }
     }
-    (cycles, ckpt)
+    (cycles, ckpt, apply_rsi, threads)
 }
 
 fn print_help() {
-    println!("TropiCore-Omega v9.0 ASI-Core (d={}) — Zero-Crutch Non-LLM General ASI", OMEGA_DIM);
+    println!("TropiCore-Omega v10.0 ASI-Core (d={}) — Zero-Crutch Non-LLM General ASI", OMEGA_DIM);
     println!("Modes:");
-    println!("  (default) | --asi-smoke               Fast (<10s) General ASI 3-Tier + RSI + SHA-256 verification");
-    println!("  --asi-forever [--cycles N] [--ckpt P] Autonomous Open-Ended General ASI daemon (Day-1 4x Blackwell)");
-    println!("  --learn-forever [--cycles N] [--ckpt P] Wake-Sleep + E-Graph + Meta-AST lossless daemon");
-    println!("  --legacy-8axis                        Full v8.0 8-axis symbolic/world-model verification suite");
+    println!("  (default) | --asi-smoke                         Fast (<10s) v10.0 4-Pillar General ASI verification");
+    println!("  --asi-forever [--cycles N] [--ckpt P]           Autonomous Open-Ended General ASI daemon");
+    println!("                [--apply-rsi] [--threads N]       (--apply-rsi enables atomic live `src/evolved_policy.rs` self-upgrade)");
+    println!("  --learn-forever [--cycles N] [--ckpt P]         Wake-Sleep + E-Graph + Meta-AST lossless daemon");
+    println!("  --legacy-8axis                                  Full v8.0 8-axis symbolic/world-model verification suite");
     println!("Compile Features:");
     println!("  --features scale_256 | scale_2048 | scale_4096 | cuda_sm120 | lean_oracle (optional)");
 }
 
-fn run_asi_smoke_mode() {
+fn run_asi_smoke_mode(apply_rsi: bool, worker_threads: usize) {
     let hw = detect_hardware_profile();
     let abi_ver = omega_verify_sm120_abi_v8(
         OMEGA_DIM,
@@ -89,14 +106,18 @@ fn run_asi_smoke_mode() {
     .expect("SM120 ABI parity verification failed");
 
     let out_dir = PathBuf::from("out");
-    let asi_dir = out_dir.join("asi_v9");
-    let ckpt_path = out_dir.join("asi_v9_smoke.ckpt");
+    let asi_dir = out_dir.join("asi_v10");
+    let ckpt_path = out_dir.join("asi_v10_smoke.ckpt");
     let mut core = UniversalEnergyCore::new(20261125);
+    let mut skills = ImperativeSkillLibrary::default();
     let mut frontier = OpenEndedFrontierState::default();
 
     println!("=================================================================================");
-    println!(" TropiCore-Omega v9.0 ASI-Core — Zero-Crutch General ASI Smoke (d={}, ABI={})", OMEGA_DIM, abi_ver);
-    println!(" (0 LLMs | 0 Crates | Lean Decoupled | Tier-1 Code | Tier-2 ContPhys | Tier-3 CEGIS | Source RSI)");
+    println!(
+        " TropiCore-Omega v10.0 ASI-Core — Zero-Crutch General ASI Smoke (d={}, ABI={}, threads={})",
+        OMEGA_DIM, abi_ver, worker_threads
+    );
+    println!(" (0 LLMs | 0 Crates | 8-Algo SSA Synth | 2-MLP Nonlinear Vortex World | +55deg Fault Adapt | Self-Hosting Repo RSI)");
     println!("=================================================================================");
     println!(" Host Backend  : {} (GPUs={}, CPU={}T)", hw.backend, hw.physical_gpus, hw.cpu_threads);
     println!(
@@ -117,63 +138,93 @@ fn run_asi_smoke_mode() {
     );
     println!("---------------------------------------------------------------------------------");
 
-    let rep = run_asi_general_cycle(&mut core, &asi_dir, &ckpt_path, &mut frontier, 90_909);
+    let rep = run_asi_general_cycle(&mut core, &mut skills, &asi_dir, &ckpt_path, &mut frontier, 100_909, apply_rsi);
 
-    println!("[Tier-1] General Stateful Imperative Rust Synthesis (0 hardcoded solutions, live `rustc -O -D warnings`)");
     println!(
-        "  Solved = {}/{} | rustc -O Verified = {}/{} | Candidates Searched = {} | Avg Run = {} us | MDL = {} bits | BrainEncoded = {}",
-        rep.tier1.tasks_solved,
-        rep.tier1.tasks_total,
-        rep.tier1.rustc_verified,
-        rep.tier1.tasks_total,
-        rep.tier1.candidates_searched,
-        rep.tier1.avg_runtime_us,
-        rep.tier1.total_mdl_bits,
-        rep.tier1.unified_brain_encoded
+        "[Tier-1] General Multi-Register SSA Imperative Synthesis (Space={}, ZERO hardcoded solutions, live `rustc -O -D warnings`)",
+        rep.tier1.space_size
     );
+    println!(
+        "  Train Frontier = {}/{} | UNSEEN Held-Out = Cold {}/{} (avg {:.1} exp) -> Trained {}/{} (avg {:.1} exp, {:.2}x speedup!)",
+        rep.tier1.train_solved,
+        rep.tier1.train_total,
+        rep.tier1.heldout_cold_solved,
+        rep.tier1.heldout_total,
+        rep.tier1.heldout_cold_avg_exp,
+        rep.tier1.heldout_trained_solved,
+        rep.tier1.heldout_total,
+        rep.tier1.heldout_trained_avg_exp,
+        rep.tier1.heldout_cold_avg_exp / rep.tier1.heldout_trained_avg_exp.max(1.0)
+    );
+    println!(
+        "  Real `rustc -O -D warnings` OOD Certified = {}/8 | SkillLibrary Verified Idioms = {} | Time = {:.1} ms",
+        rep.tier1.rustc_verified_total, rep.tier1.skills_learned, rep.tier1.wall_ms
+    );
+    for d in &rep.tier1.details {
+        println!(
+            "    - {:<21} ({:<7}) | solved={:<5} rustc={:<5} | exp={:>4} | run={:>6}us | mdl={}b",
+            d.name,
+            if d.is_heldout { "UNSEEN" } else { "train" },
+            d.solved,
+            d.rustc_verified,
+            d.expansions,
+            d.runtime_us,
+            d.mdl_bits
+        );
+    }
 
     println!(
-        "\n[Tier-2] {:?}: Continuous Causal Physics World (Secret {:.1}-deg Rotation + Noise + Repulsive Obstacle)",
+        "\n[Tier-2] {:?}: Nonlinear 2-MLP Neural-Ensemble World Model (Secret {:.1}-deg Rot + Vortex + QuadDrag + Hidden Obstacle)",
         rep.tier2.tier, rep.tier2.secret_angle_deg
     );
     println!(
-        "  Active System-ID : Angle Error = {:.2} deg | Solomonoff Compression Gain = {:.1}x | StreamNorm = {:.4}",
-        rep.tier2.discovered_angle_err_deg, rep.tier2.compression_ratio, rep.tier2.brain_stream_norm
+        "  Active Epistemic Curiosity : {} disagreement probes | Solomonoff Compression = {:.1}x | StreamNorm = {:.4} | {:.1} ms",
+        rep.tier2.epistemic_probes_taken, rep.tier2.compression_ratio, rep.tier2.brain_stream_norm, rep.tier2.wall_ms
     );
     println!(
-        "  Unseen OOD Eval  : Random {}/{} -> Self-Learned Continuous CEM {}/{} | Frontier -> (sig={:.3}, r={:.2})",
+        "  Unseen Nonlinear OOD Eval  : Random {}/{} -> 2-MLP Ensemble CEM {}/{} | Frontier -> (sig={:.3}, r={:.2})",
         rep.tier2.random_success,
         rep.tier2.eval_episodes,
-        rep.tier2.learned_cem_success,
+        rep.tier2.ensemble_cem_success,
         rep.tier2.eval_episodes,
         frontier.physics_noise_std,
         frontier.physics_obs_radius
     );
+    println!(
+        "  Non-Stationary +{:.0}-deg Fault : Frozen Ensemble {}/{} -> Online Surprise-Adapting {}/{} (triggers={})",
+        rep.tier2.fault_shift_deg,
+        rep.tier2.fault_frozen_success,
+        rep.tier2.fault_eval_episodes,
+        rep.tier2.fault_online_adapted_success,
+        rep.tier2.fault_eval_episodes,
+        rep.tier2.surprise_adapt_triggers
+    );
 
     println!("\n[Tier-3] {:?}: Fast Pure-Rust CEGIS Algebraic Discovery -> E-Graph (ZERO Lean Lag!)", rep.tier3.tier);
     println!(
-        "  Proposed = {} | Refuted = {} | Rules Promoted = +{} (E-Graph total={}) | Time = {:.2} ms",
+        "  Proposed = {} | Refuted = {} | Rules Promoted = +{} (E-Graph total={}) | Time = {:.2} ms | {}",
         rep.tier3.proposed_pairs,
         rep.tier3.cegis_refuted,
         rep.tier3.rules_promoted,
         rep.tier3.egraph_rules_total,
-        rep.tier3.wall_ms
+        rep.tier3.wall_ms,
+        rep.tier3.status
     );
-    println!("  Oracle Status    : {}", rep.tier3.status);
 
-    println!("\n[Source-RSI & Unified Brain] Sandbox-Gated Structural Rust Evolution + Contractive STE Persistence");
+    println!("\n[Self-Hosting Repo RSI & Unified Brain] Targets LIVE `{}` (`sha256={}`)", rep.rsi.target_live_file, rep.rsi.live_source_sha256);
     println!(
-        "  Structural RSI   : Score {:.4} -> {:.4} (accepted={}, cands={}, upgrade={}, mdl={}B, ledger={})",
-        rep.rsi.baseline_score,
-        rep.rsi.improved_score,
+        "  Sealed OOD Pareto : {:.4} -> {:.4} (accepted={}, applied_live={}, cands={}, upgrade={}, ledger={})",
+        rep.rsi.baseline_pareto_score,
+        rep.rsi.evolved_pareto_score,
         rep.rsi.accepted,
-        rep.rsi.candidates_tested,
+        rep.rsi.applied_to_live_repo,
+        rep.rsi.candidates_evaluated,
         rep.rsi.structural_upgrade,
-        rep.rsi.winning_code_mdl_bytes,
         rep.rsi.ledger_sha256
     );
+    println!("  Staged Candidate  : {}", rep.rsi.staged_path);
     println!(
-        "  Unified Brain    : ||W_core||_inf = {:.4} (<1.0) | W_core L1 Drift = {:.4} | Online Steps = {} | Full-Brain SHA-256 = {} ({})",
+        "  Unified Brain     : ||W_core||_inf = {:.4} (<1.0) | W_core L1 Drift = {:.4} | Online Steps = {} | Full-Brain SHA-256 = {} ({})",
         rep.contractive_linf_norm,
         rep.w_core_l1_drift,
         rep.train_steps_total,
@@ -184,28 +235,30 @@ fn run_asi_smoke_mode() {
     println!(" Total Wall Time : {:.2} ms", rep.wall_ms);
 
     let json = format!(
-        "{{\"engine\":\"TropiCore-Omega-v9.0-ASI\",\"dim\":{},\"abi\":{},\"ms\":{:.2},\"t1\":[{},{},{}],\"t2_rot_err\":{:.2},\"t2_comp\":{:.2},\"t2_cem\":[{},{}],\"t3_rules\":{},\"t3_ms\":{:.2},\"rsi\":[{:.4},{:.4},{}],\"norm\":{:.4},\"dw\":{:.4},\"ckpt_ok\":{}}}",
+        "{{\"engine\":\"TropiCore-Omega-v10.0-ASI\",\"dim\":{},\"abi\":{},\"ms\":{:.2},\"t1_rustc\":{},\"t1_cold_exp\":{:.1},\"t1_tr_exp\":{:.1},\"t2_comp\":{:.2},\"t2_cem\":[{},{}],\"t2_fault\":[{},{}],\"t3_rules\":{},\"t3_ms\":{:.2},\"rsi\":[{:.4},{:.4},{},{}],\"norm\":{:.4},\"dw\":{:.4},\"ckpt_ok\":{}}}",
         OMEGA_DIM,
         abi_ver,
         rep.wall_ms,
-        rep.tier1.tasks_solved,
-        rep.tier1.tasks_total,
-        rep.tier1.avg_runtime_us,
-        rep.tier2.discovered_angle_err_deg,
+        rep.tier1.rustc_verified_total,
+        rep.tier1.heldout_cold_avg_exp,
+        rep.tier1.heldout_trained_avg_exp,
         rep.tier2.compression_ratio,
         rep.tier2.random_success,
-        rep.tier2.learned_cem_success,
+        rep.tier2.ensemble_cem_success,
+        rep.tier2.fault_frozen_success,
+        rep.tier2.fault_online_adapted_success,
         rep.tier3.rules_promoted,
         rep.tier3.wall_ms,
-        rep.rsi.baseline_score,
-        rep.rsi.improved_score,
+        rep.rsi.baseline_pareto_score,
+        rep.rsi.evolved_pareto_score,
         rep.rsi.accepted,
+        rep.rsi.applied_to_live_repo,
         rep.contractive_linf_norm,
         rep.w_core_l1_drift,
         rep.ckpt_roundtrip_ok
     );
-    match append_sealed_vault(&out_dir, "asi_v9_vault.jsonl", &json) {
-        Ok(h) => println!(" Sealed ASI Vault: out/asi_v9_vault.jsonl (sha256={})", &h[..24]),
+    match append_sealed_vault(&out_dir, "asi_v10_vault.jsonl", &json) {
+        Ok(h) => println!(" Sealed ASI Vault: out/asi_v10_vault.jsonl (sha256={})", &h[..24]),
         Err(e) => println!(" Sealed ASI Vault Warning: {}", e),
     }
     println!("=================================================================================");
@@ -225,7 +278,7 @@ fn run_legacy_8axis_mode() {
     let proof_path = find_core_proof();
 
     println!("=================================================================================");
-    println!(" TropiCore-Omega v9.0 (--legacy-8axis) — Unified-Brain 8-Axis Suite (d={}, ABI={})", OMEGA_DIM, abi_ver);
+    println!(" TropiCore-Omega v10.0 (--legacy-8axis) — Unified-Brain 8-Axis Suite (d={}, ABI={})", OMEGA_DIM, abi_ver);
     println!(" Host Backend  : {} (GPUs={}, CPU={}T)", hw.backend, hw.physical_gpus, hw.cpu_threads);
     println!("=================================================================================");
 
@@ -337,7 +390,7 @@ fn run_legacy_8axis_mode() {
     println!(" Total Wall Time : {:.2} ms", r.wall_ms);
 
     let json = format!(
-        "{{\"engine\":\"TropiCore-Omega-v9.0-8axis\",\"dim\":{},\"ms\":{:.2},\"norm\":{:.4},\"cold\":[{},{:.1}],\"trained\":[{},{:.1}],\"egraph_mdl\":[{},{}],\"world_10x10\":{},\"meta_acc\":{}}}",
+        "{{\"engine\":\"TropiCore-Omega-v10.0-8axis\",\"dim\":{},\"ms\":{:.2},\"norm\":{:.4},\"cold\":[{},{:.1}],\"trained\":[{},{:.1}],\"egraph_mdl\":[{},{}],\"world_10x10\":{},\"meta_acc\":{}}}",
         OMEGA_DIM, r.wall_ms, r.contractive_linf_norm,
         r.heldout_cold_solved, r.heldout_cold_avg_exp,
         r.heldout_trained_solved, r.heldout_trained_avg_exp,
@@ -357,20 +410,19 @@ fn main() {
         print_help();
         return;
     }
+    let (cycles, ckpt, apply_rsi, worker_threads) = parse_daemon_flags(&args, 5, "out/asi_v10_daemon.ckpt");
     if args.iter().any(|a| a == "--asi-forever") {
-        let (cycles, ckpt) = parse_cycles_and_ckpt(&args, 5, "out/asi_v9_daemon.ckpt");
-        run_asi_forever_daemon(&ckpt, cycles);
+        run_asi_forever_daemon(&ckpt, cycles, apply_rsi, worker_threads);
         return;
     }
     if args.iter().any(|a| a == "--learn-forever") {
-        let (cycles, ckpt) = parse_cycles_and_ckpt(&args, 5, "out/omega_v9_daemon.ckpt");
-        run_continuous_learning_daemon(&ckpt, cycles);
+        let (_, lckpt, _, _) = parse_daemon_flags(&args, 5, "out/omega_v10_daemon.ckpt");
+        run_continuous_learning_daemon(&lckpt, cycles);
         return;
     }
     if args.iter().any(|a| a == "--legacy-8axis") {
         run_legacy_8axis_mode();
         return;
     }
-    // Default OR `--asi-smoke`: Fast, zero-lag General ASI Core verification!
-    run_asi_smoke_mode();
+    run_asi_smoke_mode(apply_rsi, worker_threads);
 }

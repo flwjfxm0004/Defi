@@ -2320,6 +2320,226 @@ impl UniversalEnergyCore {
         loss
     }
 
+    /// Predict full 12-class `r0_op` softmax, 12-class `r1_op` softmax, and 3-bit `init` sigmoids
+    /// purely from raw IO-stream tokens through `UniversalEnergyCore` (ZERO peeking at candidate evals!).
+    pub fn predict_op_next_var_probs(
+        &self,
+        io_tokens: &[[f64; RAW_FEAT_DIM]],
+    ) -> ([f64; NUM_OP_CLASSES], [f64; NUM_OP_CLASSES], [f64; 3]) {
+        let z0 = self.encode_raw_tokens(io_tokens);
+        // 2-tick contractive relaxation through quantized NVFP4 `W_core_q`
+        let mut z = z0;
+        for _ in 0..2 {
+            let mut zn = [0.0f64; OMEGA_DIM];
+            for r in 0..OMEGA_DIM {
+                let row = r * OMEGA_DIM;
+                let mut acc = self.b_core[r];
+                for c in 0..OMEGA_DIM {
+                    acc += self.w_core_q[row + c] * z[c];
+                }
+                zn[r] = self.gamma * acc.tanh() + (1.0 - self.gamma) * z0[r];
+            }
+            z = zn;
+        }
+        let mut op_l = [0.0f64; NUM_OP_CLASSES];
+        let mut nx_l = [0.0f64; NUM_OP_CLASSES];
+        let (mut mx_op, mut mx_nx) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for c in 0..NUM_OP_CLASSES {
+            let row = c * OMEGA_DIM;
+            let (mut lo, mut ln) = (self.b_op[c], self.b_next[c]);
+            for d in 0..OMEGA_DIM {
+                lo += self.w_op[row + d] * z[d];
+                ln += self.w_next[row + d] * z[d];
+            }
+            op_l[c] = lo.clamp(-10.0, 10.0);
+            nx_l[c] = ln.clamp(-10.0, 10.0);
+            if op_l[c] > mx_op { mx_op = op_l[c]; }
+            if nx_l[c] > mx_nx { mx_nx = nx_l[c]; }
+        }
+        let (mut op_p, mut nx_p) = ([0.0f64; NUM_OP_CLASSES], [0.0f64; NUM_OP_CLASSES]);
+        let (mut so, mut sn) = (0.0, 0.0);
+        for c in 0..NUM_OP_CLASSES {
+            op_p[c] = (op_l[c] - mx_op).exp();
+            nx_p[c] = (nx_l[c] - mx_nx).exp();
+            so += op_p[c];
+            sn += nx_p[c];
+        }
+        for c in 0..NUM_OP_CLASSES {
+            op_p[c] = (op_p[c] / so.max(1e-9)).clamp(1e-3, 0.99);
+            nx_p[c] = (nx_p[c] / sn.max(1e-9)).clamp(1e-3, 0.99);
+        }
+        let mut var_p = [0.5f64; 3];
+        for v in 0..3 {
+            let row = v * OMEGA_DIM;
+            let mut lv = self.b_var[v];
+            for d in 0..OMEGA_DIM {
+                lv += self.w_var[row + d] * z[d];
+            }
+            var_p[v] = 1.0 / (1.0 + (-lv.clamp(-10.0, 10.0)).exp());
+        }
+        (op_p, nx_p, var_p)
+    }
+
+    /// End-to-End STE Self-Play Inverse Execution Training (`v10.0` Wake-Sleep Dreaming):
+    /// Given ONLY a dreamed program's raw IO stream tokens and its ground-truth structural opcodes
+    /// `(r0_cls, r1_cls, init_bits)`, trains `w_op`, `w_next`, `w_var`, `w_core`, and `w_enc`!
+    pub fn train_inverse_io_to_ops_step(
+        &mut self,
+        io_tokens: &[[f64; RAW_FEAT_DIM]],
+        r0_cls: usize,
+        r1_cls: usize,
+        init_bits: [f64; 3],
+        lr: f64,
+    ) -> f64 {
+        let cache = self.encode_raw_tokens_cached(io_tokens);
+        let z0 = cache.z0;
+        let mut h1 = [0.0f64; OMEGA_DIM];
+        let mut z1 = [0.0f64; OMEGA_DIM];
+        for r in 0..OMEGA_DIM {
+            let row = r * OMEGA_DIM;
+            let mut acc = self.b_core[r];
+            for c in 0..OMEGA_DIM {
+                acc += self.w_core_q[row + c] * z0[c];
+            }
+            h1[r] = acc.tanh();
+            z1[r] = self.gamma * h1[r] + (1.0 - self.gamma) * z0[r];
+        }
+        let mut h2 = [0.0f64; OMEGA_DIM];
+        let mut zf = [0.0f64; OMEGA_DIM];
+        for r in 0..OMEGA_DIM {
+            let row = r * OMEGA_DIM;
+            let mut acc = self.b_core[r];
+            for c in 0..OMEGA_DIM {
+                acc += self.w_core_q[row + c] * z1[c];
+            }
+            h2[r] = acc.tanh();
+            zf[r] = self.gamma * h2[r] + (1.0 - self.gamma) * z0[r];
+        }
+
+        let mut op_l = [0.0f64; NUM_OP_CLASSES];
+        let mut nx_l = [0.0f64; NUM_OP_CLASSES];
+        let (mut mx_op, mut mx_nx) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for c in 0..NUM_OP_CLASSES {
+            let row = c * OMEGA_DIM;
+            let (mut lo, mut ln) = (self.b_op[c], self.b_next[c]);
+            for d in 0..OMEGA_DIM {
+                lo += self.w_op[row + d] * zf[d];
+                ln += self.w_next[row + d] * zf[d];
+            }
+            op_l[c] = lo.clamp(-10.0, 10.0);
+            nx_l[c] = ln.clamp(-10.0, 10.0);
+            if op_l[c] > mx_op { mx_op = op_l[c]; }
+            if nx_l[c] > mx_nx { mx_nx = nx_l[c]; }
+        }
+        let (mut eo, mut en) = ([0.0f64; NUM_OP_CLASSES], [0.0f64; NUM_OP_CLASSES]);
+        let (mut so, mut sn) = (0.0, 0.0);
+        for c in 0..NUM_OP_CLASSES {
+            eo[c] = (op_l[c] - mx_op).exp();
+            en[c] = (nx_l[c] - mx_nx).exp();
+            so += eo[c];
+            sn += en[c];
+        }
+        let mut dz = [0.0f64; OMEGA_DIM];
+        let mut loss = 0.0;
+        let t0 = r0_cls.min(NUM_OP_CLASSES - 1);
+        let t1 = r1_cls.min(NUM_OP_CLASSES - 1);
+        for c in 0..NUM_OP_CLASSES {
+            let po = eo[c] / so.max(1e-9);
+            let pn = en[c] / sn.max(1e-9);
+            if c == t0 { loss -= po.max(1e-7).ln(); }
+            if c == t1 { loss -= pn.max(1e-7).ln(); }
+            let do_g = (po - if c == t0 { 1.0 } else { 0.0 }).clamp(-1.0, 1.0);
+            let dn_g = (pn - if c == t1 { 1.0 } else { 0.0 }).clamp(-1.0, 1.0);
+            self.b_op[c] -= lr * do_g;
+            self.b_next[c] -= lr * dn_g;
+            let row = c * OMEGA_DIM;
+            for d in 0..OMEGA_DIM {
+                dz[d] += do_g * self.w_op[row + d] + dn_g * self.w_next[row + d];
+                self.w_op[row + d] -= lr * do_g * zf[d];
+                self.w_next[row + d] -= lr * dn_g * zf[d];
+            }
+        }
+        for v in 0..3 {
+            let row = v * OMEGA_DIM;
+            let mut lv = self.b_var[v];
+            for d in 0..OMEGA_DIM {
+                lv += self.w_var[row + d] * zf[d];
+            }
+            let pv = 1.0 / (1.0 + (-lv.clamp(-10.0, 10.0)).exp());
+            let yv = init_bits[v].clamp(0.0, 1.0);
+            loss += 0.5 * (-(yv * (pv + 1e-7).ln() + (1.0 - yv) * (1.0 - pv + 1e-7).ln()));
+            let dv = (0.5 * (pv - yv)).clamp(-1.0, 1.0);
+            self.b_var[v] -= lr * dv;
+            for d in 0..OMEGA_DIM {
+                dz[d] += dv * self.w_var[row + d];
+                self.w_var[row + d] -= lr * dv * zf[d];
+            }
+        }
+
+        // 2-tick BPTT into contractive core + Deep-Set encoder (STE)
+        let mut dz_anchor = [0.0f64; OMEGA_DIM];
+        for &(z_prev, h_cur) in &[(&z1, &h2), (&z0, &h1)] {
+            let mut dpre = [0.0f64; OMEGA_DIM];
+            for d in 0..OMEGA_DIM {
+                dpre[d] = (dz[d] * self.gamma * (1.0 - h_cur[d] * h_cur[d])).clamp(-1.5, 1.5);
+                self.b_core[d] -= (lr * 0.25) * dpre[d];
+                dz_anchor[d] += dz[d] * (1.0 - self.gamma);
+            }
+            let mut dz_prev = [0.0f64; OMEGA_DIM];
+            for r in 0..OMEGA_DIM {
+                let dp = dpre[r];
+                let row = r * OMEGA_DIM;
+                for c in 0..OMEGA_DIM {
+                    dz_prev[c] += dp * self.w_core[row + c];
+                    self.w_core[row + c] -= (lr * 0.25) * dp * z_prev[c];
+                }
+            }
+            dz = dz_prev;
+        }
+        for d in 0..OMEGA_DIM {
+            dz_anchor[d] += dz[d];
+        }
+        let m = cache.h_kept.len();
+        if m > 0 {
+            let inv_m = 1.0 / (m as f64);
+            let enc_lr = lr * 0.35 * inv_m.sqrt();
+            for s_idx in 0..m {
+                let mut dh = [0.0f64; ENC_HIDDEN];
+                for k in 0..ENC_HIDDEN {
+                    dh[k] = dz_anchor[k] * inv_m;
+                    if cache.argmax_idx[k] == s_idx {
+                        dh[k] += dz_anchor[ENC_HIDDEN + k];
+                    }
+                }
+                let h = &cache.h_kept[s_idx];
+                let a = &cache.a_kept[s_idx];
+                let u = &cache.u_kept[s_idx];
+                let mut da = [0.0f64; ENC_MID];
+                for r in 0..ENC_HIDDEN {
+                    let dpre2 = (dh[r] * (1.0 - h[r] * h[r])).clamp(-1.5, 1.5);
+                    self.b_enc2[r] -= enc_lr * dpre2;
+                    let row = r * ENC_MID;
+                    for c in 0..ENC_MID {
+                        da[c] += dpre2 * self.w_enc2[row + c];
+                        self.w_enc2[row + c] -= enc_lr * dpre2 * a[c];
+                    }
+                }
+                for r in 0..ENC_MID {
+                    let dpre1 = (da[r] * (1.0 - a[r] * a[r])).clamp(-1.5, 1.5);
+                    self.b_enc1[r] -= enc_lr * dpre1;
+                    let row = r * RAW_FEAT_DIM;
+                    for c in 0..RAW_FEAT_DIM {
+                        self.w_enc1[row + c] -= enc_lr * dpre1 * u[c];
+                    }
+                }
+            }
+        }
+        self.sync_nvfp4_core_weights();
+        self.train_steps_completed += 1;
+        self.last_train_loss = loss;
+        loss
+    }
+
     // ========================================================================
     // v6.0 UNIFIED-BRAIN EXTENSIONS:
     //   1. Executable Meta-Priority AST (`meta_priority_ast: OmegaExpr`)

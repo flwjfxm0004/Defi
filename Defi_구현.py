@@ -2689,26 +2689,14 @@ class SQLiteStore:
                 rem = lim - len(out_items)
             if rem > 0:
                 fetch_lim = rem + len(seen_slugs)
-                fixed_tiers: List[Tuple[str, Tuple[Any, ...]]] = []
                 if sid:
-                    fixed_tiers.append(
-                        (
-                            f"SELECT * FROM audit_queue WHERE status='pending' AND session_id=?{prio_clause} "
-                            "ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC LIMIT ?",
-                            (sid, max_p, fetch_lim) if max_p is not None else (sid, fetch_lim),
-                        )
+                    q_sql_s = (
+                        f"SELECT * FROM audit_queue WHERE status='pending' AND session_id=?{prio_clause} "
+                        "ORDER BY priority ASC, CASE WHEN claim_boot_id='RECOVERED' THEN 0 ELSE 1 END ASC, "
+                        "sort_rank DESC, tvl_usd DESC, slug ASC LIMIT ?"
                     )
-                fixed_tiers.append(
-                    (
-                        f"SELECT * FROM audit_queue WHERE status='pending' AND session_id='' AND claim_boot_id='RECOVERED'{prio_clause} "
-                        "ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC LIMIT ?",
-                        (max_p, fetch_lim) if max_p is not None else (fetch_lim,),
-                    )
-                )
-                for q_sql, q_params in fixed_tiers:
-                    if len(out_items) >= lim:
-                        break
-                    for r in self._conn.execute(q_sql, q_params).fetchall():
+                    q_params_s: Tuple[Any, ...] = (sid, max_p, fetch_lim) if max_p is not None else (sid, fetch_lim)
+                    for r in self._conn.execute(q_sql_s, q_params_s).fetchall():
                         if len(out_items) >= lim:
                             break
                         sl = str(r["slug"])
@@ -2716,35 +2704,66 @@ class SQLiteStore:
                             continue
                         _accept_row(r, was_rec=(str(r["claim_boot_id"] or "") == "RECOVERED"))
 
-                # Unassigned pending pool: deterministic Mode A / Mode B fair-share interleaving (0% mode starvation)
+                # Unassigned pending pool: priority-strict (RECOVERED tie-break within same priority) + Mode A/B fair-share + heavy Mode-B cap
                 if len(out_items) < lim:
                     rem_pool = lim - len(out_items)
-                    pool_lim = rem_pool + len(seen_slugs) + 4
+                    pool_lim = rem_pool + len(seen_slugs) + 12
                     mode_rows: Dict[str, List[sqlite3.Row]] = {}
                     for m_k in ("A", "B"):
                         m_params: Tuple[Any, ...] = (m_k, max_p, pool_lim) if max_p is not None else (m_k, pool_lim)
                         raw_m = self._conn.execute(
                             f"SELECT * FROM audit_queue WHERE status='pending' AND session_id='' AND mode=?{prio_clause} "
-                            "ORDER BY priority ASC, sort_rank DESC, tvl_usd DESC, slug ASC LIMIT ?",
+                            "ORDER BY priority ASC, CASE WHEN claim_boot_id='RECOVERED' THEN 0 ELSE 1 END ASC, "
+                            "sort_rank DESC, tvl_usd DESC, slug ASC LIMIT ?",
                             m_params,
                         ).fetchall()
                         mode_rows[m_k] = [r for r in raw_m if str(r["slug"]) not in seen_slugs]
                     in_flight_modes: Dict[str, int] = {"A": 0, "B": 0}
+                    heavy_modeb_inflight = 0
+
+                    def _is_heavy_primary_modeb(mode_s: str, slug_s: str) -> bool:
+                        return str(mode_s or "").upper() == "B" and not str(slug_s or "").startswith(
+                            ("modeb-match-", "modeb-clone-")
+                        )
+
                     if sid:
                         for cr_m in self._conn.execute(
-                            "SELECT mode, COUNT(*) AS cnt FROM audit_queue WHERE status='claimed' AND session_id=? GROUP BY mode",
+                            "SELECT mode, slug FROM audit_queue WHERE status='claimed' AND session_id=?",
                             (sid,),
                         ).fetchall():
                             mk_c = "B" if str(cr_m["mode"] or "A").upper() == "B" else "A"
-                            in_flight_modes[mk_c] += int(cr_m["cnt"] or 0)
+                            in_flight_modes[mk_c] += 1
+                            if _is_heavy_primary_modeb(mk_c, str(cr_m["slug"] or "")):
+                                heavy_modeb_inflight += 1
                     for it_o in out_items:
                         mk_o = "B" if str(it_o.get("mode") or "A").upper() == "B" else "A"
                         in_flight_modes[mk_o] += 1
+                        if _is_heavy_primary_modeb(mk_o, str(it_o.get("slug") or "")):
+                            heavy_modeb_inflight += 1
                     idx_m = {"A": 0, "B": 0}
+                    heavy_mb_cap = 2
+                    deferred_heavy_b: List[sqlite3.Row] = []
                     while len(out_items) < lim:
                         ra = mode_rows["A"][idx_m["A"]] if idx_m["A"] < len(mode_rows["A"]) else None
-                        rb = mode_rows["B"][idx_m["B"]] if idx_m["B"] < len(mode_rows["B"]) else None
+                        rb = None
+                        while idx_m["B"] < len(mode_rows["B"]):
+                            cand_b = mode_rows["B"][idx_m["B"]]
+                            if heavy_modeb_inflight >= heavy_mb_cap and _is_heavy_primary_modeb("B", str(cand_b["slug"])):
+                                deferred_heavy_b.append(cand_b)
+                                idx_m["B"] += 1
+                                continue
+                            rb = cand_b
+                            break
                         if ra is None and rb is None:
+                            if deferred_heavy_b:
+                                rb = deferred_heavy_b.pop(0)
+                                pick_m = "B"
+                                chosen_r = rb
+                                if str(chosen_r["slug"]) not in seen_slugs:
+                                    _accept_row(chosen_r, was_rec=(str(chosen_r["claim_boot_id"] or "") == "RECOVERED"))
+                                    in_flight_modes["B"] += 1
+                                    heavy_modeb_inflight += 1
+                                continue
                             break
                         if ra is None:
                             pick_m = "B"
@@ -2780,6 +2799,8 @@ class SQLiteStore:
                             continue
                         _accept_row(chosen_r, was_rec=(str(chosen_r["claim_boot_id"] or "") == "RECOVERED"))
                         in_flight_modes[pick_m] += 1
+                        if _is_heavy_primary_modeb(pick_m, str(chosen_r["slug"])):
+                            heavy_modeb_inflight += 1
 
             if newly_claimed_slugs:
                 q_marks = ",".join("?" for _ in newly_claimed_slugs)
@@ -3606,7 +3627,7 @@ CHAIN_RPCS: Dict[str, List[str]] = {
     'eoraptor': ['https://rpc.eoraptor.org'],
     'esyncnetwork': ['https://rpc.esync.network'],
     'eteria': ['https://mainnet.eteria.io/v1'],
-    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.blockreq.com/v1/rpc/public', 'https://eth.drpc.org', 'https://ethereum-rpc.publicnode.com', 'https://api.mycryptoapi.com/eth'],
+    'ethereum': ['https://ethereum.drpc.org', 'https://rpc.mevblocker.io', 'https://rpc.mevblocker.io/fast', 'https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.blockreq.com/v1/rpc/public', 'https://eth.drpc.org', 'https://ethereum-rpc.publicnode.com'],
     'ethereumclassic': ['https://geth-at.etc-network.info', 'https://etc.etcdesktop.com'],
     'etherlink': ['https://node.mainnet.etherlink.com'],
     'ethiq': ['https://rpc.ethiq.network'],
@@ -4811,6 +4832,7 @@ class RPCRouter:
         self._cool_until: Dict[str, float] = {}
         self._demote_until: Dict[str, float] = {}
         self._quarantine_until: Dict[Tuple[int, str], float] = {}
+        self._auth_fail_streak: Dict[Tuple[int, str], int] = {}
         self._last_persisted_at: Dict[str, float] = {}
         self._last_shared_sync_at: float = 0.0
         self._verified_chain_urls: Set[Tuple[int, str]] = set()
@@ -5141,6 +5163,7 @@ class RPCRouter:
             self._rtt_ms[uk] = elapsed_ms if prev is None else (0.7 * prev + 0.3 * elapsed_ms)
             if cid > 0:
                 self._quarantine_until.pop((cid, uk), None)
+                self._auth_fail_streak.pop((cid, uk), None)
         if cid > 0:
             self._persist_endpoint_if_due(url, cid, force=False)
 
@@ -5150,10 +5173,18 @@ class RPCRouter:
         uk = _endpoint_storage_key(url)
         with self._lock:
             if kind == "auth_dead":
-                if cid > 0:
-                    self._quarantine_until[(cid, uk)] = now + self._QUARANTINE_TTL_SEC
-                self._demote_until[uk] = now + self._QUARANTINE_TTL_SEC
-                self._cool_until[uk] = now + self._QUARANTINE_TTL_SEC
+                is_keyed_u = _is_keyed_rpc_url(url)
+                streak_n = self._auth_fail_streak.get((cid, uk), 0) + 1
+                self._auth_fail_streak[(cid, uk)] = streak_n
+                if is_keyed_u or streak_n >= 2:
+                    if cid > 0:
+                        self._quarantine_until[(cid, uk)] = now + self._QUARANTINE_TTL_SEC
+                    self._demote_until[uk] = now + self._QUARANTINE_TTL_SEC
+                    self._cool_until[uk] = now + self._QUARANTINE_TTL_SEC
+                else:
+                    # Single transient 403/WAF burst on keyless public RPC: short cool+demote instead of 1h quarantine
+                    self._demote_until[uk] = now + 300.0
+                    self._cool_until[uk] = now + 45.0
                 force_save = True
             elif kind == "wrong_chain" and cid > 0:
                 self._quarantine_until[(cid, uk)] = now + self._QUARANTINE_TTL_SEC
@@ -29793,14 +29824,15 @@ def _verify_solidity_formal_ast_cached(
         "settings": {"evmVersion": "prague", "outputSelection": {"*": {"": ["ast"]}}},
     }
     try:
-        cp = _run_subproc_tree_safe(
-            [str(SOLC_BIN), "--standard-json"],
-            cwd=str(SCRIPT_DIR),
-            env=_minimal_solc_subproc_env(),
-            timeout_sec=10.0,
-            decode_text=True,
-            input_bytes=json.dumps(std_in).encode("utf-8"),
-        )
+        with _SOLC_AST_SEM:
+            cp = _run_subproc_tree_safe(
+                [str(SOLC_BIN), "--standard-json"],
+                cwd=str(SCRIPT_DIR),
+                env=_minimal_solc_subproc_env(),
+                timeout_sec=25.0,
+                decode_text=True,
+                input_bytes=json.dumps(std_in).encode("utf-8"),
+            )
         out_doc = json.loads(cp.stdout or "{}")
     except Exception:
         return False, ("ast_solc_exec_failed",)
@@ -31006,6 +31038,8 @@ _SOLC_AST_NONCACHEABLE_ERRORS: FrozenSet[str] = frozenset({
 })
 _SOLC_AST_CACHE: Dict[Tuple[str, str, bool, bool], Tuple[bool, Tuple[str, ...]]] = {}
 _SOLC_AST_CACHE_LOCK = threading.Lock()
+_SOLC_AST_INFLIGHT: Dict[Tuple[str, str, bool, bool], threading.Event] = {}
+_SOLC_AST_SEM = threading.BoundedSemaphore(2)
 
 
 def verify_solidity_formal_ast(
@@ -31015,24 +31049,36 @@ def verify_solidity_formal_ast(
     forbid_inline_fork: bool = False,
     strict_agent_accounting: bool = False,
 ) -> Tuple[bool, List[str]]:
-    """`solc.exe --standard-json` 컴파일러 AST 기반 형식 불변식 검증의 외부 진입점(일시 오류/바이너리 부재 비캐시)."""
+    """`solc.exe --standard-json` 컴파일러 AST 기반 형식 불변식 검증의 외부 진입점(싱글플라이트+동시성 제한+일시 오류 비캐시)."""
     code_s = str(sol_code or "")
     if not code_s:
         return True, []
     if not SOLC_BIN.is_file():
         return False, ["ast_solc_binary_missing"]
     cache_key = (code_s, str(allowed_caller or ""), bool(forbid_inline_fork), bool(strict_agent_accounting))
-    with _SOLC_AST_CACHE_LOCK:
-        hit = _SOLC_AST_CACHE.get(cache_key)
-    if hit is not None:
-        return hit[0], list(hit[1])
-    ok, viols = _verify_solidity_formal_ast_cached(*cache_key)
-    if not any(v in _SOLC_AST_NONCACHEABLE_ERRORS for v in viols):
+    while True:
         with _SOLC_AST_CACHE_LOCK:
-            if len(_SOLC_AST_CACHE) >= 256:
-                _SOLC_AST_CACHE.pop(next(iter(_SOLC_AST_CACHE)), None)
-            _SOLC_AST_CACHE[cache_key] = (ok, viols)
-    return ok, list(viols)
+            hit = _SOLC_AST_CACHE.get(cache_key)
+            if hit is not None:
+                return hit[0], list(hit[1])
+            ev_wait = _SOLC_AST_INFLIGHT.get(cache_key)
+            if ev_wait is None:
+                ev_own = threading.Event()
+                _SOLC_AST_INFLIGHT[cache_key] = ev_own
+                break
+        ev_wait.wait(timeout=30.0)
+    try:
+        ok, viols = _verify_solidity_formal_ast_cached(*cache_key)
+        if not any(v in _SOLC_AST_NONCACHEABLE_ERRORS for v in viols):
+            with _SOLC_AST_CACHE_LOCK:
+                if len(_SOLC_AST_CACHE) >= 256:
+                    _SOLC_AST_CACHE.pop(next(iter(_SOLC_AST_CACHE)), None)
+                _SOLC_AST_CACHE[cache_key] = (ok, viols)
+        return ok, list(viols)
+    finally:
+        with _SOLC_AST_CACHE_LOCK:
+            _SOLC_AST_INFLIGHT.pop(cache_key, None)
+        ev_own.set()
 
 
 def _parse_json_dict_lines(text: str) -> List[Dict[str, Any]]:
@@ -49463,6 +49509,8 @@ def audit_single_protocol(
                                     seed_sweep_list = seed_addrs[:10]
 
                                     def _sweep_one_chain(sw_ch: str) -> List[Dict[str, Any]]:
+                                        if cancel_event is not None and cancel_event.is_set():
+                                            return []
                                         sw_cid = CHAIN_IDS.get(sw_ch, 0)
                                         sw_infra = _infra_addresses_for_chain(sw_ch)
                                         valid_pairs = [
@@ -49474,7 +49522,7 @@ def audit_single_protocol(
                                             return []
                                         try:
                                             reqs_sw = [("eth_getCode", [_checksum(na_d), "latest"]) for _, na_d in valid_pairs]
-                                            res_sw = router.batch_call(sw_ch, reqs_sw, need_archive=False, timeout=4.0)
+                                            res_sw = router.batch_call(sw_ch, reqs_sw, need_archive=False, timeout=2.5)
                                         except Exception:
                                             return []
                                         found_sw: List[Dict[str, Any]] = []
@@ -49485,7 +49533,7 @@ def audit_single_protocol(
                                         return found_sw
 
                                     if sweep_chains:
-                                        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(sweep_chains))) as sw_ex:
+                                        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(sweep_chains))) as sw_ex:
                                             for sw_hits in sw_ex.map(_sweep_one_chain, sweep_chains):
                                                 sim_candidates.extend(sw_hits)
                                 else:
@@ -51746,8 +51794,10 @@ def _parallel_fast_prune_mode_b_clones(
         if not union_seeds:
             return [(str(c_i["slug"]), None) for c_i in cands], []
         try:
-            _, q_head = router.get_quorum_head_block(ch)
+            _, q_head = router.get_quorum_head_block(ch, timeout=4.0)
             if q_head <= 0:
+                return [(str(c_i["slug"]), None) for c_i in cands], []
+            if budget_deadline > 0.0 and time.monotonic() >= budget_deadline:
                 return [(str(c_i["slug"]), None) for c_i in cands], []
             blk = max(1, q_head - 2) if q_head > 2 else q_head
             s_res_all = _resolve_proxy_and_delegates(router, ch, union_seeds, blk)
@@ -51792,7 +51842,7 @@ def _parallel_fast_prune_mode_b_clones(
             except Exception:
                 out_pairs.append((sl, None))
 
-        if survived_for_tvl:
+        if survived_for_tvl and not (budget_deadline > 0.0 and time.monotonic() >= budget_deadline):
             try:
                 probe_holders: List[str] = []
                 seen_h: Set[str] = set()
@@ -51912,8 +51962,17 @@ def _parallel_fast_prune_mode_b_clones(
         if total_wave_cands < 2:
             break
         wave_groups = [(c_k, chain_buckets[c_k]) for c_k in chain_order]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(eff_workers, len(wave_groups))) as ex_p1:
-            group_outs = list(ex_p1.map(_probe_chain_batch, wave_groups))
+        ex_p1 = concurrent.futures.ThreadPoolExecutor(max_workers=min(eff_workers, len(wave_groups)))
+        futs_p1 = [ex_p1.submit(_probe_chain_batch, wg) for wg in wave_groups]
+        wait_to = max(2.0, budget_deadline - time.monotonic()) if budget_deadline > 0.0 else 15.0
+        done_p1, not_done_p1 = concurrent.futures.wait(futs_p1, timeout=wait_to)
+        group_outs = []
+        for f_p1 in done_p1:
+            try:
+                group_outs.append(f_p1.result())
+            except (*_RECOVERABLE_IO_EXC, concurrent.futures.CancelledError, RuntimeError):
+                continue
+        ex_p1.shutdown(wait=(not not_done_p1), cancel_futures=True)
         pruned_batch: List[Tuple[str, str, int, str, str]] = []
         tvl_rerank_batch: List[Tuple[str, int]] = []
         top_was_pruned = False
@@ -52083,21 +52142,28 @@ def cmd_run(session_id: Optional[str] = None) -> int:
             if store.get_engine_meta("mode_a_seed_pending", "0") == "1":
                 _ensure_mode_a_seeded(store)
             c_phase = _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR)
+            pending_start_cnt = int(store.queue_counts().get("pending", 0))
             need_sf_start = c_phase != "exhausted"
-            need_lw_start = int(store.queue_counts().get("pending", 0)) > 0
-            if need_sf_start and need_lw_start and _is_live_real_router(router):
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex_st:
-                    fut_sf_st = ex_st.submit(_advance_mode_b_sourcify_cursor, router, store, max_wall_sec=4.5)
-                    fut_lw_st = ex_st.submit(
-                        _run_live_deploy_and_upgrade_watch,
-                        router, store, max_wall_sec=3.5, stragglers_out=straggler_futs,
+            need_lw_start = pending_start_cnt > 0
+            bg_startup_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+            bg_startup_futs: List[Tuple[str, concurrent.futures.Future]] = []
+            if pending_start_cnt > 0 and _is_live_real_router(router) and (need_sf_start or need_lw_start):
+                # True non-blocking startup pipelining: immediately launch 6 protocol workers while cursors/watchers run concurrently
+                bg_startup_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+                if need_sf_start:
+                    bg_startup_futs.append(
+                        ("sf", bg_startup_pool.submit(_advance_mode_b_sourcify_cursor, router, store, max_wall_sec=4.5))
                     )
-                    cursor_stats = fut_sf_st.result()
-                    live_watch_stats = fut_lw_st.result()
-                total_cursor_matched += int(cursor_stats.get("matched", 0)) + int(
-                    live_watch_stats.get("enqueued_live", 0)
-                ) + int(live_watch_stats.get("enqueued_modeb", 0))
-                c_phase = str(cursor_stats.get("phase") or _get_mode_b_sourcify_cursor_phase(store, SOURCIFY_PARQUET_DIR))
+                if need_lw_start:
+                    bg_startup_futs.append(
+                        (
+                            "lw",
+                            bg_startup_pool.submit(
+                                _run_live_deploy_and_upgrade_watch,
+                                router, store, max_wall_sec=3.5, stragglers_out=straggler_futs,
+                            ),
+                        )
+                    )
             else:
                 if need_sf_start:
                     cursor_stats = _advance_mode_b_sourcify_cursor(router, store, max_wall_sec=4.5)
@@ -52114,7 +52180,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                 "STARTUP_CURSORS_DONE",
                 slug="-",
                 session_id=sid,
-                detail=f"dt={time.monotonic() - t_startup0:.1f}s phase={c_phase} matched={total_cursor_matched}",
+                detail=f"dt={time.monotonic() - t_startup0:.1f}s phase={c_phase} matched={total_cursor_matched} bg={len(bg_startup_futs)}",
                 router=router,
             )
 
@@ -52241,29 +52307,28 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                     now_prune_m = time.monotonic()
                     if (
                         not in_flight
+                        and bool(processed)
                         and not (store.get_session(sid) or {}).get("active_slug")
                         and (c_phase == "exhausted" or (now_prune_m - last_clone_prune_m) >= 30.0)
                     ):
                         last_clone_prune_m = now_prune_m
-                        prune_dl = (
-                            t_sweep + run_sweep_budget_sec - 45.0
-                            if c_phase == "exhausted"
-                            else min(now_prune_m + 12.0, t_sweep + run_sweep_budget_sec - 45.0)
-                        )
-                        par_pruned = _parallel_fast_prune_mode_b_clones(
-                            router,
-                            store,
-                            sid,
-                            max_waves=(8 if c_phase == "exhausted" else 3),
-                            budget_deadline=prune_dl,
-                        )
-                        if par_pruned:
-                            processed.extend(par_pruned)
+                        prune_dl = min(now_prune_m + 6.0, t_sweep + run_sweep_budget_sec - 45.0)
+                        if prune_dl > now_prune_m + 1.0:
+                            par_pruned = _parallel_fast_prune_mode_b_clones(
+                                router,
+                                store,
+                                sid,
+                                max_waves=(4 if c_phase == "exhausted" else 2),
+                                budget_deadline=prune_dl,
+                            )
+                            if par_pruned:
+                                processed.extend(par_pruned)
 
                     # Periodic Sourcify v2 Mode B cursor advancement (prevents cursor starvation while Mode A workers run)
                     if (
                         not stop_sweep.is_set()
                         and c_phase != "exhausted"
+                        and not any(_k == "sf" and not _f.done() for _k, _f in bg_startup_futs)
                         and (time.monotonic() - last_cursor_tick_m) >= 45.0
                         and (time.monotonic() - t_sweep) < (run_sweep_budget_sec - 20.0)
                     ):
@@ -52278,6 +52343,7 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                     # Periodic live deploy/upgrade watch inside sliding loop (~45s interval)
                     if (
                         not stop_sweep.is_set()
+                        and not any(_k == "lw" and not _f.done() for _k, _f in bg_startup_futs)
                         and (time.monotonic() - last_live_watch_m) >= 45.0
                         and (time.monotonic() - t_sweep) < (run_sweep_budget_sec - 20.0)
                     ):
@@ -52421,6 +52487,30 @@ def cmd_run(session_id: Optional[str] = None) -> int:
                         if unfinished_slugs:
                             store.release_claimed_to_pending(unfinished_slugs, sid)
                 sweep_pool.shutdown(wait=pool_wait_on_exit, cancel_futures=True)
+                if bg_startup_futs:
+                    for _bg_k, _bg_f in bg_startup_futs:
+                        if _bg_f.done():
+                            try:
+                                _bg_r = _bg_f.result()
+                                if isinstance(_bg_r, dict):
+                                    if _bg_k == "sf":
+                                        total_cursor_matched += int(_bg_r.get("matched", 0))
+                                    else:
+                                        total_cursor_matched += int(_bg_r.get("enqueued_live", 0)) + int(
+                                            _bg_r.get("enqueued_modeb", 0)
+                                        )
+                            except Exception as exc_bg:
+                                _emit_progress(
+                                    "BG_STARTUP_ERROR",
+                                    slug=_bg_k,
+                                    session_id=sid,
+                                    detail=f"{type(exc_bg).__name__}: {str(exc_bg)[:120]}",
+                                    router=router,
+                                )
+                        else:
+                            straggler_futs.append(_bg_f)
+                if bg_startup_pool is not None:
+                    bg_startup_pool.shutdown(wait=False, cancel_futures=True)
                 sess = store.get_session(sid) or sess
                 if not sess.get("profit_slug"):
                     store.set_session_status(sid, "running", active_slug="")
@@ -52490,6 +52580,12 @@ def cmd_run(session_id: Optional[str] = None) -> int:
 
         with _exclusive_file_lock(LOCK_FILE_PATH):
             _export_relay_state(store, ARTIFACT_ROOT)
+        try:
+            with store._lock:
+                if not store._closed:
+                    store._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.Error:
+            pass
 
         active_request_files = _collect_active_request_files(pending_addrs, pending_pocs, pending_verdicts)
         backlog_hint = (
