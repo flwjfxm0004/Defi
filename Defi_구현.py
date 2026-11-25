@@ -6388,6 +6388,8 @@ def _query_local_sourcify_verified_batch(
                     parquet_root=p_root,
                     timeout_sec=14.0,
                 )
+                if cc_rows is None:
+                    return None
                 comp_docs: Dict[str, Dict[str, Any]] = {}
                 missing_meta_cids: List[str] = []
                 need_src_cids: List[str] = []
@@ -10759,7 +10761,12 @@ def _query_local_sourcify_deployment_hints(
                         if cid_v and na in abi_target_set:
                             comp_to_addrs.setdefault(cid_v, []).append(na)
 
-                    if comp_to_addrs and int(f_counts.get("compiled_contracts", 0)) > 0 and cc_cols:
+                    if (
+                        comp_to_addrs
+                        and int(f_counts.get("compiled_contracts", 0)) > 0
+                        and cc_cols
+                        and (include_bytecodes or int(f_counts.get("compiled_contracts", 0)) <= 64)
+                    ):
                         cc_pk = _sf_col(cc_cols, "id", "compilation_id", "compiled_contract_id")
                         abi_expr = "CAST(cc.abi AS VARCHAR)" if "abi" in cc_cols else "''"
                         comp_art_expr = "CAST(cc.compilation_artifacts AS VARCHAR)" if "compilation_artifacts" in cc_cols else "''"
@@ -10997,8 +11004,18 @@ def fetch_verified_contract(
             _put_verified_mem(cached)
             return cached
 
-    # 0순위: 로컬 Sourcify v2 Parquet (API 레이트리밋 0, 오프라인 조회)
-    local_sf = None if skip_local_sourcify else _query_local_sourcify_verified(cid, addr)
+    # 0순위: 로컬 Sourcify v2 Parquet (오프라인·비라이브·소규모 코퍼스에서는 즉시 우선 조회,
+    # 라이브 온라인 + 초대형 비정렬 Parquet(compiled_contracts > 64파일)에서는 28s+ 풀스캔 회피를 위해
+    # 인덱싱된 원격 HTTP 3단(0.4-2.8s) 조회 후 일시적 HTTP 실패 시에만 폴백한다.)
+    _offline_http_guard = (
+        getattr(socket.getaddrinfo, "__name__", "") == "_guarded_getaddrinfo"
+        and type(router).http_get_json is RPCRouter.http_get_json
+    )
+    _defer_giant_local_sf = False
+    if not skip_local_sourcify and _is_live_real_router(router) and not _offline_http_guard and _has_sourcify_corpus_files(SOURCIFY_PARQUET_DIR):
+        _fc_sf, _ = _unpack_sourcify_v2_meta(SOURCIFY_PARQUET_DIR)
+        _defer_giant_local_sf = int(_fc_sf.get("compiled_contracts", 0)) > 64
+    local_sf = None if (skip_local_sourcify or _defer_giant_local_sf) else _query_local_sourcify_verified(cid, addr)
     if local_sf is not None and local_sf.get("verified"):
         if r_store is not None:
             r_store.put_verified_source(
@@ -11015,10 +11032,7 @@ def fetch_verified_contract(
 
     # 1순위: Etherscan API V2 Unified Endpoint (전 체인 단일 엔드포인트 https://api.etherscan.io/v2/api?chainid={cid})
     # 오프라인 소켓 가드 활성 상태에서 기본 RPCRouter.http_get_json을 사용하는 경우 무의미한 외부 HTTP 재시도를 즉시 생략한다.
-    if (
-        getattr(socket.getaddrinfo, "__name__", "") == "_guarded_getaddrinfo"
-        and type(router).http_get_json is RPCRouter.http_get_json
-    ):
+    if _offline_http_guard:
         return {"verified": False, "provider": "unverified", "contract_name": "", "abi": [], "sources": {}}
 
     # 일시적 오류(레이트리밋·타임아웃·5xx)로 조회가 실패한 제공자가 하나라도 있으면 "미검증"을 6시간 부정 캐시로 고착시키지 않도록,
@@ -11181,6 +11195,21 @@ def fetch_verified_contract(
         _put_verified_mem(chosen_hit)
         return chosen_hit
     definitive_unverified = (not es_had_transient_err) and (es_definitive_unv or _es_skip) and all_fb_unv
+    if _defer_giant_local_sf and not definitive_unverified:
+        _fb_loc_sf = _query_local_sourcify_verified(cid, addr)
+        if isinstance(_fb_loc_sf, dict) and _fb_loc_sf.get("verified"):
+            if r_store is not None:
+                r_store.put_verified_source(
+                    cid,
+                    addr,
+                    str(_fb_loc_sf.get("provider") or "sourcify_v2_local"),
+                    True,
+                    str(_fb_loc_sf.get("contract_name") or "Contract"),
+                    _fb_loc_sf.get("abi") or [],
+                    _fb_loc_sf.get("sources") or {},
+                )
+            _put_verified_mem(_fb_loc_sf)
+            return _fb_loc_sf
 
     unverified_doc = {"verified": False, "provider": "unverified", "contract_name": "", "abi": [], "sources": {}}
     if r_store is not None and definitive_unverified:
@@ -17937,42 +17966,73 @@ def build_backward_trust_closure(
             if eb_st:
                 for p_st in _push20_constants(_disassemble(eb_st)):
                     _add_static_tok_extra(p_st)
-    if _has_sourcify_corpus_files(SOURCIFY_PARQUET_DIR):
-        cid_bt = CHAIN_IDS.get(c, 0)
-        if cid_bt > 0:
-            r_store_bt = getattr(router, "store", None)
-            live_bt_r = _is_live_real_router(router)
-            for s_v in clean_seeds[:4]:
-                try:
-                    sf_v: Optional[Dict[str, Any]] = None
-                    if live_bt_r:
+    cid_bt = CHAIN_IDS.get(c, 0)
+    if cid_bt > 0 and clean_seeds:
+        r_store_bt = getattr(router, "store", None)
+        live_bt_r = _is_live_real_router(router)
+        _offline_bt = (
+            getattr(socket.getaddrinfo, "__name__", "") == "_guarded_getaddrinfo"
+            and type(router).http_get_json is RPCRouter.http_get_json
+        )
+        _has_sf_bt = _has_sourcify_corpus_files(SOURCIFY_PARQUET_DIR)
+        _seed_sf_docs: Dict[str, Dict[str, Any]] = {}
+        _uncached_bt_seeds: List[str] = []
+        for s_v in clean_seeds[:4]:
+            try:
+                sf_v: Optional[Dict[str, Any]] = None
+                if live_bt_r:
+                    with _VERIFIED_SRC_MEM_LOCK:
+                        _mhit_bt = _VERIFIED_SRC_MEM_CACHE.get((cid_bt, s_v))
+                    if _mhit_bt is not None and (bool(_mhit_bt[1].get("verified")) or (time.time() - _mhit_bt[0]) <= SOURCES_UNVERIFIED_TTL_SEC):
+                        sf_v = _mhit_bt[1]
+                if sf_v is None and r_store_bt is not None:
+                    sf_v = r_store_bt.get_verified_source(cid_bt, s_v)
+                    if sf_v is not None and live_bt_r:
                         with _VERIFIED_SRC_MEM_LOCK:
-                            _mhit_bt = _VERIFIED_SRC_MEM_CACHE.get((cid_bt, s_v))
-                        if _mhit_bt is not None and (bool(_mhit_bt[1].get("verified")) or (time.time() - _mhit_bt[0]) <= SOURCES_UNVERIFIED_TTL_SEC):
-                            sf_v = _mhit_bt[1]
-                    if sf_v is None and r_store_bt is not None:
-                        sf_v = r_store_bt.get_verified_source(cid_bt, s_v)
-                        if sf_v is not None and live_bt_r:
-                            with _VERIFIED_SRC_MEM_LOCK:
-                                _VERIFIED_SRC_MEM_CACHE[(cid_bt, s_v)] = (time.time(), sf_v)
-                    if sf_v is None:
-                        sf_v = _query_local_sourcify_verified(cid_bt, s_v)
-                        if isinstance(sf_v, dict) and sf_v.get("verified"):
+                            _VERIFIED_SRC_MEM_CACHE[(cid_bt, s_v)] = (time.time(), sf_v)
+                if sf_v is not None:
+                    _seed_sf_docs[s_v] = sf_v
+                else:
+                    _uncached_bt_seeds.append(s_v)
+            except _RECOVERABLE_IO_EXC:
+                pass
+        if _uncached_bt_seeds:
+            if live_bt_r and not _offline_bt:
+                # 라이브 온라인: 병렬 HTTP 3단(Etherscan V2/Blockscout/Sourcify REST ~1-2s)으로
+                # 38.7GB 비정렬 Parquet 풀스캔(28s+) 없이 전체 소스·ABI를 확보하고 SQLite/메모리 캐시까지 선적재한다.
+                def _bt_fetch_seed(sa_bt: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+                    try:
+                        return sa_bt, fetch_verified_contract(router, c, sa_bt, skip_local_sourcify=True)
+                    except _RECOVERABLE_IO_EXC:
+                        return sa_bt, None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(_uncached_bt_seeds))) as ex_bt_sf:
+                    for sa_bt, doc_bt in ex_bt_sf.map(_bt_fetch_seed, _uncached_bt_seeds):
+                        if isinstance(doc_bt, dict):
+                            _seed_sf_docs[sa_bt] = doc_bt
+            elif _has_sf_bt:
+                for s_v in _uncached_bt_seeds:
+                    try:
+                        sf_loc = _query_local_sourcify_verified(cid_bt, s_v)
+                        if isinstance(sf_loc, dict) and sf_loc.get("verified"):
+                            _seed_sf_docs[s_v] = sf_loc
                             if r_store_bt is not None:
                                 r_store_bt.put_verified_source(
-                                    cid_bt, s_v, str(sf_v.get("provider") or "sourcify_v2_local"),
-                                    True, str(sf_v.get("contract_name") or "Contract"),
-                                    sf_v.get("abi") or [], sf_v.get("sources") or {},
+                                    cid_bt, s_v, str(sf_loc.get("provider") or "sourcify_v2_local"),
+                                    True, str(sf_loc.get("contract_name") or "Contract"),
+                                    sf_loc.get("abi") or [], sf_loc.get("sources") or {},
                                 )
                             if live_bt_r:
                                 with _VERIFIED_SRC_MEM_LOCK:
-                                    _VERIFIED_SRC_MEM_CACHE[(cid_bt, s_v)] = (time.time(), sf_v)
-                    if isinstance(sf_v, dict) and isinstance(sf_v.get("sources"), dict):
-                        for src_txt in sf_v["sources"].values():
-                            for m_ad in _ANY_ADDR_RE.findall(str(src_txt or "")):
-                                _add_static_tok_extra(m_ad)
-                except _RECOVERABLE_IO_EXC:
-                    pass
+                                    _VERIFIED_SRC_MEM_CACHE[(cid_bt, s_v)] = (time.time(), sf_loc)
+                    except _RECOVERABLE_IO_EXC:
+                        pass
+        for s_v in clean_seeds[:4]:
+            sf_v = _seed_sf_docs.get(s_v)
+            if isinstance(sf_v, dict) and isinstance(sf_v.get("sources"), dict):
+                for src_txt in sf_v["sources"].values():
+                    for m_ad in _ANY_ADDR_RE.findall(str(src_txt or "")):
+                        _add_static_tok_extra(m_ad)
     for st_ex in dict.fromkeys(static_tok_extras):
         if len(candidate_tokens) >= 96:
             break
@@ -25106,6 +25166,35 @@ def ensure_clean_forge_workspace(
     return ws
 
 
+def _emit_stack_safe_abi_encode(
+    sel_sc: str,
+    args_list: Sequence[str],
+    has_dynamic: bool,
+    *,
+    indent: str = "                ",
+    var_name: str = "_enc",
+) -> Tuple[List[str], str]:
+    """
+    solc 0.8.28 (via_ir=false) 16-슬롯 EVM 스택 초과(`Stack too deep`) 원천 방지:
+    - 인자 <= 6개: 단일 `abi.encodeWithSelector(...)` 유지.
+    - 인자 > 6개 & 전부 정적 ABI 타입: ABI 규격상 정적 튜플은 32B 헤드 연접과 비트 동일하므로
+      6개 단위 `bytes.concat` 폴딩으로 O(1) 스택 깊이(<= 7슬롯) 보장.
+    - 인자 > 6개 & 동적 타입 포함: 상위 호출자에서 파이썬 `encode_calldata` hex 폴백으로 라우팅(`("", "")`).
+    """
+    if not args_list:
+        return [], f'abi.encodeWithSelector(bytes4(hex"{sel_sc}"))'
+    if len(args_list) <= 6:
+        return [], f'abi.encodeWithSelector(bytes4(hex"{sel_sc}"), {", ".join(args_list)})'
+    if has_dynamic:
+        return [], ""
+    stmts: List[str] = [
+        f'{indent}bytes memory {var_name} = bytes.concat(bytes4(hex"{sel_sc}"), abi.encode({", ".join(args_list[:6])}));'
+    ]
+    for off in range(6, len(args_list), 6):
+        stmts.append(f'{indent}{var_name} = bytes.concat({var_name}, abi.encode({", ".join(args_list[off : off + 6])}));')
+    return stmts, var_name
+
+
 def _build_solidity_abi_encode_call(
     sel_sc: str,
     abi_types: Sequence[str],
@@ -25115,15 +25204,18 @@ def _build_solidity_abi_encode_call(
     vault_chk: str,
     tok_chk_list: Sequence[str],
 ) -> Tuple[List[str], str]:
-    """주어진 ABI 타입/파라미터 이름에 대한 Solidity 배열 준비 구문 리스트 및 `abi.encodeWithSelector(...)` 표현식을 생성한다."""
+    """주어진 ABI 타입/파라미터 이름에 대한 Solidity 배열 준비 구문 리스트 및 스택-안전 ABI 인코딩 표현식을 생성한다."""
     prep_stmts: List[str] = []
     args_list: List[str] = []
     tok_cur = 0
     w_sol = str(witness)
+    has_dynamic = False
     for p_idx, raw_t in enumerate(abi_types):
         ts = raw_t.strip()
         p_name = param_names[p_idx] if p_idx < len(param_names) else ""
         if _is_scalar_primitive_abi(ts):
+            if ts in ("bytes", "string"):
+                has_dynamic = True
             sol_e, _, _, tok_cur = _build_abi_scalar_value_spec(
                 ts, p_name, caller_expr, vault_chk, tok_chk_list, w_sol, None, tok_cur
             )
@@ -25143,6 +25235,7 @@ def _build_solidity_abi_encode_call(
             )
             arr_var = f"_arr{p_idx}"
             if dim_s == "":
+                has_dynamic = True
                 prep_stmts.append(f"                {b_t}[] memory {arr_var} = new {b_t}[](1);")
                 prep_stmts.append(f"                {arr_var}[0] = {sol_elem};")
             else:
@@ -25153,12 +25246,10 @@ def _build_solidity_abi_encode_call(
             args_list.append(arr_var)
         else:
             args_list.append(f"uint256({w_sol})")
-    arg_str = ", ".join(args_list)
-    encode_expr = (
-        f'abi.encodeWithSelector(bytes4(hex"{sel_sc}"), {arg_str})'
-        if arg_str
-        else f'abi.encodeWithSelector(bytes4(hex"{sel_sc}"))'
-    )
+    enc_stmts, encode_expr = _emit_stack_safe_abi_encode(sel_sc, args_list, has_dynamic)
+    if not encode_expr:
+        return [], ""
+    prep_stmts.extend(enc_stmts)
     return prep_stmts, encode_expr
 
 
@@ -25289,24 +25380,25 @@ def _render_leg_invocation_solidity(
         prep_stmts, enc_expr = _build_solidity_abi_encode_call(
             sc, abi_types, param_names, witness, caller_expr, v_chk, tok_chk
         )
-        if not allow_generic_fallback and not prep_stmts:
-            return f"            {{ (bool _ok, ) = {target_expr}.call({enc_expr}); _ok; }}"
-        lines = ["            {"]
-        lines.extend(prep_stmts)
-        lines.append(f"                (bool _ok, ) = {target_expr}.call({enc_expr});")
-        if allow_generic_fallback:
-            lines.extend(
-                [
-                    f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(hex"{sc}"); }}',
-                    f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(abi.encodeWithSelector(bytes4(hex"{sc}"), uint256({witness}))); }}',
-                    f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(abi.encodeWithSelector(bytes4(hex"{sc}"), {caller_expr}, uint256({witness}))); }}',
-                    f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(abi.encodeWithSelector(bytes4(hex"{sc}"), uint256({witness}), {caller_expr}, {caller_expr})); }}',
-                ]
-            )
-        else:
-            lines.append("                _ok;")
-        lines.append("            }")
-        return "\n".join(lines)
+        if enc_expr:
+            if not allow_generic_fallback and not prep_stmts:
+                return f"            {{ (bool _ok, ) = {target_expr}.call({enc_expr}); _ok; }}"
+            lines = ["            {"]
+            lines.extend(prep_stmts)
+            lines.append(f"                (bool _ok, ) = {target_expr}.call({enc_expr});")
+            if allow_generic_fallback:
+                lines.extend(
+                    [
+                        f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(hex"{sc}"); }}',
+                        f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(abi.encodeWithSelector(bytes4(hex"{sc}"), uint256({witness}))); }}',
+                        f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(abi.encodeWithSelector(bytes4(hex"{sc}"), {caller_expr}, uint256({witness}))); }}',
+                        f'                if (!_ok) {{ (_ok, ) = {target_expr}.call(abi.encodeWithSelector(bytes4(hex"{sc}"), uint256({witness}), {caller_expr}, {caller_expr})); }}',
+                    ]
+                )
+            else:
+                lines.append("                _ok;")
+            lines.append("            }")
+            return "\n".join(lines)
     if abi_types:
         eff_caller_chk = complex_caller_chk or (caller_expr if _norm_addr(caller_expr) else "")
         w_pool = (
@@ -27218,35 +27310,39 @@ def _render_minimal_solidity_harness(
                 if sel != "fallback" and sel.startswith("0x") and len(sel) == 10 and has_ver_fl and not eff_abi:
                     out_lines.append(f"        legTgts[{c_i}] = {lt_chk};")
                     out_lines.append(f'        legCds[{c_i}] = hex"{sel[2:]}";')
-                elif sel != "fallback" and sel.startswith("0x") and len(sel) == 10 and eff_abi and _is_mechanical_renderable_abi(eff_abi):
-                    l_prep, l_enc = _build_solidity_abi_encode_call(
-                        sel[2:], eff_abi, p_names, w_expr, actor_expr, vault_chk, tok_list
-                    )
-                    out_lines.append("        {")
-                    out_lines.extend(l_prep)
-                    out_lines.append(f"            legTgts[{c_i}] = {lt_chk};")
-                    out_lines.append(f"            legCds[{c_i}] = {l_enc};")
-                    out_lines.append("        }")
                 elif sel != "fallback" and sel.startswith("0x") and len(sel) == 10:
-                    _fl_cplx_by_w = (
-                        _collect_complex_abi_witness_hex_pairs(
-                            sel, eff_abi, p_names, w_list[:6] or [10**18], c_chk, lt_chk, tok_list
+                    l_prep_m: List[str] = []
+                    l_enc_m = ""
+                    if eff_abi and _is_mechanical_renderable_abi(eff_abi):
+                        l_prep_m, l_enc_m = _build_solidity_abi_encode_call(
+                            sel[2:], eff_abi, p_names, w_expr, actor_expr, vault_chk, tok_list
                         )
-                        if eff_abi
-                        else []
-                    )
-                    out_lines.append(f"        legTgts[{c_i}] = {lt_chk};")
-                    if _fl_cplx_by_w:
-                        _uniq_hx = list(dict.fromkeys(h for _, h in _fl_cplx_by_w))
-                        if len(_uniq_hx) == 1:
-                            out_lines.append(f'        legCds[{c_i}] = hex"{_uniq_hx[0]}";')
-                        else:
-                            for _bi, (_wi_b, _hx_b) in enumerate(_fl_cplx_by_w):
-                                _kw_b = "if" if _bi == 0 else "else if"
-                                out_lines.append(f'        {_kw_b} ({w_expr} == {_wi_b}) {{ legCds[{c_i}] = hex"{_hx_b}"; }}')
-                            out_lines.append(f'        else {{ legCds[{c_i}] = hex"{_fl_cplx_by_w[0][1]}"; }}')
+                    if l_enc_m:
+                        out_lines.append("        {")
+                        out_lines.extend(l_prep_m)
+                        out_lines.append(f"            legTgts[{c_i}] = {lt_chk};")
+                        out_lines.append(f"            legCds[{c_i}] = {l_enc_m};")
+                        out_lines.append("        }")
                     else:
-                        out_lines.append(f'        legCds[{c_i}] = abi.encodeWithSelector(bytes4(hex"{sel[2:]}"), {w_expr});')
+                        _fl_cplx_by_w = (
+                            _collect_complex_abi_witness_hex_pairs(
+                                sel, eff_abi, p_names, w_list[:6] or [10**18], c_chk, lt_chk, tok_list
+                            )
+                            if eff_abi
+                            else []
+                        )
+                        out_lines.append(f"        legTgts[{c_i}] = {lt_chk};")
+                        if _fl_cplx_by_w:
+                            _uniq_hx = list(dict.fromkeys(h for _, h in _fl_cplx_by_w))
+                            if len(_uniq_hx) == 1:
+                                out_lines.append(f'        legCds[{c_i}] = hex"{_uniq_hx[0]}";')
+                            else:
+                                for _bi, (_wi_b, _hx_b) in enumerate(_fl_cplx_by_w):
+                                    _kw_b = "if" if _bi == 0 else "else if"
+                                    out_lines.append(f'        {_kw_b} ({w_expr} == {_wi_b}) {{ legCds[{c_i}] = hex"{_hx_b}"; }}')
+                                out_lines.append(f'        else {{ legCds[{c_i}] = hex"{_fl_cplx_by_w[0][1]}"; }}')
+                        else:
+                            out_lines.append(f'        legCds[{c_i}] = abi.encodeWithSelector(bytes4(hex"{sel[2:]}"), {w_expr});')
                 else:
                     out_lines.append(f"        legTgts[{c_i}] = {lt_chk};")
                     out_lines.append(f'        legCds[{c_i}] = "";')
@@ -27379,10 +27475,14 @@ def _render_minimal_solidity_harness(
                 first_tgt = leg_targets[0] if leg_targets else vault_chk
                 if len(first_sel) == 8:
                     cb_abi, cb_names, _ = _resolve_sl_abi(first_sel_raw)
-                    if cb_abi and _is_mechanical_renderable_abi(cb_abi):
-                        cb_prep, cb_enc = _build_solidity_abi_encode_call(
+                    cb_prep, cb_enc = (
+                        _build_solidity_abi_encode_call(
                             first_sel, cb_abi, cb_names, "_w", "address(_helper)", first_tgt, tok_list
                         )
+                        if (cb_abi and _is_mechanical_renderable_abi(cb_abi))
+                        else ([], "")
+                    )
+                    if cb_enc:
                         probe_lines.append("            {")
                         probe_lines.extend(cb_prep)
                         probe_lines.append(
@@ -27399,14 +27499,18 @@ def _render_minimal_solidity_harness(
                     alt_tgt = leg_targets[1] if len(leg_targets) >= 2 else vault_chk
                     if len(alt_sel) == 8:
                         alt_abi, alt_names, alt_ver = _resolve_sl_abi(alt_sel_raw)
+                        alt_prep, alt_enc = (
+                            _build_solidity_abi_encode_call(
+                                alt_sel, alt_abi, alt_names, "_w", "address(_helper)", alt_tgt, tok_list
+                            )
+                            if (alt_abi and _is_mechanical_renderable_abi(alt_abi))
+                            else ([], "")
+                        )
                         if alt_ver and not alt_abi:
                             probe_lines.append(
                                 f'            _helper.prepareAltCallback({alt_tgt}, hex"{alt_sel}");'
                             )
-                        elif alt_abi and _is_mechanical_renderable_abi(alt_abi):
-                            alt_prep, alt_enc = _build_solidity_abi_encode_call(
-                                alt_sel, alt_abi, alt_names, "_w", "address(_helper)", alt_tgt, tok_list
-                            )
+                        elif alt_enc:
                             probe_lines.append("            {")
                             probe_lines.extend(alt_prep)
                             probe_lines.append(
@@ -36364,7 +36468,13 @@ def _build_fuzz_leg_call_specs(
             enc_hex = encode_calldata(sel, py_types, py_vals)[2:]
             out_specs.append((lt_chk, sel, [], enc_hex))
         else:
-            sol_call = f'abi.encodeWithSelector(bytes4(hex"{sel[2:]}"), {", ".join(sol_args)})'
+            has_dyn_f = any(t.strip() in ("bytes", "string") or t.strip().endswith("[]") for t in eff_abi)
+            f_enc_stmts, sol_call = _emit_stack_safe_abi_encode(
+                sel[2:], sol_args, has_dyn_f, var_name=f"_fenc{l_idx}"
+            )
+            if not sol_call:
+                return [], 0
+            prep_l.extend(f_enc_stmts)
             out_specs.append((lt_chk, sel, prep_l, sol_call))
     return out_specs, f_used
 
@@ -50294,13 +50404,11 @@ def audit_single_protocol(
                                 if not (not is_matched_clone_slug and block_pin > 0 and seed_bytecodes):
                                     return None
                                 try:
-                                    if cid_target > 0 and _has_sourcify_corpus_files(SOURCIFY_PARQUET_DIR):
+                                    if cid_target > 0:
                                         for sa_s in seed_addrs[:2]:
-                                            loc_sv = _query_local_sourcify_verified(cid_target, sa_s)
-                                            if isinstance(loc_sv, dict) and loc_sv.get("verified") and isinstance(loc_sv.get("sources"), dict):
-                                                return dict(loc_sv["sources"])
-                                    if cid_target > 0 and seed_addrs:
-                                        return _fetch_etherscan_v2_source_for_addr(router, cid_target, seed_addrs[0])
+                                            v_sv = fetch_verified_contract(router, chain, sa_s)
+                                            if isinstance(v_sv, dict) and v_sv.get("verified") and isinstance(v_sv.get("sources"), dict) and v_sv["sources"]:
+                                                return dict(v_sv["sources"])
                                 except _RECOVERABLE_IO_EXC:
                                     pass
                                 return None
@@ -51070,20 +51178,25 @@ def audit_single_protocol(
                     getattr(socket.getaddrinfo, "__name__", "") == "_guarded_getaddrinfo"
                     and type(router).http_get_json is RPCRouter.http_get_json
                 )
-                local_sf_batch = _query_local_sourcify_verified_batch(
-                    cid_target,
-                    missing_src_targets,
-                    include_sources=_offline_src_guard,
-                )
+                _live_online_s3 = _is_live_real_router(router) and not _offline_src_guard
+                local_sf_batch: Optional[Dict[str, Dict[str, Any]]] = None
                 remote_fetch_targets: List[str] = []
-                if local_sf_batch is not None:
-                    enrich_src_budget = 0
-                    for t_a in missing_src_targets:
-                        ldoc = local_sf_batch.get(t_a)
-                        if isinstance(ldoc, dict) and ldoc.get("verified"):
-                            verified_sources[t_a] = ldoc
-                            if ldoc.get("sources"):
-                                if store is not None:
+                if _live_online_s3:
+                    # 라이브 온라인: 병렬 HTTP 3단(Etherscan V2/Blockscout/Sourcify REST ~2.8s)으로 전체 소스+ABI 확보
+                    # (38.7GB 비정렬 로컬 compiled_contracts 타임아웃 원천 차단; 전원 일시 실패 시에만 로컬 배치 폴백)
+                    remote_fetch_targets = list(missing_src_targets)
+                else:
+                    local_sf_batch = _query_local_sourcify_verified_batch(
+                        cid_target,
+                        missing_src_targets,
+                        include_sources=_offline_src_guard,
+                    )
+                    if local_sf_batch is not None:
+                        for t_a in missing_src_targets:
+                            ldoc = local_sf_batch.get(t_a)
+                            if isinstance(ldoc, dict) and ldoc.get("verified"):
+                                verified_sources[t_a] = ldoc
+                                if ldoc.get("sources") and store is not None:
                                     store.put_verified_source(
                                         cid_target,
                                         t_a,
@@ -51093,17 +51206,13 @@ def audit_single_protocol(
                                         ldoc.get("abi") or [],
                                         ldoc.get("sources") or {},
                                     )
-                            elif not _offline_src_guard and enrich_src_budget < 6:
-                                # Enrich full Solidity sources via fast parallel HTTP (Etherscan/Blockscout/Sourcify REST ~1-2s)
+                            else:
                                 remote_fetch_targets.append(t_a)
-                                enrich_src_budget += 1
-                        else:
-                            remote_fetch_targets.append(t_a)
-                else:
-                    remote_fetch_targets = list(missing_src_targets)
+                    else:
+                        remote_fetch_targets = list(missing_src_targets)
 
-                if remote_fetch_targets:
-                    _skip_sf_rem = local_sf_batch is not None
+                if remote_fetch_targets and not _offline_src_guard:
+                    _skip_sf_rem = _live_online_s3 or (local_sf_batch is not None)
 
                     def _fetch_one_src(target_a: str) -> Tuple[str, Dict[str, Any]]:
                         return target_a, fetch_verified_contract(
@@ -51116,6 +51225,19 @@ def audit_single_protocol(
                                 prev_v = verified_sources.get(t_a)
                                 if not isinstance(prev_v, dict) or vinfo.get("sources") or not prev_v.get("abi"):
                                     verified_sources[t_a] = vinfo
+                    if _live_online_s3 and not any(t_a in verified_sources for t_a in remote_fetch_targets):
+                        # 원격 3단 HTTP 전원 일시 장애 시 로컬 배치 Fail-Open 폴백
+                        _fb_need = [
+                            t_a for t_a in remote_fetch_targets
+                            if (store is None or store.get_verified_source(cid_target, t_a) is None)
+                        ]
+                        if _fb_need:
+                            _fb_batch = _query_local_sourcify_verified_batch(
+                                cid_target, _fb_need, include_sources=True
+                            )
+                            for t_a, ldoc in (_fb_batch or {}).items():
+                                if isinstance(ldoc, dict) and ldoc.get("verified"):
+                                    verified_sources[t_a] = ldoc
             remediation_exhausted["source_3tier_tried"] = True
 
             peer_dep_targets: List[Tuple[str, str, List[str]]] = []
